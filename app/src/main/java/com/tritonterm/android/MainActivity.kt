@@ -1,13 +1,17 @@
 package com.tritonterm.android
 
 import android.os.Bundle
+import android.os.SystemClock
+import android.content.Context
+import android.view.inputmethod.InputMethodManager
 import android.view.KeyEvent
 import android.view.MotionEvent
-import android.graphics.Typeface
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -17,7 +21,9 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.systemBarsPadding
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.darkColorScheme
@@ -25,12 +31,15 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.Dp
@@ -42,6 +51,7 @@ import com.termux.terminal.TerminalSessionClient
 import com.termux.view.TerminalView
 import com.termux.view.TerminalViewClient
 import java.nio.charset.StandardCharsets
+import kotlinx.coroutines.withTimeoutOrNull
 
 private val TritonPalette = darkColorScheme(
     primary = Color(0xFFDADADA), onPrimary = Color(0xFF1B1B1B),
@@ -70,7 +80,27 @@ class MainActivity : ComponentActivity() {
 @Composable
 private fun TritonTermScreen() {
     val context = LocalContext.current
-    val sessionClient = remember { QuietSessionClient() }
+    val sessionClient = remember { TritonSessionClient() }
+    var terminalFontSize by remember { mutableIntStateOf(28) }
+    var appliedFontSize by remember { mutableIntStateOf(terminalFontSize) }
+    var useSystemKeyboard by remember { mutableStateOf(false) }
+    val terminalViewHolder = remember { arrayOfNulls<TerminalView>(1) }
+    val zoomTerminal = { increase: Boolean ->
+        terminalFontSize = (terminalFontSize + if (increase) 2 else -2).coerceIn(12, 40)
+    }
+    val toggleKeyboard: () -> Unit = {
+        val inputMethodManager = context.getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
+        if (useSystemKeyboard) {
+            terminalViewHolder[0]?.let { inputMethodManager.hideSoftInputFromWindow(it.windowToken, 0) }
+            useSystemKeyboard = false
+        } else {
+            useSystemKeyboard = true
+            terminalViewHolder[0]?.let { view ->
+                view.requestFocus()
+                view.post { inputMethodManager.showSoftInput(view, InputMethodManager.SHOW_IMPLICIT) }
+            }
+        }
+    }
     val session = remember {
         val home = context.filesDir.absolutePath
         val env = arrayOf(
@@ -84,25 +114,39 @@ private fun TritonTermScreen() {
     }
 
     DisposableEffect(session) {
-        onDispose { session.finishIfRunning() }
+        onDispose {
+            sessionClient.terminalView = null
+            session.finishIfRunning()
+        }
     }
 
     MaterialTheme(colorScheme = TritonPalette) {
         Column(
             Modifier
                 .fillMaxSize()
+                .systemBarsPadding()
+                .imePadding()
                 .background(Color.Black)
                 .padding(top = 4.dp)
         ) {
             Row(
                 Modifier
                     .fillMaxWidth()
-                    .height(28.dp)
+                    .height(40.dp)
                     .padding(horizontal = 12.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Text("tritonterm", fontSize = 13.sp, fontWeight = FontWeight.SemiBold, color = Color(0xFF8992B2))
                 Spacer(Modifier.weight(1f))
+                Text(
+                    if (useSystemKeyboard) "Keys" else "IME",
+                    modifier = Modifier
+                        .clickable(onClick = toggleKeyboard)
+                        .padding(horizontal = 12.dp, vertical = 8.dp),
+                    fontSize = 12.sp,
+                    color = Color(0xFFD5D5D5)
+                )
+                Spacer(Modifier.padding(end = 8.dp))
                 Text("local", fontSize = 11.sp, color = Color(0xFF626A83))
             }
 
@@ -112,22 +156,32 @@ private fun TritonTermScreen() {
                     .fillMaxWidth(),
                 factory = { viewContext ->
                     TerminalView(viewContext, null).apply {
-                        setTextSize(16)
-                        setTypeface(Typeface.MONOSPACE)
-                        setTerminalViewClient(TerminalCallbacks(session))
+                        setTextSize(terminalFontSize)
+                        setTypeface(context.resources.getFont(R.font.jetbrains_mono_nerd_font_regular))
+                        setTerminalViewClient(TerminalCallbacks(session, zoomTerminal))
+                        sessionClient.terminalView = this
                         attachSession(session)
+                        terminalViewHolder[0] = this
                         setBackgroundColor(android.graphics.Color.BLACK)
                         isFocusable = true
                         isFocusableInTouchMode = true
                     }
                 },
-                update = { it.attachSession(session) }
+                update = {
+                    it.attachSession(session)
+                    if (appliedFontSize != terminalFontSize) {
+                        it.setTextSize(terminalFontSize)
+                        appliedFontSize = terminalFontSize
+                    }
+                }
             )
 
             TerminalKeyboard(
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(horizontal = 8.dp),
+                onZoom = zoomTerminal,
+                compact = useSystemKeyboard,
                 onInput = { input ->
                     val bytes = input.toByteArray(StandardCharsets.UTF_8)
                     session.write(bytes, 0, bytes.size)
@@ -137,14 +191,20 @@ private fun TritonTermScreen() {
     }
 }
 
-private class QuietSessionClient : TerminalSessionClient {
-    override fun onTextChanged(changedSession: TerminalSession) = Unit
+private class TritonSessionClient : TerminalSessionClient {
+    var terminalView: TerminalView? = null
+
+    override fun onTextChanged(changedSession: TerminalSession) {
+        terminalView?.onScreenUpdated()
+    }
     override fun onTitleChanged(changedSession: TerminalSession) = Unit
     override fun onSessionFinished(finishedSession: TerminalSession) = Unit
     override fun onCopyTextToClipboard(session: TerminalSession, text: String) = Unit
     override fun onPasteTextFromClipboard(session: TerminalSession?) = Unit
     override fun onBell(session: TerminalSession) = Unit
-    override fun onColorsChanged(session: TerminalSession) = Unit
+    override fun onColorsChanged(session: TerminalSession) {
+        terminalView?.onScreenUpdated()
+    }
     override fun onTerminalCursorStateChange(state: Boolean) = Unit
     override fun getTerminalCursorStyle(): Int? = null
     override fun logError(tag: String, message: String) = Unit
@@ -156,7 +216,10 @@ private class QuietSessionClient : TerminalSessionClient {
     override fun logStackTrace(tag: String, e: Exception) = Unit
 }
 
-private class TerminalCallbacks(private val session: TerminalSession) : TerminalViewClient {
+private class TerminalCallbacks(
+    private val session: TerminalSession,
+    private val zoom: (Boolean) -> Unit
+) : TerminalViewClient {
     override fun onScale(scale: Float): Float = 1f
     override fun onSingleTapUp(e: MotionEvent) = Unit
     override fun shouldBackButtonBeMappedToEscape() = false
@@ -164,7 +227,15 @@ private class TerminalCallbacks(private val session: TerminalSession) : Terminal
     override fun shouldUseCtrlSpaceWorkaround() = false
     override fun isTerminalViewSelected() = true
     override fun copyModeChanged(copyMode: Boolean) = Unit
-    override fun onKeyDown(keyCode: Int, e: KeyEvent, session: TerminalSession) = false
+    override fun onKeyDown(keyCode: Int, e: KeyEvent, session: TerminalSession): Boolean {
+        if (e.isCtrlPressed) {
+            when (keyCode) {
+                KeyEvent.KEYCODE_MINUS -> { zoom(false); return true }
+                KeyEvent.KEYCODE_EQUALS, KeyEvent.KEYCODE_PLUS -> { zoom(true); return true }
+            }
+        }
+        return false
+    }
     override fun onKeyUp(keyCode: Int, e: KeyEvent) = false
     override fun onLongPress(event: MotionEvent) = false
     override fun readControlKey() = false
@@ -194,12 +265,25 @@ private data class TerminalKey(
 )
 
 @Composable
-private fun TerminalKeyboard(modifier: Modifier = Modifier, onInput: (String) -> Unit) {
+private fun TerminalKeyboard(
+    modifier: Modifier = Modifier,
+    onInput: (String) -> Unit,
+    onZoom: (Boolean) -> Unit,
+    compact: Boolean
+) {
     var layer by remember { mutableStateOf(false) }
     var ctrl by remember { mutableStateOf(false) }
     var alt by remember { mutableStateOf(false) }
     var shift by remember { mutableStateOf(false) }
     var caps by remember { mutableStateOf(false) }
+
+    fun setHeld(key: TerminalKey, down: Boolean) {
+        when (key.value) {
+            "ctrl" -> ctrl = down
+            "alt" -> alt = down
+        }
+        if (key.kind == KeyKind.Shift) shift = down
+    }
 
     val fnKeys = (1..12).map { index ->
         val sequence = when (index) {
@@ -228,7 +312,7 @@ private fun TerminalKeyboard(modifier: Modifier = Modifier, onInput: (String) ->
     val symbolKeys = listOf(
         "?", "!", "@", "#", "€", "%", "&", "*", "(", ")",
         "/", "+", "=", "_", ":", ";", ",", ".", "'", "\"",
-        "\\", "|", "[", "]", "{", "}", "<", ">", "¡", "¿"
+        "\\", "|", "[", "]", "{", "}", "<", ">", "-", "¿"
     ).map { TerminalKey(it) }
     val modifiers = listOf(
         TerminalKey("Ctrl", KeyKind.Modifier, "ctrl"),
@@ -241,9 +325,12 @@ private fun TerminalKeyboard(modifier: Modifier = Modifier, onInput: (String) ->
         when (key.kind) {
             KeyKind.Layer -> layer = !layer
             KeyKind.Caps -> caps = !caps
-            KeyKind.Shift -> shift = !shift
-            KeyKind.Modifier -> if (key.value == "ctrl") ctrl = !ctrl else alt = !alt
+            KeyKind.Shift, KeyKind.Modifier -> Unit
             else -> {
+                if (ctrl && key.kind == KeyKind.Backspace) {
+                    onInput("\u0017") // Ctrl+W: erase the previous word in common shells.
+                    return
+                }
                 val text = when (key.kind) {
                     KeyKind.Escape -> "\u001b"
                     KeyKind.Tab -> "\t"
@@ -251,6 +338,10 @@ private fun TerminalKeyboard(modifier: Modifier = Modifier, onInput: (String) ->
                     KeyKind.Backspace -> "\u007f"
                     KeyKind.Arrow -> key.value
                     else -> key.value
+                }
+                if (ctrl && key.kind == KeyKind.Text && text in setOf("-", "+", "=")) {
+                    onZoom(text != "-")
+                    return
                 }
                 val adjusted = if (key.kind == KeyKind.Text && text.length == 1 && text[0].isLetter()) {
                     if (caps xor shift) text.uppercase() else text.lowercase()
@@ -261,32 +352,35 @@ private fun TerminalKeyboard(modifier: Modifier = Modifier, onInput: (String) ->
                     (adjusted[0].uppercaseChar().code and 0x1f).toChar().toString()
                 } else adjusted
                 onInput((if (alt) "\u001b" else "") + sequence)
-                shift = false
-                ctrl = false
-                alt = false
             }
         }
     }
 
-    Column(modifier.fillMaxWidth().padding(bottom = 16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-        KeyRow(fnKeys, 38.dp, onClick = ::emit, active = emptySet())
-        KeyRow(utility, 38.dp, onClick = ::emit, active = setOfNotNull(if (caps) "Caps" else null))
-        KeyRow(digits, 50.dp, onClick = ::emit, active = emptySet(), caps = caps, shift = shift)
-        if (layer) {
-            symbolKeys.chunked(10).forEach { row -> KeyRow(row, 50.dp, onClick = ::emit, active = emptySet(), caps = caps, shift = shift) }
+    Column(modifier.fillMaxWidth().padding(bottom = if (compact) 4.dp else 16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        if (compact) {
+            KeyRow(utility.filterNot { it.kind == KeyKind.Caps || it.kind == KeyKind.Layer }, 38.dp, onClick = ::emit, onHoldChanged = ::setHeld, active = emptySet())
+            KeyRow(modifiers.filter { it.kind == KeyKind.Modifier }, 38.dp, onClick = ::emit, onHoldChanged = ::setHeld, active = buildSet { if (ctrl) add("Ctrl"); if (alt) add("Alt") })
         } else {
-            KeyRow(qRow, 50.dp, onClick = ::emit, active = emptySet(), caps = caps, shift = shift)
-            KeyRow(aRow, 50.dp, onClick = ::emit, active = emptySet(), caps = caps, shift = shift)
-            KeyRow(zRow, 50.dp, onClick = ::emit, active = if (shift) setOf("Shift") else emptySet(), caps = caps, shift = shift)
+            KeyRow(fnKeys, 38.dp, onClick = ::emit, onHoldChanged = ::setHeld, active = emptySet())
+            KeyRow(utility, 38.dp, onClick = ::emit, onHoldChanged = ::setHeld, active = setOfNotNull(if (caps) "Caps" else null))
+            KeyRow(digits, 50.dp, onClick = ::emit, onHoldChanged = ::setHeld, active = emptySet(), caps = caps, shift = shift)
+            if (layer) {
+                symbolKeys.chunked(10).forEach { row -> KeyRow(row, 50.dp, onClick = ::emit, onHoldChanged = ::setHeld, active = emptySet(), caps = caps, shift = shift) }
+            } else {
+                KeyRow(qRow, 50.dp, onClick = ::emit, onHoldChanged = ::setHeld, active = emptySet(), caps = caps, shift = shift)
+                KeyRow(aRow, 50.dp, onClick = ::emit, onHoldChanged = ::setHeld, active = emptySet(), caps = caps, shift = shift)
+                KeyRow(zRow, 50.dp, onClick = ::emit, onHoldChanged = ::setHeld, active = if (shift) setOf("Shift") else emptySet(), caps = caps, shift = shift)
+            }
+            KeyRow(
+                modifiers,
+                50.dp,
+                onClick = ::emit,
+                onHoldChanged = ::setHeld,
+                active = buildSet { if (ctrl) add("Ctrl"); if (alt) add("Alt") },
+                caps = caps,
+                shift = shift
+            )
         }
-        KeyRow(
-            modifiers,
-            50.dp,
-            onClick = ::emit,
-            active = buildSet { if (ctrl) add("Ctrl"); if (alt) add("Alt") },
-            caps = caps,
-            shift = shift
-        )
     }
 }
 
@@ -303,6 +397,7 @@ private fun KeyRow(
     keys: List<TerminalKey>,
     height: Dp,
     onClick: (TerminalKey) -> Unit,
+    onHoldChanged: (TerminalKey, Boolean) -> Unit,
     active: Set<String>,
     caps: Boolean = false,
     shift: Boolean = false
@@ -310,6 +405,10 @@ private fun KeyRow(
     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
         keys.forEach { key ->
             val highlighted = key.label in active || (key.kind == KeyKind.Shift && key.label in active)
+            var pressed by remember(key.kind, key.label) { mutableStateOf(false) }
+            val currentOnClick by rememberUpdatedState(onClick)
+            val currentOnHoldChanged by rememberUpdatedState(onHoldChanged)
+            val holdModifier = key.kind == KeyKind.Modifier || key.kind == KeyKind.Shift
             val isLetter = key.kind == KeyKind.Text && key.value.length == 1 && key.value[0].isLetter()
             val label = if (isLetter) {
                 if (caps xor shift) key.value.uppercase() else key.value.lowercase()
@@ -328,9 +427,37 @@ private fun KeyRow(
                 modifier = Modifier
                     .weight(key.weight)
                     .height(height)
-                    .clickable { onClick(key) },
+                    .pointerInput(key.kind, key.label) {
+                        awaitEachGesture {
+                            val down = awaitFirstDown(requireUnconsumed = false)
+                            pressed = true
+                            if (holdModifier) currentOnHoldChanged(key, true) else currentOnClick(key)
+                            try {
+                                var isPressed = true
+                                var nextBackspaceRepeat = SystemClock.uptimeMillis() + 450L
+                                while (isPressed) {
+                                    val event = if (key.kind == KeyKind.Backspace) {
+                                        val remaining = (nextBackspaceRepeat - SystemClock.uptimeMillis()).coerceAtLeast(1L)
+                                        withTimeoutOrNull(remaining) { awaitPointerEvent() }
+                                    } else {
+                                        awaitPointerEvent()
+                                    }
+                                    if (event == null && key.kind == KeyKind.Backspace) {
+                                        currentOnClick(key)
+                                        nextBackspaceRepeat = SystemClock.uptimeMillis() + 55L
+                                    } else if (event != null) {
+                                        isPressed = event.changes.firstOrNull { it.id == down.id }?.pressed == true
+                                    }
+                                }
+                            } finally {
+                                if (holdModifier) currentOnHoldChanged(key, false)
+                                pressed = false
+                            }
+                        }
+                    },
                 shape = MaterialTheme.shapes.small,
                 color = when {
+                    pressed -> Color(0xFF6A6A6A)
                     highlighted -> Color(0xFF525252)
                     utilityKey -> MaterialTheme.colorScheme.secondaryContainer
                     functionKey -> MaterialTheme.colorScheme.surface
@@ -343,6 +470,7 @@ private fun KeyRow(
                         fontSize = labelSize,
                         fontWeight = FontWeight.Medium,
                         color = when {
+                            pressed -> Color.White
                             highlighted -> MaterialTheme.colorScheme.onPrimaryContainer
                             utilityKey -> MaterialTheme.colorScheme.onSecondaryContainer
                             else -> MaterialTheme.colorScheme.onSurfaceVariant

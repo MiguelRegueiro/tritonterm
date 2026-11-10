@@ -14,7 +14,7 @@ SSH should be a first-class session type: use the remote machine’s own shell a
 
 ## Product shape
 
-- **Terminal feel:** dark, low-glare Kitty-inspired theme; monospace font controls; bundled JetBrainsMono Nerd Font option; ANSI 16/256 colors and true color; scrollback, selection/copy/paste, links, cursor styles, tabs/sessions, and configurable key bindings.
+- **Terminal feel:** dark, low-glare Kitty-inspired theme; bundled JetBrainsMono Nerd Font as the default; ANSI 16/256 colors and true color; scrollback, selection/copy/paste, links, cursor styles, tabs/sessions, and configurable key bindings.
 - **Touch keyboard:** adapt Triton Connect’s layout: Esc, Tab, Ctrl, Alt, Shift/Caps, arrows, Backspace, Enter, F1–F12, and a compact symbol layer. Omit Super for the initial Android layout. Make modifiers sticky/lockable. Let users reorder/hide rows and save keyboard layouts by language or profile; preserve hardware keyboard input.
 - **Kitty compatibility:** implement common xterm/VT behavior first, then Kitty keyboard protocol and Kitty graphics protocol as explicitly versioned features. Kitty graphics uses escape sequences plus image placements; Unicode placeholders are a mechanism for apps that cannot directly manage placement, not a substitute terminal renderer. Start with still images and placeholders after core terminal correctness; defer animation and advanced placement. Probe/report supported features accurately so apps can fall back.
 - **Personal defaults:** Fish as the suggested shell (not a hard dependency), Kitty-like Cherry Midnight palette based on the existing config, and user-selectable fonts/theme. Do not copy Kitty configuration wholesale; support a small documented TritonTerm config and import common colors/font settings later.
