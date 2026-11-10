@@ -1,6 +1,7 @@
-package com.tritonterm.android
+package com.tritonterm.android.config
 
 import android.content.Context
+import com.tritonterm.android.R
 import android.graphics.fonts.Font
 import android.graphics.fonts.FontFamily
 import android.graphics.Typeface
