@@ -25,7 +25,10 @@ import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.systemBarsPadding
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -42,6 +45,8 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -50,6 +55,7 @@ import com.termux.terminal.TerminalSession
 import com.termux.terminal.TerminalSessionClient
 import com.termux.view.TerminalView
 import com.termux.view.TerminalViewClient
+import java.io.File
 import java.nio.charset.StandardCharsets
 import kotlinx.coroutines.withTimeoutOrNull
 
@@ -81,8 +87,14 @@ class MainActivity : ComponentActivity() {
 private fun TritonTermScreen() {
     val context = LocalContext.current
     val sessionClient = remember { TritonSessionClient() }
-    var terminalFontSize by remember { mutableIntStateOf(28) }
+    val configFile = remember(context) { TerminalConfig.file(context.filesDir) }
+    val initialConfig = remember(configFile) { TerminalConfig.loadOrCreate(configFile) }
+    var terminalFontSize by remember { mutableIntStateOf(initialConfig.fontSize) }
+    var terminalFontFamily by remember { mutableStateOf(initialConfig.fontFamily) }
     var appliedFontSize by remember { mutableIntStateOf(terminalFontSize) }
+    var appliedFontFamily by remember { mutableStateOf(terminalFontFamily) }
+    var showConfig by remember { mutableStateOf(false) }
+    var configText by remember { mutableStateOf("") }
     var useSystemKeyboard by remember { mutableStateOf(false) }
     val terminalViewHolder = remember { arrayOfNulls<TerminalView>(1) }
     val zoomTerminal = { increase: Boolean ->
@@ -106,6 +118,7 @@ private fun TritonTermScreen() {
         val env = arrayOf(
             "HOME=$home",
             "TMPDIR=${context.cacheDir.absolutePath}",
+            "XDG_CONFIG_HOME=${File(context.filesDir, ".config").absolutePath}",
             "PATH=/system/bin:/system/xbin",
             "TERM=xterm-256color",
             "LANG=C.UTF-8"
@@ -139,6 +152,17 @@ private fun TritonTermScreen() {
                 Text("tritonterm", fontSize = 13.sp, fontWeight = FontWeight.SemiBold, color = Color(0xFF8992B2))
                 Spacer(Modifier.weight(1f))
                 Text(
+                    "Config",
+                    modifier = Modifier
+                        .clickable {
+                            configText = configFile.readText()
+                            showConfig = true
+                        }
+                        .padding(horizontal = 10.dp, vertical = 8.dp),
+                    fontSize = 12.sp,
+                    color = Color(0xFFD5D5D5)
+                )
+                Text(
                     if (useSystemKeyboard) "Keys" else "IME",
                     modifier = Modifier
                         .clickable(onClick = toggleKeyboard)
@@ -157,7 +181,7 @@ private fun TritonTermScreen() {
                 factory = { viewContext ->
                     TerminalView(viewContext, null).apply {
                         setTextSize(terminalFontSize)
-                        setTypeface(context.resources.getFont(R.font.jetbrains_mono_nerd_font_regular))
+                        setTypeface(TerminalConfig(terminalFontFamily, terminalFontSize).typeface(context))
                         setTerminalViewClient(TerminalCallbacks(session, zoomTerminal))
                         sessionClient.terminalView = this
                         attachSession(session)
@@ -172,6 +196,10 @@ private fun TritonTermScreen() {
                     if (appliedFontSize != terminalFontSize) {
                         it.setTextSize(terminalFontSize)
                         appliedFontSize = terminalFontSize
+                    }
+                    if (appliedFontFamily != terminalFontFamily) {
+                        it.setTypeface(TerminalConfig(terminalFontFamily, terminalFontSize).typeface(context))
+                        appliedFontFamily = terminalFontFamily
                     }
                 }
             )
@@ -188,7 +216,63 @@ private fun TritonTermScreen() {
                 }
             )
         }
+        if (showConfig) {
+            TerminalConfigDialog(
+                text = configText,
+                onTextChanged = { configText = it },
+                onDismiss = { showConfig = false },
+                onSave = { editedText ->
+                    val result = TerminalConfig.parse(editedText)
+                    val parsed = result.config
+                    if (parsed == null) {
+                        result.error ?: "The config could not be parsed."
+                    } else {
+                        configFile.writeText(editedText)
+                        terminalFontSize = parsed.fontSize
+                        terminalFontFamily = parsed.fontFamily
+                        showConfig = false
+                        null
+                    }
+                }
+            )
+        }
     }
+}
+
+@Composable
+private fun TerminalConfigDialog(
+    text: String,
+    onTextChanged: (String) -> Unit,
+    onDismiss: () -> Unit,
+    onSave: (String) -> String?
+) {
+    var error by remember { mutableStateOf<String?>(null) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("tritonterm.conf") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(
+                    "Supported options: font_family and font_size.",
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    fontSize = 13.sp
+                )
+                OutlinedTextField(
+                    value = text,
+                    onValueChange = onTextChanged,
+                    modifier = Modifier.fillMaxWidth().height(300.dp),
+                    textStyle = TextStyle(fontFamily = FontFamily.Monospace, fontSize = 13.sp)
+                )
+                error?.let { Text(it, color = MaterialTheme.colorScheme.error, fontSize = 12.sp) }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = { error = onSave(text) }) { Text("Save & apply") }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("Cancel") }
+        }
+    )
 }
 
 private class TritonSessionClient : TerminalSessionClient {

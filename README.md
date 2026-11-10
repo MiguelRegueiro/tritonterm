@@ -37,6 +37,10 @@ With Android SDK platform 36 installed, run:
 
 The script downloads Gradle locally if needed and copies the debug APK to `dist/tritonterm-debug.apk`. The current base starts Android's `/system/bin/sh`; the TritonTerm `pkg` environment and Fish bootstrap are later work.
 
+## Configuration
+
+TritonTerm currently supports a small config at `~/.config/tritonterm/tritonterm.conf` (inside the app's private home). The **Config** button opens an editor for it. The default is bundled Noto Sans Mono with Hack Nerd Font glyph fallback. Supported settings are `font_family` (`Noto Sans Mono`, `Hack Nerd Font Mono`, or `JetBrainsMono Nerd Font`) and `font_size` (12–40); other settings are not recognized yet.
+
 ## Key constraints
 
 - Android local shell packages are Android-targeted binaries, not packages from Arch, Fedora, Debian, or FreeBSD. Termux documents that its programs use Android’s Bionic environment and a private prefix; package reuse therefore needs deliberate prefix and app-identity work.
