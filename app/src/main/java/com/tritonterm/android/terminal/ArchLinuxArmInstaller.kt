@@ -77,6 +77,7 @@ internal object ArchLinuxArmInstaller {
             TerminalDiagnostics.record(app, "rootfs_validation", "completed", mapOf("rootfs" to ArchLinuxArmBootstrap.rootfs(app).absolutePath))
             PacmanConfigCompatibility.migrate(app)
             initializePacmanKeys(app)
+            prepareDevelopmentUserland(app)
             mutableState.value = ArchInstallState(
                 stage = TerminalSetupStage.READY,
                 progress = TerminalSetupProgress(TerminalSetupStage.READY),
@@ -91,6 +92,7 @@ internal object ArchLinuxArmInstaller {
         if (!inFlight.compareAndSet(false, true)) return false
         val appContext = context.applicationContext
         mutableState.value = mutableState.value.copy(running = true, error = null)
+        if (phase == "setup") TerminalForegroundService.startSetup(appContext)
         scope.launch {
             try {
                 work(appContext)
@@ -101,6 +103,7 @@ internal object ArchLinuxArmInstaller {
             } finally {
                 inFlight.set(false)
                 mutableState.value = mutableState.value.copy(running = false)
+                if (phase == "setup") TerminalForegroundService.stop(appContext)
             }
         }
         return true
@@ -280,4 +283,97 @@ internal object ArchLinuxArmInstaller {
         check(mark.exitCode == 0 && !mark.timedOut) { "Could not persist pacman-key initialization state. See Logs." }
         TerminalDiagnostics.record(context, "pacman_keyring", "completed")
     }
+
+    /** Remove only the generic image's kernel, firmware bundles, and initramfs generator via pacman. */
+    private fun prepareDevelopmentUserland(context: Context) {
+        val query = runProcess(
+            context,
+            "userland_package_inventory",
+            "pacman -Qq",
+            args = listOf(
+                "login", ArchLinuxArmBootstrap.DISTRO_ALIAS, "--user", "root",
+                "/bin/sh", "-lc", "pacman -Qq"
+            )
+        )
+        check(query.exitCode == 0 && !query.timedOut) {
+            "Could not inspect the installed pacman package database (exit ${query.exitCode}). See Logs."
+        }
+        val installed = query.output.lineSequence().map(String::trim).filter(String::isNotEmpty).toSet()
+        val removalTargets = ArchUserlandProfile.removalCandidates(installed)
+        TerminalDiagnostics.record(
+            context,
+            "userland_package_inventory",
+            "captured",
+            mapOf("package_count" to installed.size, "packages" to installed.sorted())
+        )
+        TerminalDiagnostics.record(
+            context,
+            "userland_profile",
+            "removal_plan",
+            mapOf("installed_package_count" to installed.size, "packages" to removalTargets)
+        )
+        if (removalTargets.isNotEmpty()) {
+            val remove = runProcess(
+                context,
+                "userland_package_removal",
+                "pacman -Rns ${removalTargets.joinToString(" ")}",
+                args = listOf(
+                    "login", ArchLinuxArmBootstrap.DISTRO_ALIAS, "--user", "root",
+                    "/bin/sh", "-lc",
+                    "pacman -Rns --noconfirm -- ${removalTargets.joinToString(" ")}"
+                )
+            )
+            check(remove.exitCode == 0 && !remove.timedOut) {
+                "Could not remove the generic image's kernel/firmware packages safely (exit ${remove.exitCode}). Pacman left dependency checks enabled. See Logs."
+            }
+        }
+
+        val after = runProcess(
+            context,
+            "userland_package_validation",
+            "validate package inventory and pacman database",
+            args = listOf(
+                "login", ArchLinuxArmBootstrap.DISTRO_ALIAS, "--user", "root",
+                "/bin/sh", "-lc", "pacman -Qq && pacman -Dk"
+            )
+        )
+        check(after.exitCode == 0 && !after.timedOut) {
+            "Pacman's local database is inconsistent after userland preparation (exit ${after.exitCode}). See Logs."
+        }
+        val remaining = ArchUserlandProfile.removalCandidates(
+            after.output.lineSequence().map(String::trim).filter(String::isNotEmpty).toSet()
+        )
+        check(remaining.isEmpty()) {
+            "Boot-only packages remain after preparation: ${remaining.joinToString()}. See Logs."
+        }
+        val mark = runProcess(
+            context,
+            "userland_profile_marker",
+            "write validated userland profile marker",
+            args = listOf(
+                "login", ArchLinuxArmBootstrap.DISTRO_ALIAS, "--user", "root",
+                "/bin/sh", "-lc", "touch /root/.tritonterm-userland-profile-v1"
+            )
+        )
+        check(mark.exitCode == 0 && !mark.timedOut) { "Could not mark the validated Arch userland profile. See Logs." }
+        TerminalDiagnostics.record(
+            context,
+            "userland_profile",
+            "validated",
+            mapOf("removed_packages" to removalTargets, "database_check" to "pacman -Dk")
+        )
+    }
+}
+
+/** Package names are discovered from pacman; unrelated linux-* libraries and tools are retained. */
+internal object ArchUserlandProfile {
+    fun removalCandidates(installedPackages: Set<String>): List<String> = installedPackages
+        .filter { packageName ->
+            packageName == "linux-aarch64" ||
+                packageName == "linux-firmware" ||
+                (packageName.startsWith("linux-firmware-") && packageName != "linux-firmware-tools") ||
+                packageName == "mkinitcpio" ||
+                packageName == "mkinitcpio-busybox"
+        }
+        .sorted()
 }

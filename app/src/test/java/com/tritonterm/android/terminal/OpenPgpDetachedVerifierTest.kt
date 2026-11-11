@@ -59,7 +59,7 @@ class OpenPgpDetachedVerifierTest {
     fun rootfsCacheNameMatchesPrCliLowercaseSha256Convention() {
         assertTrue(
             ArchLinuxArmBootstrap.archiveName() ==
-                "04786b808f80c4f6-ArchLinuxARM-aarch64-latest.tar.gz"
+                "97e8deb63cf6b598-ArchLinuxARM-aarch64-latest.tar.gz"
         )
     }
 

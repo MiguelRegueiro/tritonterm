@@ -25,7 +25,7 @@ import kotlin.coroutines.coroutineContext
 /** Downloads and authenticates the Arch Linux ARM rootfs before pr-cli is allowed to extract it. */
 internal object ArchLinuxArmBootstrap {
     const val ROOTFS_URL =
-        "https://ca.us.mirror.archlinuxarm.org/os/ArchLinuxARM-aarch64-latest.tar.gz"
+        "http://os.archlinuxarm.org/os/ArchLinuxARM-aarch64-latest.tar.gz"
     const val DISTRO_ALIAS = "archlinuxarm"
 
     private const val SIGNING_FINGERPRINT = "68B3537F39A313B3E574D06777193F152BDBE6A6"
@@ -36,7 +36,9 @@ internal object ArchLinuxArmBootstrap {
     fun isInstalled(context: Context): Boolean {
         val root = rootfs(context)
         val marker = File(root.parentFile, ".${DISTRO_ALIAS}.pr-cli-installing")
-        return File(root, "etc/os-release").isFile && !marker.exists()
+        return File(root, "etc/os-release").isFile &&
+            File(root, "root/.tritonterm-userland-profile-v1").isFile &&
+            !marker.exists()
     }
 
     fun rootfs(context: Context) =

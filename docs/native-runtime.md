@@ -34,7 +34,7 @@ There are 11 native libraries in the universal debug APK: three TritonTerm PRoot
 
 ## Arch Linux ARM rootfs trust
 
-- Archive: `https://ca.us.mirror.archlinuxarm.org/os/ArchLinuxARM-aarch64-latest.tar.gz`
+- Archive: `http://os.archlinuxarm.org/os/ArchLinuxARM-aarch64-latest.tar.gz` (the official generic AArch64 install page's download host)
 - Detached signature: the same URL with `.sig` appended
 - Trusted key fingerprint: `68B3537F39A313B3E574D06777193F152BDBE6A6` (Arch Linux ARM Build System)
 - Signing-certificate source: `third_party/archlinuxarm-keyring/packager/builder.asc`, from [`archlinuxarm-keyring`](../third_party/archlinuxarm-keyring) commit `91e6b11698f8df66042d56aaa56fbe9c9263847d`; the build script copies this official certificate into `app/src/main/assets/archlinuxarm-builder.asc`.
