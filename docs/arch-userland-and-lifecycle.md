@@ -8,6 +8,8 @@ The generic image therefore arrives with hardware boot components. Package names
 
 The profile runs only during explicit first install. It does not run `pacman -Syu` or refresh and upgrade the full system in the background. After an interactive shell is ready, package management remains standard Arch Linux ARM pacman with package signature verification enabled. The terminal uses the mirror list shipped by Arch Linux ARM; it does not add an unofficial mirror. Package 404s or a stale database are surfaced as pacman errors and the user can refresh/retry using normal pacman operations after checking repository status.
 
+The rootfs download uses an HTTPS Arch Linux ARM mirror because the generic image's documented `os.archlinuxarm.org` link uses HTTP, which Android blocks by default. The detached signature and pinned build-system fingerprint remain mandatory; TritonTerm does not enable cleartext traffic.
+
 `/root/.tritonterm-userland-profile-v1` is written only after pacman removal succeeds, the installed package inventory has no targeted boot packages, and `pacman -Dk` succeeds. Rootfs readiness requires that marker. An older rootfs without the validated marker is preserved and reported as incomplete; for this pre-release project, uninstalling/clearing app data and reinstalling is the supported clean reset. No migration runs an unreviewed removal on an existing user environment.
 
 `pacman.conf` retains the existing Android/PRoot compatibility migration: `DownloadUser` is disabled and `DisableSandboxFilesystem` is enabled, while signature settings and repositories are left intact. Package signatures are not bypassed.
