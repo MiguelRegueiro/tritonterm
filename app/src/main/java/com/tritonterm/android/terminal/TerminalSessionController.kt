@@ -1,6 +1,8 @@
 package com.tritonterm.android.terminal
 
 import android.content.Context
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.os.Build
 import android.system.Os
 import android.view.KeyEvent
@@ -285,8 +287,52 @@ internal class TritonSessionClient(private val context: Context) : TerminalSessi
             setupFailureObserver = null
         }
     }
-    override fun onCopyTextToClipboard(session: TerminalSession, text: String) = Unit
-    override fun onPasteTextFromClipboard(session: TerminalSession?) = Unit
+    override fun onCopyTextToClipboard(session: TerminalSession, text: String) = copyText(text)
+    override fun onPasteTextFromClipboard(session: TerminalSession?) {
+        pasteFromClipboard(session)
+    }
+
+    fun copySelection(): Boolean {
+        val view = terminalView ?: return false
+        if (!view.isSelectingText) return false
+        val selected = runCatching {
+            val controllerField = view.javaClass.getDeclaredField("mTextSelectionCursorController").apply {
+                isAccessible = true
+            }
+            val selectionController = controllerField.get(view) ?: return false
+            fun coordinate(name: String) = selectionController.javaClass.getDeclaredField(name).let { field ->
+                field.isAccessible = true
+                field.getInt(selectionController)
+            }
+            view.mEmulator?.getSelectedText(
+                coordinate("mSelX1"), coordinate("mSelY1"), coordinate("mSelX2"), coordinate("mSelY2")
+            )?.trim()
+        }.getOrNull()?.takeIf(String::isNotEmpty) ?: return false
+        copyText(selected)
+        return true
+    }
+
+    fun copyAllText(session: TerminalSession?): Boolean {
+        val text = TerminalClipboardSupport.allTerminalText(session?.emulator?.screen?.transcriptText) ?: return false
+        copyText(text)
+        return true
+    }
+
+    fun pasteFromClipboard(session: TerminalSession?): Boolean {
+        val manager = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+        val item = manager.primaryClip?.takeIf { it.itemCount > 0 }?.getItemAt(0)
+        val text = TerminalClipboardSupport.clipboardText(item?.coerceToText(context)) ?: return false
+        val emulator = session?.emulator ?: return false
+        // TerminalEmulator.paste preserves UTF-8 text and wraps it in bracketed-paste
+        // delimiters when the guest has enabled DECSET 2004.
+        emulator.paste(text)
+        return true
+    }
+
+    private fun copyText(text: String) {
+        val manager = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+        manager.setPrimaryClip(ClipData.newPlainText("TritonTerm terminal", text))
+    }
     override fun onBell(session: TerminalSession) = Unit
     override fun onColorsChanged(session: TerminalSession) {
         terminalView?.onScreenUpdated()

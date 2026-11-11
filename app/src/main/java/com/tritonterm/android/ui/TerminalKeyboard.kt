@@ -27,6 +27,8 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.text.font.FontWeight
+import com.tritonterm.android.terminal.TerminalClipboardAction
+import com.tritonterm.android.terminal.TerminalClipboardSupport
 import kotlinx.coroutines.withTimeoutOrNull
 
 private enum class KeyKind { Text, Escape, Tab, Enter, Backspace, Arrow, Modifier, Caps, Shift, Layer }
@@ -42,6 +44,8 @@ internal fun TerminalKeyboard(
     modifier: Modifier = Modifier,
     onInput: (String) -> Unit,
     onZoom: (Boolean) -> Unit,
+    onCopy: () -> Unit,
+    onPaste: () -> Unit,
     compact: Boolean
 ) {
     var layer by remember { mutableStateOf(false) }
@@ -121,6 +125,13 @@ internal fun TerminalKeyboard(
                 } else if (key.kind == KeyKind.Text && shift) {
                     shiftedSymbol(text)
                 } else text
+                if (ctrl && shift && key.kind == KeyKind.Text && adjusted.length == 1) {
+                    when (TerminalClipboardSupport.shortcut(adjusted[0], control = true, shift = true)) {
+                        TerminalClipboardAction.COPY -> { onCopy(); return }
+                        TerminalClipboardAction.PASTE -> { onPaste(); return }
+                        null -> Unit
+                    }
+                }
                 val sequence = if (ctrl && adjusted.length == 1 && adjusted[0].code < 128) {
                     (adjusted[0].uppercaseChar().code and 0x1f).toChar().toString()
                 } else adjusted

@@ -4,7 +4,10 @@ import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.net.Uri
+import android.view.KeyEvent
+import android.view.Menu
 import android.view.inputmethod.InputMethodManager
+import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
@@ -65,6 +68,8 @@ import com.tritonterm.android.terminal.TerminalSetupProgress
 import com.tritonterm.android.terminal.TerminalSetupProgressFile
 import com.tritonterm.android.terminal.TerminalSetupStage
 import com.tritonterm.android.terminal.TerminalCallbacks
+import com.tritonterm.android.terminal.TerminalClipboardAction
+import com.tritonterm.android.terminal.TerminalClipboardSupport
 import com.termux.terminal.TerminalSession
 import com.termux.view.TerminalView
 import kotlinx.coroutines.Dispatchers
@@ -286,6 +291,41 @@ internal fun TerminalScreen() {
                         setTextSize(terminalFontSize)
                         setTypeface(TerminalConfig(terminalFontFamily, terminalFontSize).typeface(context))
                         setTerminalViewClient(TerminalCallbacks(currentSession, zoomTerminal))
+                        setOnKeyListener { _, keyCode, event ->
+                            if (event.action != KeyEvent.ACTION_DOWN || event.repeatCount != 0) {
+                                false
+                            } else {
+                                val character = when (keyCode) {
+                                    KeyEvent.KEYCODE_C -> 'c'
+                                    KeyEvent.KEYCODE_V -> 'v'
+                                    else -> null
+                                }
+                                val action = character?.let {
+                                    TerminalClipboardSupport.shortcut(it, event.isCtrlPressed, event.isShiftPressed)
+                                }
+                                when (action) {
+                                    TerminalClipboardAction.COPY -> {
+                                        sessionClient.copySelection()
+                                        true
+                                    }
+                                    TerminalClipboardAction.PASTE -> {
+                                        sessionClient.pasteFromClipboard(currentSession)
+                                        true
+                                    }
+                                    null -> false
+                                }
+                            }
+                        }
+                        setOnCreateContextMenuListener { menu, _, _ ->
+                            menu.add(Menu.NONE, Menu.FIRST, Menu.NONE, "Select All")
+                                .setOnMenuItemClickListener {
+                                    stopTextSelectionMode()
+                                    val copied = sessionClient.copyAllText(currentSession)
+                                    if (!copied) Toast.makeText(context, "No terminal text to copy", Toast.LENGTH_SHORT).show()
+                                    else Toast.makeText(context, "All terminal text copied", Toast.LENGTH_SHORT).show()
+                                    true
+                                }
+                        }
                         sessionClient.terminalView = this
                         attachSession(currentSession)
                         terminalViewHolder[0] = this
@@ -407,6 +447,12 @@ internal fun TerminalScreen() {
                 .fillMaxWidth()
                 .padding(horizontal = 8.dp),
             onZoom = zoomTerminal,
+            onCopy = {
+                if (!sessionClient.copySelection()) {
+                    Toast.makeText(context, "Select terminal text first", Toast.LENGTH_SHORT).show()
+                }
+            },
+            onPaste = { sessionClient.pasteFromClipboard(session) },
             compact = useSystemKeyboard,
             onInput = { input ->
                 val bytes = input.toByteArray(StandardCharsets.UTF_8)
