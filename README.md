@@ -1,56 +1,49 @@
 # TritonTerm
 
-An Android-first terminal for people who want Kitty’s feel, Fish-friendly defaults, and a real keyboard on a touchscreen. It should work as a useful local shell and as a first-class SSH client for Triton Desktop, TritonBSD, Linux, and FreeBSD.
+An Android terminal with a Kitty-inspired renderer, a touch keyboard, and a private Arch Linux ARM environment on supported devices.
 
-## Recommendation
+## Current local environment
 
-Build the app **mostly in Kotlin**, with **Jetpack Compose** for UI. This is not a frontend/backend split like a website. The base uses Termux’s Kotlin `terminal-view` and `terminal-emulator` libraries, including their small native C/JNI PTY bridge for launching and resizing the local shell. C/C++ or Rust is not needed for a Kitty-like experience by itself; the protocols, renderer, keyboard handling, and compatibility work deliver that experience. A separate native terminal core is only worth considering if sharing code with TritonBSD/Linux becomes a real goal. The local shell and its packages are separate native executables, like in Termux.
+- On ARM64 devices (Android 9+), TritonTerm can download the official Arch Linux ARM generic AArch64 root filesystem after the user explicitly starts setup, then run it using the bundled Android-compatible PRoot runtime.
+- The compressed rootfs is downloaded at runtime; it is not part of the APK. The rootfs, installed packages, and `/root` live in TritonTerm's app-private storage. Android removes them when TritonTerm is uninstalled; APK updates preserve them. The verified archive is retained in this diagnostic build.
+- Use `pacman -Syu` to update Arch and `pacman -S fish starship git openssh` to install tools. TritonTerm does not install a separate package repository or depend on Termux.
+- First setup is explicit: test the harmless native installer launcher, then tap **Install Arch** once. Installation runs as a single noninteractive Android process; its stdout, stderr, exit status, and phase timings are available from **Logs**. Opening the app or Logs does not retry setup. On failure this diagnostic build preserves the verified archive and partial rootfs for investigation. After a successful extraction, it validates the rootfs, initializes pacman keys, and opens the interactive shell.
+- The initial rootfs download is about 800 MiB and needs additional temporary space while it extracts; allow several gigabytes of free storage for first setup.
+- The runtime uses PRoot, so it is not a VM, cannot provide a separate Linux kernel, and adds syscall/filesystem overhead. It executes ARM64 instructions directly.
+- The Logs dialog provides setup diagnostics and the three isolated Android runtime probes. See [`docs/device-runtime-diagnostics.md`](docs/device-runtime-diagnostics.md) for the phone procedure.
+- On unsupported CPU architectures the app currently falls back to Android's `/system/bin/sh`.
 
-Keep terminal rendering and input in a dedicated terminal-view module. TritonTerm currently imports Termux’s Apache-2.0 `terminal-emulator` and `terminal-view` libraries rather than writing a VT parser from scratch.
+The Arch rootfs is fetched over HTTPS and its detached OpenPGP signature is checked against the pinned Arch Linux ARM Build System fingerprint before extraction. TritonTerm then gives `pr-cli` the computed SHA-256 so the installer verifies the archive again. Packages installed or upgraded by `pacman` are verified using Arch Linux ARM's package-signing keys, initialized on first launch.
 
-Use a **Termux-style, unrooted local environment**, not a pretend Android installation of Arch or FreeBSD. Android apps are sandboxed, and local native programs must target Android’s ABI/runtime. The everyday UX should be exactly the familiar pattern: `pkg install fish`, `pkg install git`, and so on. `pkg` is the friendly command backed by APT and TritonTerm’s Android-compatible package repository. Termux’s package system is the proven model, but its packages are built for its own prefix/app path; do not assume its repository can be pointed at a differently named app unchanged. Fish, Git, SSH, and common CLI tools belong in this environment. Offer **proot-distro** as an optional later feature for Debian/Arch userlands; `pacman`/`paru`, `dnf`, and FreeBSD `pkg` are for that distro or a remote host, not the native Android environment.
+The bundled `pr-cli`, PRoot, and loader are built from the pinned source submodule. Their source revisions, build toolchain, reproduction script, license texts, and SHA-256 hashes are recorded in [`docs/native-runtime.md`](docs/native-runtime.md).
 
-SSH should be a first-class session type: use the remote machine’s own shell and package manager, with host-key verification, key-based auth, agent/key import support, and saved profiles. Triton Connect can inspire the controls and visual language, but TritonTerm is an independent terminal app rather than a remote-control mode.
+## Android app
 
-## Product shape
+The app is Kotlin/Compose, using Termux's Apache-2.0 terminal-view/emulator libraries for VT parsing, rendering, and PTY handling. The terminal backend is behind a small interface, so the app can evolve independently from the Linux userspace.
 
-- **Terminal feel:** dark, low-glare Kitty-inspired theme; bundled JetBrainsMono Nerd Font as the default; ANSI 16/256 colors and true color; scrollback, selection/copy/paste, links, cursor styles, tabs/sessions, and configurable key bindings.
-- **Touch keyboard:** adapt Triton Connect’s layout: Esc, Tab, Ctrl, Alt, Shift/Caps, arrows, Backspace, Enter, F1–F12, and a compact symbol layer. Omit Super for the initial Android layout. Make modifiers sticky/lockable. Let users reorder/hide rows and save keyboard layouts by language or profile; preserve hardware keyboard input.
-- **Kitty compatibility:** implement common xterm/VT behavior first, then Kitty keyboard protocol and Kitty graphics protocol as explicitly versioned features. Kitty graphics uses escape sequences plus image placements; Unicode placeholders are a mechanism for apps that cannot directly manage placement, not a substitute terminal renderer. Start with still images and placeholders after core terminal correctness; defer animation and advanced placement. Probe/report supported features accurately so apps can fall back.
-- **Personal defaults:** Fish as the suggested shell (not a hard dependency), Kitty-like Cherry Midnight palette based on the existing config, and user-selectable fonts/theme. Do not copy Kitty configuration wholesale; support a small documented TritonTerm config and import common colors/font settings later.
-- **Responsive use:** phone-first, with landscape, tablets, and external keyboards supported. Keep the terminal full-screen; show a subtle session bar and let the extra-key strip collapse when a hardware keyboard is active.
-
-## First milestones
-
-1. **Base app (started):** one local shell screen using Termux’s Apache-2.0 terminal-view/emulator libraries and the Triton Connect-inspired extra-key keyboard (Esc, Tab, Ctrl, Alt, Shift, arrows, F keys; no Super key).
-2. **Local MVP:** bootstrap, `pkg`/APT repository, Fish, font/theme settings, configurable keyboard layouts, session persistence, clipboard, and accessible touch targets.
-3. **SSH MVP:** encrypted profile/key storage, host-key prompts, reconnect, resize, and per-host keyboard/theme preferences.
-4. **Compatibility:** terminal feature test suite; Kitty keyboard protocol; Kitty graphics still images and Unicode placeholders; then performance, power, and release packaging.
+The touch keyboard includes Esc, Tab, Ctrl, Alt, Shift, arrows, Backspace, Enter, F1–F12, and a symbol layer. Super is omitted. Ctrl/Alt/Shift are usable as held modifiers. The Config button currently edits the supported `font_family` and `font_size` settings.
 
 ## Build
 
-With Android SDK platform 36 installed, run:
+With Android SDK platform 36 and Java 17 installed:
 
 ```sh
 ./scripts/build-apk.sh
 ```
 
-The script downloads Gradle locally if needed and copies the debug APK to `dist/tritonterm-debug.apk`. The current base starts Android's `/system/bin/sh`; the TritonTerm `pkg` environment and Fish bootstrap are later work.
+The script creates `dist/tritonterm-debug.apk`.
 
-## Configuration
+## Next terminal milestones
 
-TritonTerm currently supports a small config at `~/.config/tritonterm/tritonterm.conf` (inside the app's private home). The **Config** button opens an editor for it. The default is bundled Noto Sans Mono with Hack Nerd Font glyph fallback. Supported settings are `font_family` (`Noto Sans Mono`, `Hack Nerd Font Mono`, or `JetBrainsMono Nerd Font`) and `font_size` (12–40); other settings are not recognized yet.
-
-## Key constraints
-
-- Android local shell packages are Android-targeted binaries, not packages from Arch, Fedora, Debian, or FreeBSD. Termux documents that its programs use Android’s Bionic environment and a private prefix; package reuse therefore needs deliberate prefix and app-identity work.
-- `pacman`, `paru`, `dnf`, and FreeBSD `pkg` are available only in a compatible remote host or a Linux userland under proot. Proot is not a VM and does not turn Android into a normal Linux/FreeBSD kernel environment.
-- Kitty itself currently targets Linux/macOS (and documents various BSDs), not Android. TritonTerm should implement compatible terminal protocols rather than trying to package the Kitty desktop executable.
-- Kitty graphics support is a substantial renderer feature. Do not advertise it until image placement, scrolling, resize, deletion, limits, and Unicode placeholders behave correctly.
+- Improve setup UX with progress, cancellation, and recovery for interrupted downloads.
+- Add Fish/Starship defaults and a first-run package setup option.
+- Add persistent sessions, clipboard actions, SSH profiles, and keyboard layouts.
+- Implement and test Kitty keyboard and graphics protocol support before advertising compatibility.
 
 ## References
 
-- [Termux app and terminal libraries](https://github.com/termux/termux-app/wiki/Termux-Libraries) · [Termux package management](https://github.com/termux/termux-packages/wiki/Package-Management) · [Termux execution environment and prefix](https://github.com/termux/termux-packages/wiki/Termux-execution-environment)
-- [Termux PRoot-Distro](https://github.com/termux/proot-distro) · [Android NDK ABIs](https://developer.android.com/ndk/guides/abis)
-- [Kitty graphics protocol](https://sw.kovidgoyal.net/kitty/graphics-protocol/) · [Kitty platform/install support](https://sw.kovidgoyal.net/kitty/binary/)
+- [Android-compatible PRoot runtime](https://github.com/oonid/pr)
+- [Arch Linux ARM generic AArch64 installation](https://archlinuxarm.org/platforms/armv8/generic)
+- [Termux terminal libraries](https://github.com/termux/termux-app/wiki/Termux-Libraries)
+- [Kitty graphics protocol](https://sw.kovidgoyal.net/kitty/graphics-protocol/)
 - Local inspiration: [Triton Connect Android client](/home/regueiro/triton-connect/android-client/app/src/main/java/com/tritonconnect/android/MainActivity.kt) and [regueiro-hyprland Kitty/Fish setup](/home/regueiro/regueiro-hyprland/README.md).
