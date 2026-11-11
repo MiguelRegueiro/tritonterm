@@ -1,0 +1,6 @@
+[submodule "third_party/oonid-pr"]
+	path = third_party/oonid-pr
+	url = https://github.com/oonid/pr.git
+[submodule "third_party/archlinuxarm-keyring"]
+	path = third_party/archlinuxarm-keyring
+	url = https://github.com/archlinuxarm/archlinuxarm-keyring.git
