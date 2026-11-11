@@ -10,7 +10,7 @@ The profile runs only during explicit first install. It does not run `pacman -Sy
 
 The rootfs download uses an HTTPS Arch Linux ARM mirror because the generic image's documented `os.archlinuxarm.org` link uses HTTP, which Android blocks by default. The detached signature and pinned build-system fingerprint remain mandatory; TritonTerm does not enable cleartext traffic.
 
-`/root/.tritonterm-userland-profile-v1` is written only after pacman removal succeeds, the installed package inventory has no targeted boot packages, and `pacman -Dk` succeeds. Rootfs readiness requires that marker. An older rootfs without the validated marker is preserved and reported as incomplete; for this pre-release project, uninstalling/clearing app data and reinstalling is the supported clean reset. No migration runs an unreviewed removal on an existing user environment.
+`/root/.tritonterm-userland-profile-v1` is written only after pacman removal succeeds, the installed package inventory has no targeted boot packages, and `pacman -Dk` succeeds. Rootfs readiness requires that marker. If extraction completed but preparation did not, an explicit setup retry first refuses a pacman lock and requires `pacman -Dk` to pass before it resumes. An incomplete extraction or inconsistent package database is preserved and reported; for this pre-release project, clearing app data and reinstalling is the clean reset when safe recovery cannot be established.
 
 `pacman.conf` retains the existing Android/PRoot compatibility migration: `DownloadUser` is disabled and `DisableSandboxFilesystem` is enabled, while signature settings and repositories are left intact. Package signatures are not bypassed.
 

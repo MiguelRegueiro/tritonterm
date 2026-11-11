@@ -35,11 +35,17 @@ internal object ArchLinuxArmBootstrap {
 
     fun isInstalled(context: Context): Boolean {
         val root = rootfs(context)
-        val marker = File(root.parentFile, ".${DISTRO_ALIAS}.pr-cli-installing")
-        return File(root, "etc/os-release").isFile &&
-            File(root, "root/.tritonterm-userland-profile-v1").isFile &&
-            !marker.exists()
+        return ArchRootfsReadiness.isPrepared(root, installingMarker(context))
     }
+
+    /** A completed extraction can be resumed through pacman preparation after an app/process interruption. */
+    fun isRootfsExtracted(context: Context): Boolean {
+        val root = rootfs(context)
+        return ArchRootfsReadiness.isExtracted(root, installingMarker(context))
+    }
+
+    private fun installingMarker(context: Context) =
+        File(rootfs(context).parentFile, ".${DISTRO_ALIAS}.pr-cli-installing")
 
     fun rootfs(context: Context) =
         File(context.filesDir, "usr/var/lib/pr/installed-rootfs/$DISTRO_ALIAS")
@@ -59,6 +65,15 @@ internal object ArchLinuxArmBootstrap {
         }
         val existingRootfs = rootfs(context)
         if (existingRootfs.exists() || runCatching { Os.lstat(existingRootfs.absolutePath) }.isSuccess) {
+            if (isRootfsExtracted(context)) {
+                TerminalDiagnostics.record(
+                    context,
+                    "rootfs_check",
+                    "extraction_complete_preparation_resumable",
+                    mapOf("rootfs" to existingRootfs.absolutePath)
+                )
+                return
+            }
             TerminalDiagnostics.record(
                 context,
                 "rootfs_check",
@@ -307,6 +322,16 @@ internal object ArchLinuxArmBootstrap {
 
     private fun sha256(bytes: ByteArray) =
         MessageDigest.getInstance("SHA-256").digest(bytes).toHex()
+}
+
+internal object ArchRootfsReadiness {
+    private const val PROFILE_MARKER = "root/.tritonterm-userland-profile-v1"
+
+    fun isExtracted(root: File, installingMarker: File): Boolean =
+        File(root, "etc/os-release").isFile && !installingMarker.exists()
+
+    fun isPrepared(root: File, installingMarker: File): Boolean =
+        isExtracted(root, installingMarker) && File(root, PROFILE_MARKER).isFile
 }
 
 private data class DownloadProgress(val downloaded: Long, val total: Long?)

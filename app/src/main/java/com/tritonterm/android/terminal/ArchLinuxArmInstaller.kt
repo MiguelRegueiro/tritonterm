@@ -56,25 +56,34 @@ internal object ArchLinuxArmInstaller {
         }
         return runSingleFlight(appContext, "setup") { app ->
             TerminalDiagnostics.record(app, "setup", "started", mapOf("launch_mode" to "explicit_process"))
+            val resumingExtractedRootfs = ArchLinuxArmBootstrap.isRootfsExtracted(app)
             val progress: (TerminalSetupProgress) -> Unit = { value ->
                 mutableState.value = mutableState.value.copy(stage = value.stage, progress = value)
             }
             ArchLinuxArmBootstrap.prepare(app, progress)
             progress(TerminalSetupProgress(TerminalSetupStage.INSTALLING))
             TerminalSetupProgressFile.begin(app)
-            val install = runProcess(
-                app,
-                "installer_process",
-                "install",
-                args = listOf("install", ArchLinuxArmBootstrap.DISTRO_ALIAS)
-            )
-            check(install.exitCode == 0 && !install.timedOut) {
-                "Arch Linux ARM installation failed (exit ${install.exitCode}${if (install.timedOut) ", timed out" else ""}). The archive and partial rootfs were preserved. See Logs for output."
+            if (!ArchLinuxArmBootstrap.isRootfsExtracted(app)) {
+                val install = runProcess(
+                    app,
+                    "installer_process",
+                    "install",
+                    args = listOf("install", ArchLinuxArmBootstrap.DISTRO_ALIAS)
+                )
+                check(install.exitCode == 0 && !install.timedOut) {
+                    "Arch Linux ARM installation failed (exit ${install.exitCode}${if (install.timedOut) ", timed out" else ""}). The archive and partial rootfs were preserved. See Logs for output."
+                }
             }
-            check(ArchLinuxArmBootstrap.isInstalled(app)) {
+            check(ArchLinuxArmBootstrap.isRootfsExtracted(app)) {
                 "pr-cli exited successfully, but required rootfs validation failed. Existing data was preserved. See Logs."
             }
-            TerminalDiagnostics.record(app, "rootfs_validation", "completed", mapOf("rootfs" to ArchLinuxArmBootstrap.rootfs(app).absolutePath))
+            if (resumingExtractedRootfs) validateInterruptedRootfsBeforeResume(app)
+            TerminalDiagnostics.record(
+                app,
+                "rootfs_validation",
+                if (ArchLinuxArmBootstrap.isInstalled(app)) "already_prepared" else "extraction_complete",
+                mapOf("rootfs" to ArchLinuxArmBootstrap.rootfs(app).absolutePath)
+            )
             PacmanConfigCompatibility.migrate(app)
             initializePacmanKeys(app)
             prepareDevelopmentUserland(app)
@@ -282,6 +291,25 @@ internal object ArchLinuxArmInstaller {
         ))
         check(mark.exitCode == 0 && !mark.timedOut) { "Could not persist pacman-key initialization state. See Logs." }
         TerminalDiagnostics.record(context, "pacman_keyring", "completed")
+    }
+
+    private fun validateInterruptedRootfsBeforeResume(context: Context) {
+        check(!PacmanRecoveryState.hasDatabaseLock(context)) {
+            "The extracted rootfs has a pacman database lock. It was preserved. Verify no pacman process is running before removing that lock and retrying setup."
+        }
+        val result = runProcess(
+            context,
+            "interrupted_rootfs_database_check",
+            "pacman -Dk before resuming package preparation",
+            args = listOf(
+                "login", ArchLinuxArmBootstrap.DISTRO_ALIAS, "--user", "root",
+                "/bin/sh", "-lc", "pacman -Dk"
+            )
+        )
+        check(result.exitCode == 0 && !result.timedOut) {
+            "The extracted rootfs pacman database did not pass pacman -Dk, so package preparation was not resumed. See Logs; a clean install may be required."
+        }
+        TerminalDiagnostics.record(context, "interrupted_rootfs_database_check", "passed")
     }
 
     /** Remove only the generic image's kernel, firmware bundles, and initramfs generator via pacman. */
