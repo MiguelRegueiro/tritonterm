@@ -1,0 +1,495 @@
+diff --git a/src/pr-cli/src/commands_extra.rs b/src/pr-cli/src/commands_extra.rs
+index 0c4c837..3694a77 100644
+--- a/src/pr-cli/src/commands_extra.rs
++++ b/src/pr-cli/src/commands_extra.rs
+@@ -25,8 +25,22 @@ use crate::shared::{
+ /// needs write permission on the *parent*, so it succeeds even on 0000-perms
+ /// empty dirs.  For non-empty dirs we chmod 0700 first, then recurse.
+ pub(crate) fn force_remove_dir_all(path: &Path) {
++    force_remove_dir_all_with_progress(path, |_| {});
++}
++
++pub(crate) fn force_remove_dir_all_with_progress(path: &Path, mut on_removed: impl FnMut(u64)) {
++    let mut removed = 0u64;
++    force_remove_dir_all_inner(path, &mut || {
++        removed += 1;
++        on_removed(removed);
++    });
++}
++
++fn force_remove_dir_all_inner(path: &Path, on_removed: &mut impl FnMut()) {
+     if fs::symlink_metadata(path).is_ok_and(|meta| !meta.is_dir()) {
+-        let _ = fs::remove_file(path);
++        if fs::remove_file(path).is_ok() {
++            on_removed();
++        }
+         return;
+     }
+     // Fast path: try rmdir first.  For empty dirs (even 0000-perms) this works
+@@ -34,6 +48,7 @@ pub(crate) fn force_remove_dir_all(path: &Path) {
+     if let Ok(cstr) = CString::new(path.as_os_str().as_bytes()) {
+         let ret = unsafe { libc::rmdir(cstr.as_ptr()) };
+         if ret == 0 {
++            on_removed();
+             return;
+         }
+     }
+@@ -50,11 +65,11 @@ pub(crate) fn force_remove_dir_all(path: &Path) {
+         for entry in entries.flatten() {
+             let p = entry.path();
+             match fs::symlink_metadata(&p) {
+-                Ok(m) if m.is_dir() => force_remove_dir_all(&p),
++                Ok(m) if m.is_dir() => force_remove_dir_all_inner(&p, on_removed),
+                 _ => {
+                     if let Ok(cstr) = CString::new(p.as_os_str().as_bytes()) {
+-                        unsafe {
+-                            libc::unlink(cstr.as_ptr());
++                        if unsafe { libc::unlink(cstr.as_ptr()) } == 0 {
++                            on_removed();
+                         }
+                     }
+                 }
+@@ -64,8 +79,8 @@ pub(crate) fn force_remove_dir_all(path: &Path) {
+ 
+     // rmdir after children are cleared
+     if let Ok(cstr) = CString::new(path.as_os_str().as_bytes()) {
+-        unsafe {
+-            libc::rmdir(cstr.as_ptr());
++        if unsafe { libc::rmdir(cstr.as_ptr()) } == 0 {
++            on_removed();
+         }
+     }
+ }
+@@ -1105,6 +1120,22 @@ mod tests {
+         let _ = fs::remove_dir_all(tmp_dir);
+     }
+ 
++    #[test]
++    fn force_remove_dir_all_reports_each_removed_entry() {
++        let tmp_dir = unique_temp_dir("pr-cli-force-remove-progress");
++        let tree = tmp_dir.join("tree/sub");
++        fs::create_dir_all(&tree).expect("create tree");
++        fs::write(tmp_dir.join("tree/one"), b"1").expect("write first file");
++        fs::write(tree.join("two"), b"2").expect("write second file");
++        let mut reports = Vec::new();
++
++        force_remove_dir_all_with_progress(&tmp_dir.join("tree"), |removed| reports.push(removed));
++
++        assert_eq!(reports, vec![1, 2, 3, 4]);
++        assert!(!tmp_dir.join("tree").exists());
++        let _ = fs::remove_dir_all(tmp_dir);
++    }
++
+     #[test]
+     fn command_remove_and_reset_report_not_installed() {
+         let _guard = env_lock().lock().expect("lock env");
+diff --git a/src/pr-cli/src/install.rs b/src/pr-cli/src/install.rs
+index 3371bc8..103116b 100644
+--- a/src/pr-cli/src/install.rs
++++ b/src/pr-cli/src/install.rs
+@@ -10,7 +10,7 @@ use serde::Deserialize;
+ use sha2::{Digest, Sha256};
+ 
+ use crate::color::*;
+-use crate::commands_extra::force_remove_dir_all;
++use crate::commands_extra::{force_remove_dir_all, force_remove_dir_all_with_progress};
+ use crate::install_marker::{pending_install, InstallMarker, PendingInstall};
+ use crate::install_model::{write_oci_install_metadata, OciInstallMetadata};
+ use crate::oci::{
+@@ -25,9 +25,9 @@ use crate::shared::{
+     build_proot_args, build_proot_child_env, build_proot_runtime_env, get_download_cache_dir,
+     get_installed_rootfs_dir, get_native_proot, get_oci_container_dir,
+     get_oci_container_manifest_path, get_oci_container_rootfs_dir, get_oci_containers_dir,
+-    get_plugins_dir, is_valid_container_name, msg_error, msg_status, network_dns_servers,
+-    read_rootfs_file, resolv_conf_contents, resolve_installed_rootfs, write_rootfs_file,
+-    DEFAULT_FAKE_KERNEL_RELEASE, DEFAULT_FAKE_KERNEL_VERSION,
++    get_plugins_dir, get_prefix, is_valid_container_name, msg_error, msg_status,
++    network_dns_servers, read_rootfs_file, resolv_conf_contents, resolve_installed_rootfs,
++    write_rootfs_file, DEFAULT_FAKE_KERNEL_RELEASE, DEFAULT_FAKE_KERNEL_VERSION,
+ };
+ use crate::source_parse::{InstallSourceInput, InstallSourceInputKind};
+ 
+@@ -525,7 +525,14 @@ fn claim_container(
+             "Removing what an interrupted install or removal of '{}' left...",
+             name
+         ));
+-        force_remove_dir_all(dir);
++        let mut removed_entries = 0;
++        force_remove_dir_all_with_progress(dir, |removed| {
++            removed_entries = removed;
++            if removed == 1 || removed % 64 == 0 {
++                write_installer_progress("CLEANING", 0, 0, removed);
++            }
++        });
++        write_installer_progress("CLEANING", 0, 0, removed_entries);
+         if fs::symlink_metadata(dir).is_ok() {
+             return Err(format!(
+                 "could not remove what an interrupted install or removal of '{}' left",
+@@ -716,56 +723,102 @@ fn extract_tarball(
+ ) -> Result<(), String> {
+     let root = Path::new(dest);
+     fs::create_dir_all(root).map_err(|e| format!("create {}: {}", dest, e))?;
++    let archive_size = fs::metadata(archive_path)
++        .map_err(|e| format!("stat archive {}: {}", archive_path, e))?
++        .len();
++    write_installer_progress("INSTALLING", 0, archive_size, 0);
++    let bytes_read = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+     let file = fs::File::open(archive_path).map_err(|e| format!("open archive: {}", e))?;
+-    let decompressor = crate::oci::decompressed_reader(file)
+-        .map_err(|e| format!("read archive {}: {}", archive_path, e))?;
++    let decompressor =
++        crate::oci::decompressed_reader_counted(file, std::sync::Arc::clone(&bytes_read))
++            .map_err(|e| format!("read archive {}: {}", archive_path, e))?;
+     let mut archive = tar::Archive::new(decompressor);
+-
+-    for entry in archive
+-        .entries()
+-        .map_err(|e| format!("read tar entries: {}", e))?
+-    {
+-        let mut entry = entry.map_err(|e| format!("read tar entry: {}", e))?;
+-        let path = entry.path().map_err(|e| format!("get tar path: {}", e))?;
+-        let Some(relative) = strip_archive_path(&path, strip_components)? else {
+-            continue;
+-        };
+-        if exclude.iter().any(|exc| relative.starts_with(exc)) {
+-            continue;
++    let extracted_entries = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
++    let stop_progress = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
++    let progress_bytes = std::sync::Arc::clone(&bytes_read);
++    let progress_entries = std::sync::Arc::clone(&extracted_entries);
++    let progress_stop = std::sync::Arc::clone(&stop_progress);
++    let progress_thread = std::thread::spawn(move || {
++        while !progress_stop.load(std::sync::atomic::Ordering::Relaxed) {
++            write_extraction_progress(
++                progress_bytes.load(std::sync::atomic::Ordering::Relaxed),
++                archive_size,
++                progress_entries.load(std::sync::atomic::Ordering::Relaxed),
++            );
++            std::thread::sleep(std::time::Duration::from_millis(300));
+         }
++    });
+ 
+-        let entry_type = entry.header().entry_type();
+-        if entry_type.is_hard_link() {
+-            let target = entry
+-                .link_name()
+-                .map_err(|e| format!("read hardlink target: {}", e))?
+-                .ok_or_else(|| format!("hardlink {} has no target", relative.display()))?;
+-            let Some(target) = strip_archive_path(&target, strip_components)? else {
++    let extraction_result = (|| {
++        for entry in archive
++            .entries()
++            .map_err(|e| format!("read tar entries: {}", e))?
++        {
++            let mut entry = entry.map_err(|e| format!("read tar entry: {}", e))?;
++            let path = entry.path().map_err(|e| format!("get tar path: {}", e))?;
++            let Some(relative) = strip_archive_path(&path, strip_components)? else {
+                 continue;
+             };
+-            if exclude.iter().any(|exc| target.starts_with(exc)) {
++            if exclude.iter().any(|exc| relative.starts_with(exc)) {
+                 continue;
+             }
+-            if !link_inside_root(root, &relative, &target, true)? {
+-                return Err(format!(
+-                    "extract {}: hardlink target missing {}",
+-                    relative.display(),
+-                    target.display()
+-                ));
++
++            let entry_type = entry.header().entry_type();
++            if entry_type.is_hard_link() {
++                let target = entry
++                    .link_name()
++                    .map_err(|e| format!("read hardlink target: {}", e))?
++                    .ok_or_else(|| format!("hardlink {} has no target", relative.display()))?;
++                let Some(target) = strip_archive_path(&target, strip_components)? else {
++                    continue;
++                };
++                if exclude.iter().any(|exc| target.starts_with(exc)) {
++                    continue;
++                }
++                if !link_inside_root(root, &relative, &target, true)? {
++                    return Err(format!(
++                        "extract {}: hardlink target missing {}",
++                        relative.display(),
++                        target.display()
++                    ));
++                }
++                continue;
+             }
+-            continue;
+-        }
+ 
+-        unpack_entry(root, &relative, &mut entry)?;
+-    }
++            unpack_entry(root, &relative, &mut entry)?;
++            let entries = extracted_entries.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
++            if entries == 1 || entries % 64 == 0 {
++                write_extraction_progress(
++                    bytes_read.load(std::sync::atomic::Ordering::Relaxed),
++                    archive_size,
++                    entries,
++                );
++            }
++        }
++        Ok::<(), String>(())
++    })();
+ 
+-    // Post-extraction: ensure ELF binaries have their execute bit set.
+-    // This is a safety net in case fchmod silently failed for some entries.
+-    fix_elf_execute_bits(dest);
++    stop_progress.store(true, std::sync::atomic::Ordering::Relaxed);
++    let _ = progress_thread.join();
++    extraction_result?;
++    let extracted_entries = extracted_entries.load(std::sync::atomic::Ordering::Relaxed);
++    write_extraction_progress(archive_size, archive_size, extracted_entries);
+ 
+     Ok(())
+ }
+ 
++fn write_installer_progress(stage: &str, bytes_read: u64, archive_size: u64, entries: u64) {
++    let path = format!("{}/var/lib/pr/tritonterm-install-progress", get_prefix());
++    let _ = fs::write(
++        path,
++        format!("{}|{}/{}/{}\n", stage, bytes_read, archive_size, entries),
++    );
++}
++
++fn write_extraction_progress(bytes_read: u64, archive_size: u64, entries: u64) {
++    write_installer_progress("INSTALLING", bytes_read, archive_size, entries);
++}
++
+ pub(crate) fn unpack_entry<R: Read>(
+     root: &Path,
+     relative: &Path,
+@@ -820,51 +873,17 @@ pub(crate) fn unpack_entry<R: Read>(
+         // Use fchmod on the open fd for reliable permission setting on Android.
+         // Strip setuid/setgid (0o6000) bits; Android blocks those for non-root.
+         let safe_mode = (mode & 0o1777) as libc::mode_t;
+-        unsafe {
+-            libc::fchmod(out.as_raw_fd(), safe_mode);
++        if unsafe { libc::fchmod(out.as_raw_fd(), safe_mode) } != 0 {
++            return Err(format!(
++                "set permissions on {}: {}",
++                dest_path.display(),
++                std::io::Error::last_os_error()
++            ));
+         }
+     }
+     Ok(())
+ }
+ 
+-/// Walk `rootfs`, read the first 4 bytes of every regular file, and add the
+-/// user/group/other execute bit for any file whose magic is `\x7fELF`.
+-fn fix_elf_execute_bits(rootfs: &str) {
+-    let Ok(walker) = fs::read_dir(rootfs) else {
+-        return;
+-    };
+-    let mut stack: Vec<std::path::PathBuf> = walker.flatten().map(|e| e.path()).collect();
+-
+-    while let Some(path) = stack.pop() {
+-        let Ok(meta) = fs::symlink_metadata(&path) else {
+-            continue;
+-        };
+-        if meta.is_dir() {
+-            if let Ok(rd) = fs::read_dir(&path) {
+-                stack.extend(rd.flatten().map(|e| e.path()));
+-            }
+-        } else if meta.is_file() {
+-            let mode = meta.permissions().mode();
+-            if mode & 0o111 != 0 {
+-                continue; // already executable
+-            }
+-            // Peek at magic bytes
+-            let mut buf = [0u8; 4];
+-            if let Ok(mut f) = fs::File::open(&path) {
+-                use std::io::Read as _;
+-                if f.read_exact(&mut buf).is_ok() && &buf == b"\x7fELF" {
+-                    let new_mode = (mode | 0o111) as libc::mode_t;
+-                    if let Ok(cstr) = std::ffi::CString::new(path.to_string_lossy().as_bytes()) {
+-                        unsafe {
+-                            libc::chmod(cstr.as_ptr(), new_mode);
+-                        }
+-                    }
+-                }
+-            }
+-        }
+-    }
+-}
+-
+ fn archive_cache_path(cache_dir: &str, url: &str) -> String {
+     let name = url.rsplit('/').next().unwrap_or("rootfs.tar.xz");
+     let key = format!("{:x}", Sha256::digest(url.as_bytes()));
+@@ -982,10 +1001,28 @@ fn download_file(url: &str, output_path: &str, max_retries: u32) -> Result<(), S
+     )
+ }
+ 
++#[cfg(test)]
+ fn verify_sha256(expected: &str, filepath: &str) -> Result<(), String> {
++    verify_sha256_inner(expected, filepath, false)
++}
++
++fn verify_sha256_inner(
++    expected: &str,
++    filepath: &str,
++    report_progress: bool,
++) -> Result<(), String> {
+     let mut file = fs::File::open(filepath).map_err(|e| format!("open {}: {}", filepath, e))?;
++    let total = file
++        .metadata()
++        .map_err(|e| format!("stat {}: {}", filepath, e))?
++        .len();
+     let mut hasher = Sha256::new();
+     let mut buf = [0u8; 8192];
++    let mut read = 0u64;
++    let mut next_report = 8 * 1024 * 1024u64;
++    if report_progress {
++        write_installer_progress("VERIFYING", 0, total, 0);
++    }
+     loop {
+         let n = file
+             .read(&mut buf)
+@@ -994,6 +1031,14 @@ fn verify_sha256(expected: &str, filepath: &str) -> Result<(), String> {
+             break;
+         }
+         hasher.update(&buf[..n]);
++        read += n as u64;
++        if report_progress && read >= next_report {
++            write_installer_progress("VERIFYING", read, total, 0);
++            next_report = read + 8 * 1024 * 1024;
++        }
++    }
++    if report_progress {
++        write_installer_progress("VERIFYING", read, total, 0);
+     }
+     let hash = hasher.finalize();
+     let actual = format!("{:x}", hash);
+@@ -1572,7 +1617,7 @@ pub fn command_install(
+         // SHA256 verification
+         if !tarball_sha256.is_empty() {
+             msg_status("Checking integrity, please wait...");
+-            if let Err(e) = verify_sha256(&tarball_sha256, &archive_path) {
++            if let Err(e) = verify_sha256_inner(&tarball_sha256, &archive_path, true) {
+                 msg_error("Integrity checking failed. Try to redo installation again.");
+                 let _ = fs::remove_file(&archive_path);
+                 return Err(format!("sha256 verification failed: {}", e));
+@@ -1645,6 +1690,30 @@ mod tests {
+         std::env::temp_dir().join(format!("{}-{}-{}", prefix, std::process::id(), nanos))
+     }
+ 
++    #[test]
++    fn installer_progress_is_written_below_the_app_prefix() {
++        let _guard = env_lock().lock().expect("lock env");
++        let previous = std::env::var_os("APP_PREFIX");
++        let prefix = unique_temp_dir("pr-cli-extraction-progress");
++        let progress_dir = prefix.join("var/lib/pr");
++        fs::create_dir_all(&progress_dir).expect("create progress dir");
++        let path = progress_dir.join("tritonterm-install-progress");
++        std::env::set_var("APP_PREFIX", &prefix);
++
++        write_extraction_progress(123, 456, 7);
++
++        assert_eq!(
++            fs::read_to_string(&path).expect("read progress"),
++            "INSTALLING|123/456/7\n"
++        );
++        if let Some(previous) = previous {
++            std::env::set_var("APP_PREFIX", previous);
++        } else {
++            std::env::remove_var("APP_PREFIX");
++        }
++        let _ = fs::remove_dir_all(prefix);
++    }
++
+     enum RawEntry<'a> {
+         Dir(&'a str),
+         DirMode(&'a str, u32),
+@@ -2825,34 +2894,6 @@ mod tests {
+         let _ = fs::remove_dir_all(tmp_dir);
+     }
+ 
+-    #[test]
+-    fn fix_elf_execute_bits_sets_exec_for_elf_files_only() {
+-        let tmp_dir = unique_temp_dir("pr-cli-fix-elf");
+-        fs::create_dir_all(&tmp_dir).expect("create temp dir");
+-        let elf_path = tmp_dir.join("tool");
+-        let txt_path = tmp_dir.join("note.txt");
+-
+-        fs::write(&elf_path, b"\x7fELF\x02\x01\x01\x00dummy").expect("write elf");
+-        fs::write(&txt_path, b"plain text").expect("write txt");
+-        fs::set_permissions(&elf_path, fs::Permissions::from_mode(0o644)).expect("chmod elf");
+-        fs::set_permissions(&txt_path, fs::Permissions::from_mode(0o644)).expect("chmod txt");
+-
+-        fix_elf_execute_bits(tmp_dir.to_str().expect("tmp path"));
+-
+-        let elf_mode = fs::metadata(&elf_path)
+-            .expect("elf metadata")
+-            .permissions()
+-            .mode();
+-        let txt_mode = fs::metadata(&txt_path)
+-            .expect("txt metadata")
+-            .permissions()
+-            .mode();
+-        assert_ne!(elf_mode & 0o111, 0);
+-        assert_eq!(txt_mode & 0o111, 0);
+-
+-        let _ = fs::remove_dir_all(tmp_dir);
+-    }
+-
+     #[test]
+     fn cleanup_oci_on_failure_ignores_unsafe_paths() {
+         let _guard = env_lock().lock().expect("lock env");
+diff --git a/src/pr-cli/src/oci.rs b/src/pr-cli/src/oci.rs
+index ca4052d..34ef7b1 100644
+--- a/src/pr-cli/src/oci.rs
++++ b/src/pr-cli/src/oci.rs
+@@ -1,8 +1,10 @@
+ use sha2::Digest;
+ use std::collections::BTreeMap;
+ use std::fs;
+-use std::io::Read;
++use std::io::{BufRead, BufReader, Read};
+ use std::path::{Component, Path, PathBuf};
++use std::sync::atomic::{AtomicU64, Ordering};
++use std::sync::Arc;
+ 
+ pub const OCI_IMAGE_INDEX_MEDIA_TYPE: &str = "application/vnd.oci.image.index.v1+json";
+ pub const OCI_IMAGE_MANIFEST_MEDIA_TYPE: &str = "application/vnd.oci.image.manifest.v1+json";
+@@ -577,8 +579,34 @@ pub fn apply_layer_blob(blob_path: &Path, rootfs: &Path) -> Result<(), String> {
+ }
+ 
+ pub(crate) fn decompressed_reader(file: fs::File) -> Result<Box<dyn Read>, String> {
+-    use std::io::BufRead;
+-    let mut reader = std::io::BufReader::new(file);
++    decompressed_reader_from(Box::new(file))
++}
++
++pub(crate) fn decompressed_reader_counted(
++    file: fs::File,
++    bytes_read: Arc<AtomicU64>,
++) -> Result<Box<dyn Read>, String> {
++    decompressed_reader_from(Box::new(CountedReader {
++        inner: Box::new(file),
++        bytes_read,
++    }))
++}
++
++struct CountedReader {
++    inner: Box<dyn Read>,
++    bytes_read: Arc<AtomicU64>,
++}
++
++impl Read for CountedReader {
++    fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
++        let count = self.inner.read(buffer)?;
++        self.bytes_read.fetch_add(count as u64, Ordering::Relaxed);
++        Ok(count)
++    }
++}
++
++fn decompressed_reader_from(file: Box<dyn Read>) -> Result<Box<dyn Read>, String> {
++    let mut reader = BufReader::new(file);
+     let magic = reader.fill_buf().map_err(|e| e.to_string())?;
+     Ok(if magic.starts_with(&[0x1f, 0x8b]) {
+         Box::new(flate2::read::GzDecoder::new(reader))

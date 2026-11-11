@@ -1,0 +1,408 @@
+diff --git a/src/pr-cli/src/diagnostics.rs b/src/pr-cli/src/diagnostics.rs
+new file mode 100644
+index 0000000..7bfec08
+--- /dev/null
++++ b/src/pr-cli/src/diagnostics.rs
+@@ -0,0 +1,84 @@
++use serde_json::Value;
++use std::fs::OpenOptions;
++use std::io::Write;
++use std::sync::OnceLock;
++use std::time::{Instant, SystemTime, UNIX_EPOCH};
++
++static STARTED: OnceLock<Instant> = OnceLock::new();
++
++pub fn record(phase: &str, status: &str, details: Value) {
++    let Some(path) = std::env::var_os("TRITONTERM_DIAGNOSTICS_FILE") else {
++        return;
++    };
++    let event = serde_json::json!({
++        "time_unix_ms": SystemTime::now()
++            .duration_since(UNIX_EPOCH)
++            .map(|duration| duration.as_millis())
++            .unwrap_or_default(),
++        "process_elapsed_ms": STARTED.get_or_init(Instant::now).elapsed().as_millis(),
++        "source": "pr-cli",
++        "phase": phase,
++        "status": status,
++        "details": details,
++    });
++    let Ok(mut line) = serde_json::to_vec(&event) else {
++        return;
++    };
++    line.push(b'\n');
++
++    let result = OpenOptions::new()
++        .create(true)
++        .append(true)
++        .open(path)
++        .and_then(|mut file| {
++            file.write_all(&line)?;
++            file.sync_data()
++        });
++    if let Err(error) = result {
++        eprintln!("TritonTerm diagnostics write failed: {error}");
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    use std::path::PathBuf;
++
++    #[test]
++    fn record_appends_a_structured_event_to_the_requested_file() {
++        let _guard = crate::shared::global_test_env_lock()
++            .lock()
++            .expect("lock env");
++        let previous = std::env::var_os("TRITONTERM_DIAGNOSTICS_FILE");
++        let path: PathBuf = std::env::temp_dir().join(format!(
++            "pr-cli-diagnostics-{}-{}.jsonl",
++            std::process::id(),
++            SystemTime::now()
++                .duration_since(UNIX_EPOCH)
++                .expect("clock")
++                .as_nanos()
++        ));
++        std::env::set_var("TRITONTERM_DIAGNOSTICS_FILE", &path);
++
++        record(
++            "test_phase",
++            "completed",
++            serde_json::json!({ "answer": 42 }),
++        );
++
++        let event: Value =
++            serde_json::from_str(&std::fs::read_to_string(&path).expect("read event"))
++                .expect("decode event");
++        assert_eq!(event["source"], "pr-cli");
++        assert_eq!(event["phase"], "test_phase");
++        assert_eq!(event["status"], "completed");
++        assert_eq!(event["details"]["answer"], 42);
++
++        if let Some(previous) = previous {
++            std::env::set_var("TRITONTERM_DIAGNOSTICS_FILE", previous);
++        } else {
++            std::env::remove_var("TRITONTERM_DIAGNOSTICS_FILE");
++        }
++        let _ = std::fs::remove_file(path);
++    }
++}
+diff --git a/src/pr-cli/src/install.rs b/src/pr-cli/src/install.rs
+index 103116b..e4c7e48 100644
+--- a/src/pr-cli/src/install.rs
++++ b/src/pr-cli/src/install.rs
+@@ -521,6 +521,11 @@ fn claim_container(
+ ) -> Result<InstallMarker, String> {
+     let marker = InstallMarker::claim_reporting(parent, name)?;
+     if marker.took_over() {
++        crate::diagnostics::record(
++            "interrupted_install_cleanup",
++            "started",
++            serde_json::json!({ "path": dir.display().to_string() }),
++        );
+         msg_status(&format!(
+             "Removing what an interrupted install or removal of '{}' left...",
+             name
+@@ -534,11 +539,21 @@ fn claim_container(
+         });
+         write_installer_progress("CLEANING", 0, 0, removed_entries);
+         if fs::symlink_metadata(dir).is_ok() {
++            crate::diagnostics::record(
++                "interrupted_install_cleanup",
++                "failed",
++                serde_json::json!({ "path": dir.display().to_string(), "removed_entries": removed_entries }),
++            );
+             return Err(format!(
+                 "could not remove what an interrupted install or removal of '{}' left",
+                 dir.display()
+             ));
+         }
++        crate::diagnostics::record(
++            "interrupted_install_cleanup",
++            "completed",
++            serde_json::json!({ "path": dir.display().to_string(), "removed_entries": removed_entries }),
++        );
+     } else if installed() {
+         marker.finish()?;
+         return Err(format!("distribution '{}' is already installed", name));
+@@ -739,12 +754,23 @@ fn extract_tarball(
+     let progress_entries = std::sync::Arc::clone(&extracted_entries);
+     let progress_stop = std::sync::Arc::clone(&stop_progress);
+     let progress_thread = std::thread::spawn(move || {
++        let mut last_diagnostic = std::time::Instant::now();
+         while !progress_stop.load(std::sync::atomic::Ordering::Relaxed) {
+-            write_extraction_progress(
+-                progress_bytes.load(std::sync::atomic::Ordering::Relaxed),
+-                archive_size,
+-                progress_entries.load(std::sync::atomic::Ordering::Relaxed),
+-            );
++            let current_bytes = progress_bytes.load(std::sync::atomic::Ordering::Relaxed);
++            let current_entries = progress_entries.load(std::sync::atomic::Ordering::Relaxed);
++            write_extraction_progress(current_bytes, archive_size, current_entries);
++            if last_diagnostic.elapsed() >= std::time::Duration::from_secs(3) {
++                crate::diagnostics::record(
++                    "extraction_progress",
++                    "advancing",
++                    serde_json::json!({
++                        "archive_bytes_read": current_bytes,
++                        "archive_bytes_total": archive_size,
++                        "filesystem_entries": current_entries,
++                    }),
++                );
++                last_diagnostic = std::time::Instant::now();
++            }
+             std::thread::sleep(std::time::Duration::from_millis(300));
+         }
+     });
+@@ -803,6 +829,15 @@ fn extract_tarball(
+     extraction_result?;
+     let extracted_entries = extracted_entries.load(std::sync::atomic::Ordering::Relaxed);
+     write_extraction_progress(archive_size, archive_size, extracted_entries);
++    crate::diagnostics::record(
++        "extraction_progress",
++        "completed",
++        serde_json::json!({
++            "archive_bytes_read": archive_size,
++            "archive_bytes_total": archive_size,
++            "filesystem_entries": extracted_entries,
++        }),
++    );
+ 
+     Ok(())
+ }
+@@ -1425,6 +1460,11 @@ pub fn command_install(
+     override_tarball_url: Option<&str>,
+     override_tarball_sha256: Option<&str>,
+ ) -> Result<(), String> {
++    crate::diagnostics::record(
++        "installer",
++        "started",
++        serde_json::json!({ "distribution": distro_name }),
++    );
+     let requested_distro = distro_name.to_string();
+     let plugins_dir = get_plugins_dir();
+     let tarball_override = override_tarball_url.is_some();
+@@ -1546,6 +1586,18 @@ pub fn command_install(
+         .iter()
+         .find(|p| p.alias == distro_name)
+         .ok_or_else(|| format!("failed to parse plugin for '{}'", distro_name))?;
++    let selected_tarball = plugin.tarballs.get("aarch64");
++    crate::diagnostics::record(
++        "plugin_resolution",
++        "completed",
++        serde_json::json!({
++            "alias": plugin.alias,
++            "name": plugin.name,
++            "tarball_url": selected_tarball.map(|tarball| tarball.url.as_str()),
++            "has_sha256": selected_tarball.is_some_and(|tarball| !tarball.sha256.is_empty()),
++            "plugin_path": format!("{}/{}.sh", plugins_dir, distro_name),
++        }),
++    );
+ 
+     refuse_unfinished_install_in(&get_oci_containers_dir(), &distro_name)?;
+ 
+@@ -1599,11 +1651,35 @@ pub fn command_install(
+         // Download
+         fs::create_dir_all(&download_cache_dir).map_err(|e| format!("create cache dir: {}", e))?;
+         let archive_path = archive_cache_path(&download_cache_dir, &tarball_url);
++        crate::diagnostics::record(
++            "archive_cache_resolution",
++            "started",
++            serde_json::json!({ "path": archive_path, "url": tarball_url }),
++        );
+ 
+         if Path::new(&archive_path).exists() {
+             msg_status("Using cached rootfs archive...");
++            crate::diagnostics::record(
++                "archive_cache_resolution",
++                "hit",
++                serde_json::json!({
++                    "path": archive_path,
++                    "bytes": fs::metadata(&archive_path).map(|metadata| metadata.len()).ok(),
++                }),
++            );
+         } else {
+             msg_status("Downloading rootfs archive...");
++            crate::diagnostics::record(
++                "archive_cache_resolution",
++                "miss",
++                serde_json::json!({ "path": archive_path }),
++            );
++            if std::env::var_os("TRITONTERM_DIAGNOSTICS_FILE").is_some() {
++                return Err(
++                    "the signature-verified TritonTerm archive was not found at pr-cli's cache path; refusing an unverified fallback download"
++                        .to_string(),
++                );
++            }
+             msg_status(&format!("URL: {}", tarball_url));
+             println!();
+             if let Err(e) = download_file(&tarball_url, &archive_path, 3) {
+@@ -1628,14 +1704,39 @@ pub fn command_install(
+ 
+         // Extract
+         msg_status("Extracting rootfs, please wait...");
++        let extraction_started = std::time::Instant::now();
++        crate::diagnostics::record(
++            "extraction",
++            "started",
++            serde_json::json!({
++                "archive": archive_path,
++                "archive_bytes": fs::metadata(&archive_path).map(|metadata| metadata.len()).ok(),
++                "destination": rootfs,
++            }),
++        );
+ 
+         if let Err(e) = extract_tarball(&archive_path, &rootfs, 1, &["dev"]) {
+             msg_error(&format!("Extracting the rootfs failed: {}", e));
+-            if tarball_sha256.is_empty() {
++            crate::diagnostics::record(
++                "extraction",
++                "failed",
++                serde_json::json!({ "elapsed_ms": extraction_started.elapsed().as_millis(), "error": e }),
++            );
++            if tarball_sha256.is_empty()
++                && std::env::var_os("TRITONTERM_DIAGNOSTICS_FILE").is_none()
++            {
+                 let _ = fs::remove_file(&archive_path);
+             }
+             return Err(e);
+         }
++        crate::diagnostics::record(
++            "extraction",
++            "completed",
++            serde_json::json!({
++                "elapsed_ms": extraction_started.elapsed().as_millis(),
++                "progress_file": format!("{}/var/lib/pr/tritonterm-install-progress", get_prefix()),
++            }),
++        );
+ 
+         // Validate rootfs structure
+         if !Path::new(&format!("{}/etc", rootfs)).exists() {
+@@ -1644,8 +1745,43 @@ pub fn command_install(
+                 "rootfs of distribution '{}' has unexpected structure (no /etc directory).",
+                 distro_name
+             ));
++            crate::diagnostics::record(
++                "rootfs_validation",
++                "failed",
++                serde_json::json!({ "rootfs": rootfs, "missing": "etc" }),
++            );
+             return Err("no /etc in rootfs".to_string());
+         }
++        let required = ["etc/os-release", "etc/passwd", "bin/sh"];
++        let missing: Vec<&str> = required
++            .iter()
++            .copied()
++            .filter(|relative| !Path::new(&rootfs).join(relative).exists())
++            .collect();
++        if distro_name == "archlinuxarm" && !missing.is_empty() {
++            crate::diagnostics::record(
++                "rootfs_validation",
++                "failed",
++                serde_json::json!({ "rootfs": rootfs, "missing": missing }),
++            );
++            return Err(format!(
++                "rootfs is missing required paths: {}",
++                missing.join(", ")
++            ));
++        }
++        crate::diagnostics::record(
++            "rootfs_validation",
++            if missing.is_empty() {
++                "completed"
++            } else {
++                "basic_structure_valid"
++            },
++            serde_json::json!({
++                "rootfs": rootfs,
++                "checked_paths": required,
++                "missing_optional_for_other_distro": missing,
++            }),
++        );
+ 
+         // Write config files
+         write_config_files(&rootfs, Some(&requested_distro))
+diff --git a/src/pr-cli/src/lib.rs b/src/pr-cli/src/lib.rs
+index 8626cd6..a7e7d88 100644
+--- a/src/pr-cli/src/lib.rs
++++ b/src/pr-cli/src/lib.rs
+@@ -3,6 +3,7 @@ pub mod catalog;
+ pub mod cmd_test;
+ pub mod color;
+ pub mod commands_extra;
++pub mod diagnostics;
+ pub mod install;
+ pub mod install_marker;
+ pub mod install_model;
+diff --git a/src/pr-cli/src/login.rs b/src/pr-cli/src/login.rs
+index 7c90655..f811ae5 100644
+--- a/src/pr-cli/src/login.rs
++++ b/src/pr-cli/src/login.rs
+@@ -294,8 +294,22 @@ pub fn command_login(
+         login_process_env(std::env::vars(), runtime_env, child_env),
+     );
+ 
++    crate::diagnostics::record(
++        "proot_launch",
++        "exec_requested",
++        serde_json::json!({
++            "proot": proot,
++            "rootfs": rootfs,
++            "command": full_args.get(full_args.len().saturating_sub(2)..).unwrap_or(&full_args),
++        }),
++    );
+     let err = cmd.exec();
+ 
++    crate::diagnostics::record(
++        "proot_launch",
++        "exec_failed",
++        serde_json::json!({ "error": err.to_string() }),
++    );
+     Err(format!("exec proot failed: {}", err))
+ }
+ 
+diff --git a/src/pr-cli/src/main.rs b/src/pr-cli/src/main.rs
+index 09dacd6..164976b 100644
+--- a/src/pr-cli/src/main.rs
++++ b/src/pr-cli/src/main.rs
+@@ -368,3 +368,10 @@ fn main() {
++    pr_cli::diagnostics::record(
++        "process_start",
++        "entered_main",
++        serde_json::json!({
++            "diagnostics_env_set": std::env::var_os("TRITONTERM_DIAGNOSTICS_FILE").is_some(),
++        }),
++    );
+     let cli = Cli::parse();
+ 
+     match cli.command {
+@@ -376,15 +383,26 @@ fn main() {
+             override_tarball_url,
+             override_tarball_sha256,
+         } => {
+-            if let Err(e) = command_install(
++            let result = command_install(
+                 &distro,
+                 override_alias.as_deref(),
+                 override_tarball_url.as_deref(),
+                 override_tarball_sha256.as_deref(),
+-            ) {
++            );
++            if let Err(e) = result {
++                pr_cli::diagnostics::record(
++                    "installer_process",
++                    "failed",
++                    serde_json::json!({ "distribution": distro, "error": e }),
++                );
+                 eprintln!("Error: {}", e);
+                 std::process::exit(1);
+             }
++            pr_cli::diagnostics::record(
++                "installer_process",
++                "completed",
++                serde_json::json!({ "distribution": distro }),
++            );
+         }
+         Commands::Login {
+             distro,

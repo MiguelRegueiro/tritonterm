@@ -10,13 +10,27 @@ android {
 
     defaultConfig {
         applicationId = "com.tritonterm.android"
-        minSdk = 26
+        // Bundled Android PRoot runtime targets Android 9+.
+        minSdk = 28
         targetSdk = 35
         versionCode = 1
         versionName = "0.1.0"
     }
 
     buildFeatures { compose = true }
+    packaging {
+        dex {
+            // Keep installable APK downloads compact; minSdk 28 otherwise stores DEX uncompressed.
+            useLegacyPackaging = true
+        }
+        jniLibs {
+            // The runtime launches these ELF files by path; APK-backed direct loading is not enough.
+            useLegacyPackaging = true
+        }
+        resources {
+            excludes += "META-INF/versions/9/OSGI-INF/MANIFEST.MF"
+        }
+    }
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
@@ -31,5 +45,8 @@ dependencies {
     implementation("androidx.compose.ui:ui-tooling-preview")
     implementation("androidx.compose.material3:material3")
     implementation("com.termux.termux-app:terminal-view:0.118.0")
+    implementation("org.bouncycastle:bcpg-jdk18on:1.80.2")
+    implementation("org.bouncycastle:bcprov-jdk18on:1.80.2")
+    testImplementation("junit:junit:4.13.2")
     debugImplementation("androidx.compose.ui:ui-tooling")
 }

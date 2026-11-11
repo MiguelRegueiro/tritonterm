@@ -54,6 +54,8 @@ if [[ ! -f "$apk" ]]; then
     exit 1
 fi
 
+"$project_root/scripts/verify-packaged-native-libs.sh" "$apk"
+
 mkdir -p "$project_root/dist"
 cp "$apk" "$dist_apk"
 echo "APK ready to install: $dist_apk"

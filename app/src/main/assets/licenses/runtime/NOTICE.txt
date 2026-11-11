@@ -1,0 +1,24 @@
+TritonTerm bundles the following independent command-line programs from oonid/pr:
+
+- libpr-cli.so — GPL-3.0-or-later
+- libproot.so — GPL-3.0-or-later; it includes talloc, which is LGPL-3.0-or-later
+- libproot-loader.so — GPL-2.0-or-later
+
+Source project: https://github.com/oonid/pr
+Source revision: 7029b1fe8fa84d64339cabe38f9c5be2ea2ae7ac
+The exact source is included as the third_party/oonid-pr Git submodule in TritonTerm.
+Build steps and native binary SHA-256 hashes are in docs/native-runtime.md and
+docs/native-runtime.sha256. The Android/Kotlin code in TritonTerm is separate and
+is not covered by those runtime licenses.
+
+`libtermux.so` is from Termux's `terminal-emulator` library (Apache-2.0), and
+`libandroidx.graphics.path.so` is from AndroidX Graphics Path (Apache-2.0).
+The Apache-2.0 license text is included alongside this notice.
+
+The corresponding GPL-2.0-or-later, GPL-3.0-or-later, LGPL-3.0-or-later, and Apache-2.0
+license texts are included alongside this notice.
+
+The Arch Linux ARM root filesystem is fetched from an Arch Linux ARM mirror and its detached
+OpenPGP signature is checked against the pinned Arch Linux ARM Build System key before extraction.
+The keyring source is included as the third_party/archlinuxarm-keyring Git submodule.
+Native dependency source/artifact revisions and per-ABI binary hashes are in docs/native-runtime.md.

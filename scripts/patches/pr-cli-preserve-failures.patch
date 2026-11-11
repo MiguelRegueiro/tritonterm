@@ -1,0 +1,50 @@
+diff --git a/src/pr-cli/src/install.rs b/src/pr-cli/src/install.rs
+--- a/src/pr-cli/src/install.rs
++++ b/src/pr-cli/src/install.rs
+@@ -1394,4 +1394,17 @@ fn cleanup_on_failure(rootfs: &str, distro_name: &str) {
+ fn cleanup_on_failure(rootfs: &str, distro_name: &str) {
++    if std::env::var_os("TRITONTERM_PRESERVE_FAILED_ROOTFS").is_some() {
++        crate::diagnostics::record(
++            "failed_rootfs_preservation",
++            "preserved",
++            serde_json::json!({ "rootfs": rootfs, "distro": distro_name }),
++        );
++        return;
++    }
++    crate::diagnostics::record(
++        "installer_failure_cleanup",
++        "started",
++        serde_json::json!({ "rootfs": rootfs, "distro": distro_name }),
++    );
+     if fs::symlink_metadata(rootfs).is_ok() {
+         force_remove_dir_all(Path::new(rootfs));
+     }
+@@ -1402,6 +1415,11 @@ fn cleanup_on_failure(rootfs: &str, distro_name: &str) {
+     if Path::new(&override_path).exists() {
+         let _ = fs::remove_file(&override_path);
+     }
++    crate::diagnostics::record(
++        "installer_failure_cleanup",
++        "completed",
++        serde_json::json!({ "rootfs": rootfs, "distro": distro_name }),
++    );
+ }
+ 
+ fn render_override_plugin(plugin: &DistroPlugin, alias: &str) -> String {
+@@ -1695,7 +1713,15 @@
+             msg_status("Checking integrity, please wait...");
+             if let Err(e) = verify_sha256_inner(&tarball_sha256, &archive_path, true) {
+                 msg_error("Integrity checking failed. Try to redo installation again.");
+-                let _ = fs::remove_file(&archive_path);
++                if std::env::var_os("TRITONTERM_PRESERVE_FAILED_ROOTFS").is_none() {
++                    let _ = fs::remove_file(&archive_path);
++                } else {
++                    crate::diagnostics::record(
++                        "archive_preservation",
++                        "preserved_after_checksum_failure",
++                        serde_json::json!({ "archive": archive_path }),
++                    );
++                }
+                 return Err(format!("sha256 verification failed: {}", e));
+             }
+         } else if override_tarball_url.is_some() {
