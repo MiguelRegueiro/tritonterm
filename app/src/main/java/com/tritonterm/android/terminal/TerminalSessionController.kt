@@ -46,11 +46,57 @@ internal class TerminalSessionController(
         resetSession()
     }
 
+    /** A screen may be recreated while the PTY remains owned by the application process. */
+    fun detachView() {
+        client.terminalView = null
+        client.setupObserver = null
+        client.setupFailureObserver = null
+    }
+
     fun resetSession() {
         client.setupObserver = null
         activeSession?.finishIfRunning()
         activeSession = null
     }
+}
+
+/** Process-scoped PTY owner; Compose screens attach and detach views without ending the shell. */
+internal object TerminalSessionHost {
+    @Volatile private var controller: TerminalSessionController? = null
+
+    fun controller(context: Context): TerminalSessionController =
+        controller ?: synchronized(this) {
+            controller ?: TerminalSessionController(context.applicationContext).also {
+                inspectPreviousProcess(context.applicationContext)
+                controller = it
+            }
+        }
+
+    fun markSessionActive(context: Context) {
+        runCatching { File(context.filesDir, "usr/var/lib/pr/tritonterm-active-shell").writeText("${System.currentTimeMillis()}\n") }
+    }
+
+    fun markSessionInactive(context: Context) {
+        runCatching { File(context.filesDir, "usr/var/lib/pr/tritonterm-active-shell").delete() }
+    }
+
+    private fun inspectPreviousProcess(context: Context) {
+        val marker = File(context.filesDir, "usr/var/lib/pr/tritonterm-active-shell")
+        if (!marker.isFile) return
+        val lock = File(ArchLinuxArmBootstrap.rootfs(context), "var/lib/pacman/db.lck")
+        TerminalDiagnostics.record(
+            context,
+            "process_recovery",
+            "shell_process_was_interrupted",
+            mapOf("marker_time_ms" to marker.readText().trim().toLongOrNull(), "pacman_lock_present" to lock.exists())
+        )
+        marker.delete()
+    }
+}
+
+internal object PacmanRecoveryState {
+    fun hasDatabaseLock(context: Context): Boolean =
+        File(ArchLinuxArmBootstrap.rootfs(context), "var/lib/pacman/db.lck").exists()
 }
 
 internal enum class TerminalSetupStage { IDLE, DOWNLOADING, VERIFYING, CLEANING, INSTALLING, INITIALIZING, READY, FAILED }
@@ -265,6 +311,8 @@ internal class TritonSessionClient(private val context: Context) : TerminalSessi
     }
     override fun onTitleChanged(changedSession: TerminalSession) = Unit
     override fun onSessionFinished(finishedSession: TerminalSession) {
+        TerminalSessionHost.markSessionInactive(context)
+        TerminalForegroundService.stop(context)
         TerminalDiagnostics.record(
             context,
             "terminal_process",

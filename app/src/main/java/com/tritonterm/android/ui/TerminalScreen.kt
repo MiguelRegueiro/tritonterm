@@ -61,6 +61,9 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import com.tritonterm.android.config.TerminalConfig
 import com.tritonterm.android.terminal.TerminalSessionController
+import com.tritonterm.android.terminal.TerminalSessionHost
+import com.tritonterm.android.terminal.TerminalForegroundService
+import com.tritonterm.android.terminal.PacmanRecoveryState
 import com.tritonterm.android.terminal.ArchLinuxArmInstaller
 import com.tritonterm.android.terminal.TerminalDiagnostics
 import com.tritonterm.android.terminal.RuntimeDiagnosticsProbes
@@ -83,8 +86,9 @@ private const val DIAGNOSTICS_PREVIEW_CHARS = 80_000
 @Composable
 internal fun TerminalScreen() {
     val context = LocalContext.current
-    val terminalController = remember(context) { TerminalSessionController(context) }
+    val terminalController = remember(context) { TerminalSessionHost.controller(context) }
     val installState by ArchLinuxArmInstaller.state.collectAsState()
+    val pacmanLockPresent = remember(context) { PacmanRecoveryState.hasDatabaseLock(context) }
     var setupReady by remember(terminalController) {
         mutableStateOf(terminalController.isReady(context))
     }
@@ -223,7 +227,7 @@ internal fun TerminalScreen() {
         }
     }
     DisposableEffect(terminalController) {
-        onDispose { terminalController.close() }
+        onDispose { terminalController.detachView() }
     }
 
     Column(
@@ -280,6 +284,15 @@ internal fun TerminalScreen() {
             )
         }
 
+        if (pacmanLockPresent && setupReady) {
+            Text(
+                "A pacman database lock exists. A transaction may still be running; do not start another pacman command. If the previous process stopped, verify pacman is no longer active before recovering the lock. See Logs for process recovery details.",
+                modifier = Modifier.fillMaxWidth().background(Color(0xFF3B2D1A)).padding(horizontal = 12.dp, vertical = 8.dp),
+                color = Color(0xFFFFCC80),
+                fontSize = 12.sp
+            )
+        }
+
         val currentSession = session
         if (currentSession != null && setupReady) {
             AndroidView(
@@ -329,6 +342,7 @@ internal fun TerminalScreen() {
                         sessionClient.terminalView = this
                         attachSession(currentSession)
                         terminalViewHolder[0] = this
+                        TerminalForegroundService.startSession(context)
                         setBackgroundColor(android.graphics.Color.BLACK)
                         isFocusable = true
                         isFocusableInTouchMode = true
