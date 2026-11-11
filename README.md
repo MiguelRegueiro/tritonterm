@@ -15,6 +15,8 @@ An Android terminal with a Kitty-inspired renderer, a touch keyboard, and a priv
 
 The Arch rootfs is fetched over HTTPS and its detached OpenPGP signature is checked against the pinned Arch Linux ARM Build System fingerprint before extraction. TritonTerm then gives `pr-cli` the computed SHA-256 so the installer verifies the archive again. Packages installed or upgraded by `pacman` are verified using Arch Linux ARM's package-signing keys, initialized on first launch.
 
+On first setup and when opening an existing Arch installation, TritonTerm makes a hash-named backup of `/etc/pacman.conf`, comments out `DownloadUser`, and enables `DisableSandboxFilesystem` for Android/PRoot compatibility. It preserves repository, signature, and other settings and leaves `DisableSandboxSyscalls` unchanged.
+
 The bundled `pr-cli`, PRoot, and loader are built from the pinned source submodule. Their source revisions, build toolchain, reproduction script, license texts, and SHA-256 hashes are recorded in [`docs/native-runtime.md`](docs/native-runtime.md).
 
 ## Android app

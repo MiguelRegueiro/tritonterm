@@ -75,6 +75,7 @@ internal object ArchLinuxArmInstaller {
                 "pr-cli exited successfully, but required rootfs validation failed. Existing data was preserved. See Logs."
             }
             TerminalDiagnostics.record(app, "rootfs_validation", "completed", mapOf("rootfs" to ArchLinuxArmBootstrap.rootfs(app).absolutePath))
+            PacmanConfigCompatibility.migrate(app)
             initializePacmanKeys(app)
             mutableState.value = ArchInstallState(
                 stage = TerminalSetupStage.READY,

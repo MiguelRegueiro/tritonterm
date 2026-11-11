@@ -134,6 +134,8 @@ internal class ArchLinuxArmBackend : TerminalBackend {
     ) = ArchLinuxArmBootstrap.prepare(context, onProgress)
 
     override fun start(context: Context, client: TerminalSessionClient): TerminalSession {
+        // Also migrate pre-existing installations when the user next opens the shell.
+        PacmanConfigCompatibility.migrate(context)
         val prefix = File(context.filesDir, "usr")
         val bin = File(prefix, "bin")
         val nativeLibs = File(context.applicationInfo.nativeLibraryDir)
