@@ -186,34 +186,61 @@ internal object PacmanRecoveryState {
     fun shouldWarn(state: LockState, noProcessDurationMs: Long): Boolean =
         state == LockState.POSSIBLY_STALE && noProcessDurationMs >= STALE_LOCK_WARNING_DELAY_MS
 
+    fun hasLegacySetupEvidence(root: File): Boolean {
+        val log = File(root, "var/cache/tritonterm/developer-setup.log")
+        if (!java.nio.file.Files.isRegularFile(log.toPath(), java.nio.file.LinkOption.NOFOLLOW_LINKS)) return false
+        return runCatching {
+            log.useLines { lines -> lines.any { it.contains("Synchronizing and updating the fresh Arch rootfs before installing development packages.") } }
+        }.getOrDefault(false)
+    }
+
     fun hasDatabaseLock(context: Context): Boolean = state(context) != LockState.CLEAR
 
     private fun hasPacmanProcess(): Boolean {
-        val commandPattern = Regex("(^|[\\s/])pacman([\\s\\u0000]|$)")
         return File("/proc").listFiles().orEmpty().any { process ->
             if (!process.name.all(Char::isDigit)) return@any false
             val command = runCatching { File(process, "cmdline").readBytes().toString(Charsets.UTF_8) }.getOrNull()
                 ?: return@any false
-            commandPattern.containsMatchIn(command)
+            isPacmanArgv0(command)
         }
+    }
+
+    internal fun isPacmanArgv0(cmdline: String): Boolean {
+        val argv0 = cmdline.substringBefore('\u0000').trim()
+        return argv0.substringAfterLast('/') == "pacman"
     }
 }
 
-internal enum class TerminalSetupStage { IDLE, DOWNLOADING, VERIFYING, CLEANING, INSTALLING, PREPARING, INITIALIZING, READY, FAILED }
+internal enum class TerminalSetupStage {
+    IDLE, DOWNLOADING, VERIFYING, CLEANING, INSTALLING, PREPARING, INITIALIZING, DEVELOPER_TOOLS, READY, FAILED
+}
 
 internal data class TerminalSetupProgress(
     val stage: TerminalSetupStage,
     val downloaded: Long = 0L,
     val total: Long? = null,
+    val downloadBytesPerSecond: Long = 0L,
     val extractedEntries: Long = 0L,
     val extractedBytes: Long = 0L,
     val extractionTotal: Long = 0L,
     val stepCompleted: Int = 0,
-    val stepTotal: Int = 0
+    val stepTotal: Int = 0,
+    val activitySequence: Long = 0L,
+    val lastActivity: String? = null,
+    val commandStatus: String? = null
 )
+
+internal fun TerminalSetupProgress.withCommandOutput(line: String): TerminalSetupProgress = when {
+    line.contains("command_still_running") || line.contains("Running package transaction:") ->
+        copy(commandStatus = line.take(240))
+    else -> copy(activitySequence = activitySequence + 1, lastActivity = line.take(240))
+}
 
 internal object TerminalSetupProgressFile {
     fun file(context: Context) = File(context.filesDir, "usr/var/lib/pr/tritonterm-install-progress")
+
+    fun shouldPollInstaller(state: ArchInstallState): Boolean =
+        state.running && state.stage == TerminalSetupStage.INSTALLING
 
     /** Clear only the installer-owned progress counter before a new explicit install attempt. */
     fun begin(context: Context) { file(context).delete() }
@@ -239,6 +266,49 @@ internal object TerminalSetupProgressFile {
             extractionTotal = total
         )
     }.getOrNull()
+}
+
+internal object ArchLoginName {
+    private val syntax = Regex("^[a-z_][a-z0-9_-]{0,31}$")
+    private val reserved = setOf("root", "daemon", "bin", "sys", "sync", "games", "man", "lp", "mail", "news", "uucp", "proxy", "www-data", "backup", "list", "irc", "nobody", "systemd-network", "systemd-resolve")
+
+    fun validate(
+        candidate: String,
+        passwdText: String,
+        allowPendingRename: Boolean = false,
+        groupText: String = ""
+    ): String? {
+        if (!syntax.matches(candidate)) return "Use 1–32 lowercase letters, digits, underscores, or hyphens; the first character must be a letter or underscore."
+        if (candidate.endsWith("-") || candidate.endsWith(".")) return "The username cannot end with punctuation."
+        if (candidate in reserved) return "That username is reserved by the system."
+        val existing = passwdText.lineSequence().mapNotNull { line ->
+            line.substringBefore(':').takeIf { it.isNotEmpty() }
+        }.toSet()
+        if (candidate != "dev" && candidate in existing && !allowPendingRename) return "That username already exists in this Arch image."
+        if (candidate != "dev" && groupText.lineSequence().any { it.substringBefore(':') == candidate } && !allowPendingRename) {
+            return "That name is already used by a system group."
+        }
+        return null
+    }
+
+    fun isPersonalizationPending(root: File, candidate: String): Boolean {
+        return pendingUsername(root) == candidate
+    }
+
+    fun pendingUsername(root: File): String? {
+        val state = File(root, "etc/tritonterm/account-selection")
+        if (!state.isFile || java.nio.file.Files.isSymbolicLink(state.toPath())) return null
+        return runCatching {
+            state.readLines().firstOrNull { it.startsWith("username=") }
+                ?.substringAfter('=')?.takeIf { validate(it, "") == null }
+        }.getOrNull()
+    }
+
+    fun fromRootfs(root: File): String? {
+        val marker = File(root, "etc/tritonterm/selected-user")
+        if (!marker.isFile || java.nio.file.Files.isSymbolicLink(marker.toPath())) return null
+        return marker.readText().trim().takeIf { validate(it, "") == null }
+    }
 }
 
 internal interface TerminalBackend {
@@ -303,6 +373,8 @@ internal class ArchLinuxArmBackend : TerminalBackend {
         linkNativeExecutable(nativeLibs, "libpr-cli.so", File(bin, "pr-cli"))
         linkNativeExecutable(nativeLibs, "libproot.so", File(bin, "proot"))
         val cli = File(nativeLibs, "libpr-cli.so").absolutePath
+        val guestRoot = ArchLinuxArmBootstrap.rootfs(context)
+        val loginUser = ArchLoginName.fromRootfs(guestRoot) ?: error("Arch developer username is not configured.")
         val environment = arrayOf(
             "APP_PREFIX=${prefix.absolutePath}",
             "APP_HOME=${File(context.filesDir, "home").absolutePath}",
@@ -344,7 +416,7 @@ internal class ArchLinuxArmBackend : TerminalBackend {
                 context.filesDir.absolutePath,
                 // TerminalSession's JNI execvp(cmd, argv) passes this array verbatim;
                 // unlike ProcessBuilder, it does not prepend cmd as argv[0].
-                arrayOf(cli, "login", ArchLinuxArmBootstrap.DISTRO_ALIAS, "--user", "root", "/bin/bash", "-l"),
+                arrayOf(cli, "login", ArchLinuxArmBootstrap.DISTRO_ALIAS, "--user", loginUser, "/usr/bin/fish", "-l"),
                 environment,
                 2000,
                 client,

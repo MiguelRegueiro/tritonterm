@@ -24,18 +24,18 @@ import kotlin.coroutines.coroutineContext
 
 /** Downloads and authenticates the Arch Linux ARM rootfs before pr-cli is allowed to extract it. */
 internal object ArchLinuxArmBootstrap {
-    const val ROOTFS_URL =
-        "https://ca.us.mirror.archlinuxarm.org/os/ArchLinuxARM-aarch64-latest.tar.gz"
+    val ROOTFS_URL: String get() = "${ArchRootfsRelease.releaseBaseUrl()}/${ArchRootfsRelease.archiveName()}"
     const val DISTRO_ALIAS = "archlinuxarm"
 
-    private const val SIGNING_FINGERPRINT = "68B3537F39A313B3E574D06777193F152BDBE6A6"
-    private const val MAX_ARCHIVE_BYTES = 2L * 1024 * 1024 * 1024
+    private const val MAX_ARCHIVE_BYTES = 4L * 1024 * 1024 * 1024
     private const val MAX_SIGNATURE_BYTES = 1024L * 1024
     private const val HTTP_RANGE_NOT_SATISFIABLE = 416
 
     fun isInstalled(context: Context): Boolean {
         val root = rootfs(context)
-        return ArchRootfsReadiness.isPrepared(root, installingMarker(context))
+        return ArchRootfsReadiness.isPrepared(root, installingMarker(context)) &&
+            ArchRootfsRelease.isPreparedImage(root) &&
+            ArchDeveloperEnvironment.isReady(root)
     }
 
     /** A completed extraction can be resumed through pacman preparation after an app/process interruption. */
@@ -50,9 +50,11 @@ internal object ArchLinuxArmBootstrap {
     fun rootfs(context: Context) =
         File(context.filesDir, "usr/var/lib/pr/installed-rootfs/$DISTRO_ALIAS")
 
-    fun archive(context: Context): File = File(cacheDir(context), archiveName())
+    fun archive(context: Context): File = File(cacheDir(context), archiveName(ROOTFS_URL))
 
-    fun signature(context: Context): File = File(archive(context).absolutePath + ".sig")
+    fun manifest(context: Context): File = File(cacheDir(context), "${ArchRootfsRelease.archiveName()}.manifest")
+
+    fun signature(context: Context): File = File(manifest(context).absolutePath + ".sig")
 
     /** Leaves the signature-verified archive in pr-cli's expected cache location. */
     suspend fun prepare(
@@ -90,111 +92,88 @@ internal object ArchLinuxArmBootstrap {
         val cache = cacheDir(context)
         check(cache.mkdirs() || cache.isDirectory) { "Could not create rootfs download cache." }
         val archive = archive(context)
+        val manifestFile = manifest(context)
         val signature = signature(context)
+        check(ArchRootfsRelease.isConfigured()) {
+            "This APK has no pinned Arch development image release. Configure its rootfs version and HTTPS release URL before distribution."
+        }
         TerminalDiagnostics.record(
             context,
             "bootstrap",
             "started",
-            mapOf("archive" to archive.absolutePath, "signature" to signature.absolutePath, "rootfs" to rootfs(context).absolutePath)
+            mapOf(
+                "archive" to archive.absolutePath,
+                "manifest" to manifestFile.absolutePath,
+                "signature" to signature.absolutePath,
+                "rootfs" to rootfs(context).absolutePath,
+                "pinned_version" to ArchRootfsRelease.pinnedVersion(),
+                "release_tag" to ArchRootfsRelease.releaseTag()
+            )
         )
 
-        // Keep downloads resumable, but only trust complete files after checking the detached sig.
-        for (attempt in 0..0) {
+        val releaseBase = ArchRootfsRelease.releaseBaseUrl()
+        val downloadStarted = System.nanoTime()
+        TerminalDiagnostics.record(context, "archive_download", "started", mapOf("release_base" to releaseBase))
+        try {
             onProgress(TerminalSetupProgress(TerminalSetupStage.DOWNLOADING))
-            val downloadStarted = System.nanoTime()
-            TerminalDiagnostics.record(context, "archive_download", "started", mapOf("attempt" to attempt + 1))
-            try {
-                download(ROOTFS_URL + ".sig", signature, MAX_SIGNATURE_BYTES) {}
-                download(ROOTFS_URL, archive, MAX_ARCHIVE_BYTES) { progress ->
-                    onProgress(TerminalSetupProgress(TerminalSetupStage.DOWNLOADING, progress.downloaded, progress.total))
-                }
-            } catch (failure: Exception) {
-                TerminalDiagnostics.record(
-                    context,
-                    "archive_download",
-                    "failed",
-                    mapOf("elapsed_ms" to (System.nanoTime() - downloadStarted) / 1_000_000, "error" to failure.message)
+            download("$releaseBase/${manifestFile.name}", manifestFile, MAX_SIGNATURE_BYTES) {}
+            download("$releaseBase/${signature.name}", signature, MAX_SIGNATURE_BYTES) {}
+            val releaseManifest = ArchRootfsRelease.parseAndVerify(context, manifestFile, signature)
+            check(releaseManifest.archive == archive.name) { "Signed rootfs asset name does not match the APK's pinned image." }
+            download("$releaseBase/${releaseManifest.archive}", archive, MAX_ARCHIVE_BYTES) { progress ->
+                onProgress(
+                    TerminalSetupProgress(
+                        stage = TerminalSetupStage.DOWNLOADING,
+                        downloaded = progress.downloaded,
+                        total = progress.total ?: releaseManifest.size,
+                        downloadBytesPerSecond = progress.bytesPerSecond
+                    )
                 )
-                throw failure
             }
+            onProgress(TerminalSetupProgress(TerminalSetupStage.VERIFYING, extractionTotal = releaseManifest.size))
+            ArchRootfsRelease.verifyArchive(archive, releaseManifest)
+            onProgress(TerminalSetupProgress(TerminalSetupStage.VERIFYING, extractedBytes = releaseManifest.size, extractionTotal = releaseManifest.size))
             TerminalDiagnostics.record(
                 context,
                 "archive_download",
-                "completed",
-                mapOf("elapsed_ms" to (System.nanoTime() - downloadStarted) / 1_000_000, "archive_bytes" to archive.length())
-            )
-            val archiveSize = archive.length()
-            onProgress(
-                TerminalSetupProgress(
-                    stage = TerminalSetupStage.VERIFYING,
-                    extractionTotal = archiveSize
+                "authenticated",
+                mapOf(
+                    "elapsed_ms" to (System.nanoTime() - downloadStarted) / 1_000_000,
+                    "archive_bytes" to archive.length(),
+                    "sha256" to releaseManifest.sha256,
+                    "base_archive_sha256" to releaseManifest.baseArchiveSha256,
+                    "rootfs_version" to releaseManifest.version
                 )
             )
-            val verifyStarted = System.nanoTime()
-            TerminalDiagnostics.record(context, "signature_verification", "started", mapOf("archive_bytes" to archiveSize))
-            val signatureValid = try {
-                verifyDetachedSignature(context, archive, signature) { verifiedBytes ->
-                    onProgress(
-                        TerminalSetupProgress(
-                            stage = TerminalSetupStage.VERIFYING,
-                            extractedBytes = verifiedBytes,
-                            extractionTotal = archiveSize
-                        )
-                    )
-                }
-            } catch (failure: Exception) {
-                TerminalDiagnostics.record(
-                    context,
-                    "signature_verification",
-                    "failed",
-                    mapOf("elapsed_ms" to (System.nanoTime() - verifyStarted) / 1_000_000, "error" to failure.message)
-                )
-                throw failure
-            }
+        } catch (failure: Exception) {
             TerminalDiagnostics.record(
                 context,
-                "signature_verification",
-                if (signatureValid) "passed" else "rejected",
-                mapOf("elapsed_ms" to (System.nanoTime() - verifyStarted) / 1_000_000, "verified_bytes" to archiveSize)
+                "archive_download",
+                "failed",
+                mapOf("elapsed_ms" to (System.nanoTime() - downloadStarted) / 1_000_000, "error" to failure.message)
             )
-            if (signatureValid) {
-                val plugin = File(prefix, "etc/pr/$DISTRO_ALIAS.sh")
-                check(plugin.parentFile?.mkdirs() == true || plugin.parentFile?.isDirectory == true) {
-                    "Could not create the Arch Linux ARM runtime configuration."
-                }
-                val expectedPlugin = "DISTRO_NAME=\"Arch Linux ARM\"\n" +
-                    "TARBALL_URL_aarch64=\"$ROOTFS_URL\"\n"
-                if (plugin.exists()) {
-                    check(plugin.readText() == expectedPlugin) {
-                        "An existing Arch Linux ARM plugin was preserved because its contents differ from TritonTerm's expected configuration."
-                    }
-                } else {
-                    plugin.writeText(expectedPlugin)
-                }
-                TerminalDiagnostics.record(
-                    context,
-                    "plugin_and_cache_setup",
-                    "completed",
-                    mapOf(
-                        "plugin_path" to plugin.absolutePath,
-                        "plugin_bytes" to plugin.length(),
-                        "expected_archive_path" to archive.absolutePath,
-                        "archive_bytes" to archive.length()
-                    )
-                )
-                onProgress(
-                    TerminalSetupProgress(
-                        stage = TerminalSetupStage.VERIFYING,
-                        extractedBytes = archiveSize,
-                        extractionTotal = archiveSize
-                    )
-                )
-                return
-            }
-
-            TerminalDiagnostics.record(context, "verified_archive_recovery", "invalid_archive_preserved", mapOf("archive_bytes" to archiveSize))
-            error("Arch Linux ARM rootfs signature is invalid. The archive and signature were preserved for diagnosis.")
+            throw failure
         }
+
+        val plugin = File(prefix, "etc/pr/$DISTRO_ALIAS.sh")
+        check(plugin.parentFile?.mkdirs() == true || plugin.parentFile?.isDirectory == true) {
+            "Could not create the Arch Linux ARM runtime configuration."
+        }
+        val expectedPlugin = "DISTRO_NAME=\"Arch Linux ARM\"\n" +
+            "TARBALL_URL_aarch64=\"$ROOTFS_URL\"\n"
+        if (plugin.exists()) {
+            check(plugin.readText() == expectedPlugin) {
+                "An existing Arch Linux ARM plugin was preserved because its contents differ from TritonTerm's expected configuration."
+            }
+        } else {
+            plugin.writeText(expectedPlugin)
+        }
+        TerminalDiagnostics.record(
+            context,
+            "plugin_and_cache_setup",
+            "completed",
+            mapOf("plugin_path" to plugin.absolutePath, "plugin_bytes" to plugin.length(), "archive_path" to archive.absolutePath, "archive_bytes" to archive.length())
+        )
     }
 
     fun archivePath(context: Context) = archive(context).absolutePath
@@ -269,6 +248,7 @@ internal object ArchLinuxArmBootstrap {
                 val total = contentLength?.let { it + offset }
                 check(total == null || total <= sizeLimit) { "Rootfs download exceeds the allowed size." }
                 var received = offset
+                val speedStartNanos = System.nanoTime()
                 var lastProgressUpdateNanos = 0L
                 connection.inputStream.use { input ->
                     FileOutputStream(partial, append).use { output ->
@@ -282,7 +262,8 @@ internal object ArchLinuxArmBootstrap {
                             output.write(buffer, 0, count)
                             val now = System.nanoTime()
                             if (now - lastProgressUpdateNanos >= 100_000_000L || received == total) {
-                                onProgress(DownloadProgress(received, total))
+                                val seconds = ((now - speedStartNanos).coerceAtLeast(1L)) / 1_000_000_000.0
+                                onProgress(DownloadProgress(received, total, ((received - offset) / seconds).toLong()))
                                 lastProgressUpdateNanos = now
                             }
                         }
@@ -305,21 +286,6 @@ internal object ArchLinuxArmBootstrap {
         throw IllegalStateException("Rootfs download failed: ${lastError?.message ?: "unknown error"}", lastError)
     }
 
-    private fun verifyDetachedSignature(
-        context: Context,
-        archive: File,
-        signatureFile: File,
-        onProgress: (Long) -> Unit
-    ): Boolean = context.assets.open("archlinuxarm-builder.asc").use { keyRing ->
-        OpenPgpDetachedVerifier.verifyOrThrow(
-            keyRing,
-            archive,
-            signatureFile,
-            SIGNING_FINGERPRINT,
-            onProgress
-        )
-    }
-
     private fun sha256(bytes: ByteArray) =
         MessageDigest.getInstance("SHA-256").digest(bytes).toHex()
 }
@@ -334,7 +300,68 @@ internal object ArchRootfsReadiness {
         isExtracted(root, installingMarker) && File(root, PROFILE_MARKER).isFile
 }
 
-private data class DownloadProgress(val downloaded: Long, val total: Long?)
+/** Readiness is committed only after the complete default developer toolchain passes smoke checks. */
+internal object ArchDeveloperEnvironment {
+    const val VERSION = "3"
+    const val SOURCE_SHA256 = "0822bd5a9f0cf19d2ba0546b88b0432d4d3d9917db62c57b74044ccadba06e49"
+    const val PARU_VERSION = "2.2.0"
+    const val FAKEROOT_VERSION = "2.1.4"
+    const val READY_MARKER = "root/.tritonterm-developer-environment-ready"
+    const val FAKEROOT_PREFIX = "opt/tritonterm/fakeroot-tcp"
+
+    fun isReady(root: File): Boolean {
+        val marker = File(root, READY_MARKER)
+        val prefix = File(root, "$FAKEROOT_PREFIX/$FAKEROOT_VERSION")
+        val passwd = File(root, "etc/passwd")
+        val selectedUser = ArchLoginName.fromRootfs(root) ?: return false
+        val devHome = runCatching {
+            passwd.useLines { lines ->
+                lines.mapNotNull { line ->
+                    val fields = line.split(':')
+                    fields.takeIf { it.size >= 7 && it[0] == selectedUser && it[2] == "1000" && it[3] == "1000" && it[6] == "/usr/bin/fish" }?.get(5)
+                }.firstOrNull()
+            }
+        }.getOrNull()
+        val shim = devHome?.let { File(root, "${it.trimStart('/')}/.local/bin/fakeroot") }
+        val sudoers = File(root, "etc/sudoers.d/10-tritonterm-pacman")
+        val home = devHome?.trimStart('/') ?: return false
+        val homeFile = File(root, home)
+        val makepkgConfig = File(homeFile, ".config/pacman/makepkg.conf")
+        val paruConfig = File(homeFile, ".config/paru/paru.conf")
+        return marker.isFile && runCatching { marker.readText().trim() == VERSION }.getOrDefault(false) &&
+            File(prefix, "bin/fakeroot").canExecute() && File(prefix, "bin/faked").canExecute() &&
+            File(prefix, "lib/libfakeroot/libfakeroot-0.so").isFile &&
+            File(root, "$FAKEROOT_PREFIX/current").let { it.isSymbolicLinkTo(FAKEROOT_VERSION) } &&
+            shim?.let { it.isSymbolicLinkTo("/opt/tritonterm/fakeroot-tcp/current/bin/fakeroot") } == true &&
+            File(root, "etc/profile.d/tritonterm-devtools.sh").let { profile ->
+                profile.isFile && runCatching { profile.readText().contains("export SYSTEMD_OFFLINE=1") }.getOrDefault(false)
+            } &&
+            File(homeFile, ".config/fish/conf.d/20-tritonterm-path.fish").let { fishEnv ->
+                fishEnv.isFile && runCatching { fishEnv.readText().contains("set -gx SYSTEMD_OFFLINE 1") }.getOrDefault(false)
+            } &&
+            listOf("makepkg", "sudo", "rustup", "rustc", "cargo", "fish", "starship", "paru", "fakeroot")
+                .all { File(root, "usr/bin/$it").canExecute() } &&
+            File(homeFile, ".rustup/toolchains/stable-aarch64-unknown-linux-gnu/bin/rustc").canExecute() &&
+            File(homeFile, ".config/starship.toml").isFile &&
+            File(homeFile, ".config/fish/conf.d/90-tritonterm-starship.fish").isFile &&
+            makepkgConfig.isFile && runCatching { makepkgConfig.readText().contains("PACMAN_AUTH=(/usr/bin/sudo -n)") }.getOrDefault(false) &&
+            paruConfig.isFile && runCatching { paruConfig.readText().contains("Sudo = /usr/bin/sudo") }.getOrDefault(false) &&
+            sudoers.isFile && runCatching { sudoers.readText().lines().contains("%wheel ALL=(root) NOPASSWD: /usr/bin/pacman") }.getOrDefault(false) &&
+            File(root, "etc/group").let { groups ->
+                groups.isFile && runCatching {
+                    groups.readLines().any { line ->
+                        val fields = line.split(':')
+                        fields.size >= 4 && fields[0] == "wheel" && selectedUser in fields[3].split(',')
+                    }
+                }.getOrDefault(false)
+            }
+    }
+
+    private fun File.isSymbolicLinkTo(target: String): Boolean =
+        runCatching { java.nio.file.Files.readSymbolicLink(toPath()).toString() == target }.getOrDefault(false)
+}
+
+private data class DownloadProgress(val downloaded: Long, val total: Long?, val bytesPerSecond: Long)
 
 /** Small, streaming detached-signature verifier; it never loads the rootfs archive into memory. */
 internal object OpenPgpDetachedVerifier {

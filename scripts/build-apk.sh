@@ -45,7 +45,17 @@ fi
 export ANDROID_HOME="$sdk_root"
 export ANDROID_SDK_ROOT="$sdk_root"
 cd "$project_root"
-"$gradle_bin" --no-daemon :app:assembleDebug
+gradle_properties=()
+if [[ -n "${TRITONTERM_ARCH_ROOTFS_VERSION:-}" ]]; then
+    gradle_properties+=("-Ptritonterm.archRootfsVersion=${TRITONTERM_ARCH_ROOTFS_VERSION}")
+fi
+if [[ -n "${TRITONTERM_ARCH_ROOTFS_RELEASE_TAG:-}" ]]; then
+    gradle_properties+=("-Ptritonterm.archRootfsReleaseTag=${TRITONTERM_ARCH_ROOTFS_RELEASE_TAG}")
+fi
+if [[ -n "${TRITONTERM_ARCH_ROOTFS_RELEASE_BASE_URL:-}" ]]; then
+    gradle_properties+=("-Ptritonterm.archRootfsReleaseBaseUrl=${TRITONTERM_ARCH_ROOTFS_RELEASE_BASE_URL}")
+fi
+"$gradle_bin" --no-daemon "${gradle_properties[@]}" :app:assembleDebug
 
 apk="$project_root/app/build/outputs/apk/debug/app-debug.apk"
 dist_apk="$project_root/dist/tritonterm-debug.apk"

@@ -4,6 +4,16 @@ plugins {
     id("org.jetbrains.kotlin.plugin.compose")
 }
 
+val archRootfsVersion = providers.gradleProperty("tritonterm.archRootfsVersion")
+    .orElse("unconfigured").get()
+val archRootfsReleaseBaseUrl = providers.gradleProperty("tritonterm.archRootfsReleaseBaseUrl")
+    .orElse("").get()
+val archRootfsReleaseTag = providers.gradleProperty("tritonterm.archRootfsReleaseTag")
+    .orElse("unconfigured").get()
+val androidVersionCode = providers.gradleProperty("tritonterm.androidVersionCode").orElse("1").get().toInt()
+val androidVersionName = providers.gradleProperty("tritonterm.androidVersionName").orElse("0.1.0").get()
+fun buildConfigString(value: String) = "\"${value.replace("\\", "\\\\").replace("\"", "\\\"")}\""
+
 android {
     namespace = "com.tritonterm.android"
     compileSdk = 36
@@ -13,11 +23,29 @@ android {
         // Bundled Android PRoot runtime targets Android 9+.
         minSdk = 28
         targetSdk = 35
-        versionCode = 1
-        versionName = "0.1.0"
+        versionCode = androidVersionCode
+        versionName = androidVersionName
+        buildConfigField("String", "ARCH_ROOTFS_VERSION", buildConfigString(archRootfsVersion))
+        buildConfigField("String", "ARCH_ROOTFS_RELEASE_BASE_URL", buildConfigString(archRootfsReleaseBaseUrl))
+        buildConfigField("String", "ARCH_ROOTFS_RELEASE_TAG", buildConfigString(archRootfsReleaseTag))
     }
 
-    buildFeatures { compose = true }
+    signingConfigs {
+        create("tritontermRelease") {
+            storeFile = providers.environmentVariable("TRITONTERM_ANDROID_KEYSTORE").orNull?.let { file(it) }
+            storePassword = providers.environmentVariable("TRITONTERM_ANDROID_STORE_PASSWORD").orNull
+            keyAlias = providers.environmentVariable("TRITONTERM_ANDROID_KEY_ALIAS").orNull
+            keyPassword = providers.environmentVariable("TRITONTERM_ANDROID_KEY_PASSWORD").orNull
+        }
+    }
+    buildTypes {
+        getByName("release") {
+            signingConfig = signingConfigs.getByName("tritontermRelease")
+            isMinifyEnabled = false
+        }
+    }
+
+    buildFeatures { compose = true; buildConfig = true }
     packaging {
         dex {
             // Keep installable APK downloads compact; minSdk 28 otherwise stores DEX uncompressed.

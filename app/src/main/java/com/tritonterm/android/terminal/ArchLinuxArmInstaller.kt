@@ -24,8 +24,69 @@ internal data class ArchInstallState(
     val running: Boolean = false,
     val ready: Boolean = false,
     val preflightPassed: Boolean = false,
-    val error: String? = null
+    val preflightFailed: Boolean = false,
+    val error: String? = null,
+    val failureDetails: SetupFailureDetails? = null
 )
+
+internal data class SetupFailureDetails(
+    val stage: String?,
+    val command: String?,
+    val exitCode: Int,
+    val message: String?,
+    val stderr: List<String>
+) {
+    val displayMessage: String
+        get() = buildString {
+            append("Setup failed")
+            stage?.let { append(" at $it") }
+            append(" (exit $exitCode)")
+            command?.let { append(" · $it") }
+            message?.let { append("\n$it") }
+            if (stderr.isNotEmpty()) append("\n\nRecent stderr:\n").append(stderr.joinToString("\n"))
+        }
+}
+
+internal object ArchDeveloperSetupLog {
+    private val failure = Regex("^\\[Arch setup\\] FAILED at ([^ ]+) \\(exit ([0-9]+)\\): (.*)$")
+    private val command = Regex("^\\[Arch setup\\] FAILED at .*command: (.*)$")
+
+    fun file(context: Context): File = File(
+        ArchLinuxArmBootstrap.rootfs(context),
+        "var/cache/tritonterm/developer-setup.log"
+    )
+
+    fun read(context: Context): String {
+        val log = file(context)
+        if (!log.isFile || java.nio.file.Files.isSymbolicLink(log.toPath())) {
+            return "The setup log has not been created yet."
+        }
+        return runCatching { log.readText() }.getOrElse { "Could not read the setup log: ${it.message}" }
+    }
+
+    fun parse(text: String, fallbackExitCode: Int): SetupFailureDetails {
+        val lines = text.lineSequence().toList()
+        val failureLine = lines.lastOrNull { failure.matches(it) }
+        val match = failureLine?.let(failure::matchEntire)
+        val errorCommand = lines.asReversed().firstNotNullOfOrNullCompat { command.matchEntire(it)?.groupValues?.get(1) }
+        val message = match?.groupValues?.get(3)
+        val packageCommand = Regex("package transaction failed: (.*)").find(message.orEmpty())?.groupValues?.get(1)
+        val stderr = lines.filter { it.startsWith("[stderr] ") }
+            .takeLast(12).map { it.removePrefix("[stderr] ").take(300) }
+        return SetupFailureDetails(
+            stage = match?.groupValues?.get(1),
+            command = errorCommand ?: packageCommand,
+            exitCode = match?.groupValues?.get(2)?.toIntOrNull() ?: fallbackExitCode,
+            message = message,
+            stderr = stderr
+        )
+    }
+}
+
+private inline fun <T, R : Any> List<T>.firstNotNullOfOrNullCompat(transform: (T) -> R?): R? {
+    for (element in this) transform(element)?.let { return it }
+    return null
+}
 
 /** Owns the one noninteractive install process independently of Compose and terminal sessions. */
 internal object ArchLinuxArmInstaller {
@@ -44,8 +105,23 @@ internal object ArchLinuxArmInstaller {
         TerminalDiagnostics.record(appContext, "installer_preflight", "validated", mapOf("exit_code" to result.exitCode))
     }
 
-    fun start(context: Context): Boolean {
+    fun start(context: Context, username: String = "dev"): Boolean {
         val appContext = context.applicationContext
+        val root = ArchLinuxArmBootstrap.rootfs(appContext)
+        val passwd = File(root, "etc/passwd")
+        val group = File(root, "etc/group")
+        val invalidUsername = ArchLoginName.validate(
+            username,
+            passwd.takeIf(File::isFile)?.readText().orEmpty(),
+            allowPendingRename = ArchLoginName.isPersonalizationPending(root, username) || ArchLoginName.fromRootfs(root) == username,
+            groupText = group.takeIf(File::isFile)?.readText().orEmpty()
+        )
+        if (invalidUsername != null) {
+            mutableState.value = mutableState.value.copy(error = invalidUsername)
+            return false
+        }
+        appContext.getSharedPreferences("arch_setup", Context.MODE_PRIVATE)
+            .edit().putString("username", username).apply()
         if (ArchLinuxArmBootstrap.isInstalled(appContext)) {
             if (repositoryDatabasesRefreshed(appContext)) {
                 mutableState.value = mutableState.value.copy(stage = TerminalSetupStage.READY, running = false, ready = true, error = null)
@@ -53,7 +129,8 @@ internal object ArchLinuxArmInstaller {
             }
             return refreshRepositoryDatabasesOnce(appContext)
         }
-        if (!mutableState.value.preflightPassed) {
+        val reusableRootfs = ArchLinuxArmBootstrap.isRootfsExtracted(appContext)
+        if (!mutableState.value.preflightPassed && !reusableRootfs) {
             mutableState.value = mutableState.value.copy(error = "Run the harmless installer launcher test before installing Arch Linux ARM.")
             return false
         }
@@ -82,6 +159,9 @@ internal object ArchLinuxArmInstaller {
             check(ArchLinuxArmBootstrap.isRootfsExtracted(app)) {
                 "pr-cli exited successfully, but required rootfs validation failed. Existing data was preserved. See Logs."
             }
+            check(ArchRootfsRelease.isPreparedImage(ArchLinuxArmBootstrap.rootfs(app))) {
+                "This Arch rootfs is not the pinned TritonTerm development image. It was left untouched. Remove the previous Arch rootfs or reinstall TritonTerm, then install the signed image."
+            }
             if (resumingExtractedRootfs) validateInterruptedRootfsBeforeResume(app)
             reportPreparationProgress(app, 1, "rootfs_validated")
             TerminalDiagnostics.record(
@@ -93,7 +173,14 @@ internal object ArchLinuxArmInstaller {
             PacmanConfigCompatibility.migrate(app)
             reportPreparationProgress(app, 2, "pacman_configuration_ready")
             initializePacmanKeys(app)
-            prepareDevelopmentUserland(app)
+            reportPreparationProgress(app, 10, "prebuilt_developer_tools_validated")
+            TerminalDiagnostics.record(
+                app,
+                "developer_image",
+                "prebuilt_image_selected",
+                mapOf("version" to ArchRootfsRelease.pinnedVersion(), "username" to username)
+            )
+            personalizeDeveloperAccount(app, username)
             TerminalDiagnostics.record(app, "setup", "completed")
         }
     }
@@ -128,7 +215,21 @@ internal object ArchLinuxArmInstaller {
                 succeeded = true
             } catch (failure: Exception) {
                 val message = failure.message ?: failure.javaClass.simpleName
-                mutableState.value = mutableState.value.copy(stage = TerminalSetupStage.FAILED, ready = false, error = message)
+                mutableState.value = mutableState.value.copy(
+                    stage = TerminalSetupStage.FAILED,
+                    ready = false,
+                    preflightFailed = phase == "installer_preflight",
+                    error = if (phase == "setup") {
+                        ArchDeveloperSetupLog.file(appContext).takeIf(File::isFile)?.let { log ->
+                            runCatching { ArchDeveloperSetupLog.parse(log.readText(), 1).displayMessage }.getOrNull()
+                        } ?: message
+                    } else message,
+                    failureDetails = if (phase == "setup") {
+                        ArchDeveloperSetupLog.file(appContext).takeIf(File::isFile)?.let { log ->
+                            runCatching { ArchDeveloperSetupLog.parse(log.readText(), 1) }.getOrNull()
+                        }
+                    } else null
+                )
                 TerminalDiagnostics.record(appContext, phase, "failed", mapOf("error" to message))
             } finally {
                 if (phase == "setup" || phase == "repository_refresh") TerminalForegroundService.stop(appContext)
@@ -136,6 +237,7 @@ internal object ArchLinuxArmInstaller {
                     stage = if (succeeded && (phase == "setup" || phase == "repository_refresh")) TerminalSetupStage.READY else mutableState.value.stage,
                     progress = if (succeeded && (phase == "setup" || phase == "repository_refresh")) TerminalSetupProgress(TerminalSetupStage.READY) else mutableState.value.progress,
                     preflightPassed = mutableState.value.preflightPassed || phase == "setup",
+                    preflightFailed = mutableState.value.preflightFailed && phase == "installer_preflight",
                     ready = succeeded && (phase == "setup" || phase == "repository_refresh"),
                     running = false
                 )
@@ -286,6 +388,15 @@ internal object ArchLinuxArmInstaller {
                         synchronized(output) {
                             if (output.length < 64_000) output.append(line).append('\n')
                         }
+                        if (phase == "arch_developer_environment" &&
+                            ArchLinuxArmInstaller.state.value.stage == TerminalSetupStage.DEVELOPER_TOOLS
+                        ) {
+                            val current = ArchLinuxArmInstaller.state.value
+                            val nextProgress = current.progress.withCommandOutput(line)
+                            if (nextProgress !== current.progress) {
+                                mutableState.value = current.copy(progress = nextProgress)
+                            }
+                        }
                         TerminalDiagnostics.appendProcessOutput(context, streamName, "$line\n")
                     }
                 }
@@ -325,9 +436,7 @@ internal object ArchLinuxArmInstaller {
     }
 
     private fun validateInterruptedRootfsBeforeResume(context: Context) {
-        check(!PacmanRecoveryState.hasDatabaseLock(context)) {
-            "The extracted rootfs has a pacman database lock. It was preserved. Verify no pacman process is running before removing that lock and retrying setup."
-        }
+        recoverOwnedPacmanLock(context)
         val result = runProcess(
             context,
             "interrupted_rootfs_database_check",
@@ -373,7 +482,7 @@ internal object ArchLinuxArmInstaller {
         )
         reportPreparationProgress(context, 6, "package_inventory_ready")
         if (removalTargets.isNotEmpty()) {
-            val remove = runProcess(
+            val remove = runManagedPacman(
                 context,
                 "userland_package_removal",
                 "pacman -Rns ${removalTargets.joinToString(" ")}",
@@ -427,6 +536,116 @@ internal object ArchLinuxArmInstaller {
         )
     }
 
+    /** Provisions the complete default dev environment after the signed rootfs is prepared. */
+    private fun provisionDeveloperEnvironment(context: Context) {
+        reportDeveloperToolsProgress(context, 9, "installing_arch_developer_environment")
+        TerminalDiagnostics.record(
+            context,
+            "arch_developer_environment",
+            "started",
+            mapOf(
+                "fakeroot_version" to ArchDeveloperEnvironment.FAKEROOT_VERSION,
+                "rustup" to "stable",
+                "paru_version" to ArchDeveloperEnvironment.PARU_VERSION,
+                "source_sha256" to ArchDeveloperEnvironment.SOURCE_SHA256
+            )
+        )
+        val root = ArchLinuxArmBootstrap.rootfs(context)
+        val assetDir = File(root, "root/.tritonterm-setup")
+        check(!java.nio.file.Files.isSymbolicLink(assetDir.toPath())) {
+            "A symbolic link occupies TritonTerm's reserved setup directory. Remove it from the guest rootfs and retry."
+        }
+        check(assetDir.mkdirs() || assetDir.isDirectory) { "Could not create the setup asset directory in the Arch rootfs." }
+        listOf("setup-arch-developer.sh", "starship.toml", "paru-bootstrap.PKGBUILD").forEach { name ->
+            val destination = File(assetDir, name)
+            val staged = File(assetDir, "$name.new-${System.currentTimeMillis()}")
+            context.assets.open(name).use { input -> staged.outputStream().use { output -> input.copyTo(output) } }
+            try {
+                java.nio.file.Files.move(
+                    staged.toPath(), destination.toPath(),
+                    java.nio.file.StandardCopyOption.ATOMIC_MOVE,
+                    java.nio.file.StandardCopyOption.REPLACE_EXISTING
+                )
+            } catch (_: java.nio.file.AtomicMoveNotSupportedException) {
+                java.nio.file.Files.move(staged.toPath(), destination.toPath(), java.nio.file.StandardCopyOption.REPLACE_EXISTING)
+            }
+        }
+        val result = runProcess(
+            context,
+            "arch_developer_environment",
+            "install fish, Starship, rustup stable, TCP fakeroot, and Paru",
+            args = listOf(
+                "login", ArchLinuxArmBootstrap.DISTRO_ALIAS, "--user", "root",
+                "/bin/bash", "-lc", "bash /root/.tritonterm-setup/setup-arch-developer.sh"
+            )
+        )
+        check(result.exitCode == 0 && !result.timedOut) {
+            "Arch developer environment setup failed (exit ${result.exitCode}). See the precise failing stage in Logs and /var/cache/tritonterm/developer-setup.log."
+        }
+        check(ArchDeveloperEnvironment.isReady(ArchLinuxArmBootstrap.rootfs(context))) {
+            "Developer setup exited successfully, but the complete toolchain did not pass readiness validation. See Logs."
+        }
+        reportPreparationProgress(context, 10, "arch_developer_tools_validated")
+        TerminalDiagnostics.record(
+            context,
+            "arch_developer_environment",
+            "validated",
+            mapOf(
+                "fakeroot_version" to ArchDeveloperEnvironment.FAKEROOT_VERSION,
+                "rustup_default" to "stable-aarch64-unknown-linux-gnu",
+                "paru_version" to ArchDeveloperEnvironment.PARU_VERSION,
+                "pacman_fakeroot_unchanged" to true,
+                "makepkg_smoke" to true,
+                "paru_smoke" to true,
+                "rust_build_smoke" to true
+            )
+        )
+    }
+
+    private fun personalizeDeveloperAccount(context: Context, username: String) {
+        val root = ArchLinuxArmBootstrap.rootfs(context)
+        val script = File(root, "root/.tritonterm-setup/personalize-arch-account.sh")
+        check(script.parentFile?.mkdirs() == true || script.parentFile?.isDirectory == true) {
+            "Could not prepare account personalization."
+        }
+        context.assets.open("personalize-arch-account.sh").use { input ->
+            val staged = File(script.parentFile, "${script.name}.new-${System.currentTimeMillis()}")
+            staged.outputStream().use { output -> input.copyTo(output) }
+            try {
+                java.nio.file.Files.move(
+                    staged.toPath(), script.toPath(),
+                    java.nio.file.StandardCopyOption.ATOMIC_MOVE,
+                    java.nio.file.StandardCopyOption.REPLACE_EXISTING
+                )
+            } catch (_: java.nio.file.AtomicMoveNotSupportedException) {
+                java.nio.file.Files.move(staged.toPath(), script.toPath(), java.nio.file.StandardCopyOption.REPLACE_EXISTING)
+            }
+        }
+        reportPreparationProgress(context, 11, "personalizing_development_account")
+        TerminalDiagnostics.record(
+            context,
+            "arch_account_personalization",
+            "started",
+            mapOf("username" to username, "template_uid" to 1000, "home_move" to true)
+        )
+        val result = runProcess(
+            context,
+            "arch_account_personalization",
+            "rename template account to $username",
+            args = listOf(
+                "login", ArchLinuxArmBootstrap.DISTRO_ALIAS, "--user", "root",
+                "/bin/bash", script.absolutePath, username
+            )
+        )
+        check(result.exitCode == 0 && !result.timedOut) {
+            "Could not safely personalize the Arch account (exit ${result.exitCode}). The rootfs was preserved; see the setup log."
+        }
+        check(ArchLoginName.fromRootfs(root) == username) {
+            "Account personalization returned success without persisting the selected username."
+        }
+        TerminalDiagnostics.record(context, "arch_account_personalization", "completed", mapOf("username" to username))
+    }
+
     /** Force fresh official repository databases once; this does not upgrade installed packages. */
     private fun synchronizeRepositoryDatabases(context: Context, reportPreparationProgress: Boolean = true) {
         val marker = repositoryRefreshMarker(context)
@@ -434,11 +653,9 @@ internal object ArchLinuxArmInstaller {
             if (reportPreparationProgress) reportPreparationProgress(context, 8, "repository_databases_already_refreshed")
             return
         }
-        check(!PacmanRecoveryState.hasDatabaseLock(context)) {
-            "A pacman database lock exists before repository refresh. It was preserved. Verify no pacman process is running before retrying setup."
-        }
+        recoverOwnedPacmanLock(context)
         TerminalDiagnostics.record(context, "repository_database_refresh", "started", mapOf("command" to "pacman -Syy --noconfirm"))
-        val sync = runProcess(
+        val sync = runManagedPacman(
             context,
             "repository_database_refresh",
             "pacman -Syy --noconfirm",
@@ -455,6 +672,75 @@ internal object ArchLinuxArmInstaller {
         )
         check(mark.exitCode == 0 && !mark.timedOut) { "Repository databases refreshed, but refresh state could not be saved. See Logs." }
         if (reportPreparationProgress) reportPreparationProgress(context, 8, "repository_databases_refreshed")
+    }
+
+    private fun runManagedPacman(
+        context: Context,
+        phase: String,
+        operation: String,
+        args: List<String>
+    ): ProcessResult {
+        recoverOwnedPacmanLock(context)
+        val root = ArchLinuxArmBootstrap.rootfs(context)
+        val marker = File(root, "var/cache/tritonterm/pacman-transaction")
+        check(marker.parentFile?.mkdirs() == true || marker.parentFile?.isDirectory == true) {
+            "Could not prepare the pacman recovery marker."
+        }
+        marker.writeText("owner=tritonterm\nstage=$phase\ncommand=$operation\n")
+        return try {
+            runProcess(context, phase, operation, args = args)
+        } finally {
+            val lock = File(root, "var/lib/pacman/db.lck")
+            if (!lock.exists()) marker.delete()
+        }
+    }
+
+    private fun recoverOwnedPacmanLock(context: Context) {
+        val root = ArchLinuxArmBootstrap.rootfs(context)
+        val lock = File(root, "var/lib/pacman/db.lck")
+        if (!lock.exists()) return
+        val state = PacmanRecoveryState.state(context)
+        check(state != PacmanRecoveryState.LockState.ACTIVE_TRANSACTION) {
+            "A pacman process is still active; its database lock was preserved and setup will not start another package operation."
+        }
+        val marker = File(root, "var/cache/tritonterm/pacman-transaction")
+        val markerOwned = marker.isFile && runCatching { marker.readLines().contains("owner=tritonterm") }.getOrDefault(false)
+        val legacyOwned = PacmanRecoveryState.hasLegacySetupEvidence(root)
+        check(markerOwned || legacyOwned) {
+            "A stale-looking pacman lock has no TritonTerm transaction record. It was preserved for manual inspection."
+        }
+        val mode = runCatching { Os.lstat(lock.absolutePath).st_mode }.getOrNull()
+        check(mode != null && OsConstants.S_ISREG(mode) && !OsConstants.S_ISLNK(mode)) {
+            "The pacman lock path is not a regular file. It was preserved for inspection."
+        }
+        check(state == PacmanRecoveryState.LockState.POSSIBLY_STALE) {
+            "Pacman's lock state could not be established; the lock was preserved."
+        }
+        val guestProcessCheck = runProcess(
+            context,
+            "pacman_interruption_recovery",
+            "check for a live guest pacman process",
+            timeoutMs = 10_000L,
+            args = listOf(
+                "login", ArchLinuxArmBootstrap.DISTRO_ALIAS, "--user", "root",
+                "/bin/sh", "-lc", "pgrep -x pacman >/dev/null"
+            )
+        )
+        check(!guestProcessCheck.timedOut && guestProcessCheck.exitCode == 1) {
+            "A pacman process is still active or its state could not be checked; the lock was preserved."
+        }
+        Os.remove(lock.absolutePath)
+        marker.delete()
+        TerminalDiagnostics.record(
+            context,
+            "pacman_interruption_recovery",
+            "stale_owned_lock_removed",
+            mapOf(
+                "lock_path" to lock.absolutePath,
+                "ownership_evidence" to if (markerOwned) "transaction_marker" else "legacy_setup_log",
+                "database_check_follows" to true
+            )
+        )
     }
 
     private fun repositoryDatabasesRefreshed(context: Context): Boolean = repositoryRefreshMarker(context).isFile
@@ -477,7 +763,22 @@ internal object ArchLinuxArmInstaller {
         )
     }
 
-    private const val PREPARATION_STEP_COUNT = 9
+    private fun reportDeveloperToolsProgress(context: Context, completed: Int, checkpoint: String) {
+        val progress = TerminalSetupProgress(
+            stage = TerminalSetupStage.DEVELOPER_TOOLS,
+            stepCompleted = completed,
+            stepTotal = PREPARATION_STEP_COUNT
+        )
+        mutableState.value = mutableState.value.copy(stage = progress.stage, progress = progress)
+        TerminalDiagnostics.record(
+            context,
+            "userland_preparation_progress",
+            checkpoint,
+            mapOf("completed_steps" to completed, "total_steps" to PREPARATION_STEP_COUNT)
+        )
+    }
+
+    private const val PREPARATION_STEP_COUNT = 11
 }
 
 /** Package names are discovered from pacman; unrelated linux-* libraries and tools are retained. */

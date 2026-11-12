@@ -1,5 +1,6 @@
 package com.tritonterm.android.ui
 
+import android.animation.ValueAnimator
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
@@ -23,8 +24,10 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.systemBarsPadding
@@ -44,6 +47,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -67,6 +71,9 @@ import com.tritonterm.android.terminal.TerminalSessionHost
 import com.tritonterm.android.terminal.TerminalForegroundService
 import com.tritonterm.android.terminal.PacmanRecoveryState
 import com.tritonterm.android.terminal.ArchLinuxArmInstaller
+import com.tritonterm.android.terminal.ArchDeveloperSetupLog
+import com.tritonterm.android.terminal.ArchLinuxArmBootstrap
+import com.tritonterm.android.terminal.ArchRootfsRelease
 import com.tritonterm.android.terminal.TerminalDiagnostics
 import com.tritonterm.android.terminal.DiagnosticEvent
 import com.tritonterm.android.terminal.GuestCrashRecord
@@ -74,6 +81,7 @@ import com.tritonterm.android.terminal.RuntimeDiagnosticsProbes
 import com.tritonterm.android.terminal.TerminalSetupProgress
 import com.tritonterm.android.terminal.TerminalSetupProgressFile
 import com.tritonterm.android.terminal.TerminalSetupStage
+import com.tritonterm.android.terminal.ArchLoginName
 import com.tritonterm.android.terminal.TerminalCallbacks
 import com.tritonterm.android.terminal.TerminalClipboardAction
 import com.tritonterm.android.terminal.TerminalClipboardSupport
@@ -90,14 +98,29 @@ internal fun TerminalScreen() {
     val context = LocalContext.current
     val terminalController = remember(context) { TerminalSessionHost.controller(context) }
     val installState by ArchLinuxArmInstaller.state.collectAsState()
+    val reusableArchRootfs = remember(context, installState.ready) {
+        ArchLinuxArmBootstrap.isRootfsExtracted(context)
+    }
     var pacmanLockWarning by remember(context) { mutableStateOf(false) }
     var setupReady by remember(terminalController) {
         mutableStateOf(terminalController.isReady(context))
     }
     var setupError by remember(context) { mutableStateOf<String?>(null) }
+    var setupFailureDetails by remember(context) { mutableStateOf(ArchLinuxArmInstaller.state.value.failureDetails) }
+    var showSetupLog by remember(context) { mutableStateOf(false) }
+    var setupLogText by remember(context) { mutableStateOf("") }
     var setupWarning by remember(context) { mutableStateOf<String?>(null) }
     var setupProgress by remember(context) {
         mutableStateOf(TerminalSetupProgress(TerminalSetupStage.IDLE))
+    }
+    var stageElapsedSeconds by remember(context) { mutableLongStateOf(0L) }
+    var archUsername by remember(context) {
+        mutableStateOf(
+            ArchLoginName.fromRootfs(ArchLinuxArmBootstrap.rootfs(context))
+                ?: ArchLoginName.pendingUsername(ArchLinuxArmBootstrap.rootfs(context))
+                ?: context.getSharedPreferences("arch_setup", Context.MODE_PRIVATE).getString("username", "dev")
+                ?: "dev"
+        )
     }
     var session by remember(terminalController) { mutableStateOf<TerminalSession?>(null) }
     var terminalProcessFinished by remember(terminalController) { mutableStateOf(false) }
@@ -120,6 +143,7 @@ internal fun TerminalScreen() {
     LaunchedEffect(installState) {
         setupProgress = installState.progress
         setupError = installState.error
+        setupFailureDetails = installState.failureDetails
         if (installState.ready && !installState.running && session == null) {
             try {
                 session = terminalController.start()
@@ -129,6 +153,16 @@ internal fun TerminalScreen() {
                 setupError = failure.message ?: "Arch is installed, but its interactive shell could not start."
                 TerminalDiagnostics.record(context, "shell_startup", "failed", mapOf("error" to setupError))
             }
+        }
+    }
+
+    LaunchedEffect(context, setupReady, reusableArchRootfs, installState.preflightPassed,
+        installState.preflightFailed, installState.running, installState.error) {
+        if (!setupReady && !reusableArchRootfs && !installState.preflightPassed &&
+            !installState.preflightFailed && !installState.running && installState.error == null
+        ) {
+            // Keep the harmless native check automatic and quiet. The install action stays explicit.
+            ArchLinuxArmInstaller.runPreflight(context)
         }
     }
 
@@ -153,7 +187,7 @@ internal fun TerminalScreen() {
     LaunchedEffect(installState.running) {
         if (!installState.running) return@LaunchedEffect
         var lastInstallProgress: List<Any>? = null
-        while (ArchLinuxArmInstaller.state.value.running) {
+        while (TerminalSetupProgressFile.shouldPollInstaller(ArchLinuxArmInstaller.state.value)) {
             val extracted = withContext(Dispatchers.IO) {
                 TerminalSetupProgressFile.read(context)
             }
@@ -185,29 +219,52 @@ internal fun TerminalScreen() {
         }
     }
 
+    LaunchedEffect(installState.running, installState.stage) {
+        if (!installState.running) {
+            stageElapsedSeconds = 0L
+            return@LaunchedEffect
+        }
+        val stage = installState.stage
+        val started = android.os.SystemClock.elapsedRealtime()
+        while (ArchLinuxArmInstaller.state.value.running && ArchLinuxArmInstaller.state.value.stage == stage) {
+            stageElapsedSeconds = (android.os.SystemClock.elapsedRealtime() - started) / 1_000L
+            delay(1_000L)
+        }
+    }
+
     LaunchedEffect(
         installState.running,
         setupProgress.stage,
         setupProgress.extractedBytes,
         setupProgress.extractedEntries,
-        setupProgress.stepCompleted
+        setupProgress.stepCompleted,
+        setupProgress.activitySequence
     ) {
         if (!installState.running || setupReady || setupError != null ||
             setupProgress.stage !in setOf(
                 TerminalSetupStage.INSTALLING,
                 TerminalSetupStage.PREPARING,
+                TerminalSetupStage.DEVELOPER_TOOLS,
                 TerminalSetupStage.INITIALIZING
             )
         ) return@LaunchedEffect
         setupWarning = null
         delay(90_000)
         if (installState.running && !setupReady && setupError == null) {
-            setupWarning = "No setup progress has been reported for 90 seconds. The process is still running; open Logs to inspect its last phase."
+            setupWarning = "No new command output for 90 seconds. The package or build command is still running and has not been stopped; open Logs to inspect its last output."
             TerminalDiagnostics.record(
                 context,
                 "setup_watchdog",
                 "no_progress_90s",
-                mapOf("stage" to setupProgress.stage.name, "archive_bytes_read" to setupProgress.extractedBytes, "filesystem_entries" to setupProgress.extractedEntries)
+                mapOf(
+                    "stage" to setupProgress.stage.name,
+                    "activity_kind" to if (setupProgress.stage == TerminalSetupStage.INSTALLING) "archive_extraction" else "command_output",
+                    "last_command_output" to setupProgress.lastActivity,
+                    "activity_sequence" to setupProgress.activitySequence,
+                    "archive_bytes_read" to setupProgress.extractedBytes,
+                    "filesystem_entries" to setupProgress.extractedEntries,
+                    "process_terminated" to false
+                )
             )
         }
     }
@@ -334,7 +391,7 @@ internal fun TerminalScreen() {
             Text(
                 terminalController.runtimeLabel,
                 fontSize = 11.sp,
-                color = Color(0xFF626A83)
+                color = Color(0xFF8A8A8A)
             )
         }
 
@@ -458,15 +515,26 @@ internal fun TerminalScreen() {
                     verticalArrangement = Arrangement.spacedBy(14.dp)
                 ) {
                     Text(
-                        setupError ?: when (setupProgress.stage) {
-                            TerminalSetupStage.IDLE -> if (installState.preflightPassed) {
-                                "The native installer launcher passed its harmless check. Arch Linux ARM is not installed yet."
-                            } else "Arch Linux ARM is not installed. Test the installer launcher before starting setup."
+                        setupFailureDetails?.let { details ->
+                            buildString {
+                                append("Developer setup failed")
+                                details.stage?.let { append(" at $it") }
+                                append(" (exit ${details.exitCode}).")
+                            }
+                        } ?: setupError ?: when (setupProgress.stage) {
+                            TerminalSetupStage.IDLE -> if (reusableArchRootfs) {
+                                "An Arch installation is present. Continue setup to install TritonTerm's default developer tools."
+                            } else if (installState.preflightPassed) {
+                                "Arch Linux ARM is ready to install with Fish, Starship, Rustup, Paru, and TCP fakeroot."
+                            } else "Arch Linux ARM is not installed."
                             TerminalSetupStage.DOWNLOADING -> "Downloading Arch Linux ARM…"
                             TerminalSetupStage.VERIFYING -> "Checking the downloaded Arch Linux ARM archive…"
                             TerminalSetupStage.CLEANING -> "Checking interrupted-install state without removing files…"
                             TerminalSetupStage.INSTALLING -> "Unpacking Arch Linux ARM…"
-                            TerminalSetupStage.PREPARING -> "Preparing the Arch userland for TritonTerm…"
+                            TerminalSetupStage.PREPARING -> if (setupProgress.stepCompleted >= 9) {
+                                "Installing Rustup, Fish, Starship, Paru, and TCP fakeroot…"
+                            } else "Preparing the Arch userland for TritonTerm…"
+                            TerminalSetupStage.DEVELOPER_TOOLS -> "Installing Rustup, Fish, Starship, Paru, and TCP fakeroot…"
                             TerminalSetupStage.INITIALIZING -> "Initializing Arch package keys…"
                             TerminalSetupStage.READY -> "Starting shell…"
                             TerminalSetupStage.FAILED -> "Setup failed."
@@ -475,15 +543,69 @@ internal fun TerminalScreen() {
                         textAlign = TextAlign.Center,
                         fontSize = 14.sp
                     )
+                    setupFailureDetails?.let { details ->
+                        Column(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalArrangement = Arrangement.spacedBy(4.dp)
+                        ) {
+                            details.command?.let { command ->
+                                Text("Command: $command", color = Color(0xFFBDBDBD), fontSize = 11.sp, maxLines = 2)
+                            }
+                            details.message?.takeIf { it.isNotBlank() }?.let { message ->
+                                Text(message, color = Color(0xFFFFCC80), fontSize = 11.sp, maxLines = 3)
+                            }
+                            details.stderr.takeLast(3).takeIf { it.isNotEmpty() }?.let { lines ->
+                                Text(lines.joinToString("\n"), color = Color(0xFFFFAB91), fontSize = 10.sp, maxLines = 4)
+                            }
+                        }
+                    }
                     setupWarning?.let {
                         Text(it, color = Color(0xFFFFCC80), textAlign = TextAlign.Center, fontSize = 12.sp)
                     }
+                    if (!setupReady && !ArchRootfsRelease.isConfigured()) {
+                        Text(
+                            "This APK is not pinned to a signed rootfs release yet.",
+                            color = Color(0xFFFFCC80),
+                            textAlign = TextAlign.Center,
+                            fontSize = 12.sp
+                        )
+                    }
+                    if (!setupReady && setupProgress.stage != TerminalSetupStage.READY) {
+                        val passwd = java.io.File(ArchLinuxArmBootstrap.rootfs(context), "etc/passwd")
+                        val group = java.io.File(ArchLinuxArmBootstrap.rootfs(context), "etc/group")
+                        val root = ArchLinuxArmBootstrap.rootfs(context)
+                        val usernameError = ArchLoginName.validate(
+                            archUsername,
+                            passwd.takeIf { it.isFile }?.readText().orEmpty(),
+                            ArchLoginName.isPersonalizationPending(root, archUsername) || ArchLoginName.fromRootfs(root) == archUsername,
+                            group.takeIf { it.isFile }?.readText().orEmpty()
+                        )
+                        OutlinedTextField(
+                            value = archUsername,
+                            onValueChange = { archUsername = it.take(32) },
+                            enabled = !installState.running && !reusableArchRootfs,
+                            modifier = Modifier.fillMaxWidth(),
+                            singleLine = true,
+                            label = { Text("Linux username") },
+                            supportingText = {
+                                Text(usernameError ?: "Your login name and home directory; default: dev")
+                            },
+                            isError = usernameError != null
+                        )
+                    }
                     if (installState.running) {
+                        Text(
+                            "${setupProgress.stage.name.lowercase().replace('_', ' ')} · ${stageElapsedSeconds / 60}:${(stageElapsedSeconds % 60).toString().padStart(2, '0')}",
+                            color = Color(0xFF8A8A8A),
+                            fontSize = 11.sp
+                        )
                         val total = setupProgress.total
                         if (setupProgress.stage == TerminalSetupStage.DOWNLOADING && total != null && total > 0) {
                             Text(
-                                "${setupProgress.downloaded / (1024 * 1024)} / ${total / (1024 * 1024)} MiB",
-                                color = Color(0xFF626A83),
+                                "${setupProgress.downloaded / (1024 * 1024)} / ${total / (1024 * 1024)} MiB · " +
+                                    "${(setupProgress.downloaded * 100 / total).coerceIn(0, 100)}% · " +
+                                    "${setupProgress.downloadBytesPerSecond / (1024 * 1024)} MiB/s",
+                                color = Color(0xFF8A8A8A),
                                 fontSize = 12.sp
                             )
                         }
@@ -499,21 +621,29 @@ internal fun TerminalScreen() {
                                     "${setupProgress.extractionTotal / (1024 * 1024)} MiB · " +
                                     "${setupProgress.extractedEntries} entries"
                             }
-                            Text(progressText, color = Color(0xFF626A83), fontSize = 12.sp)
+                            Text(progressText, color = Color(0xFF8A8A8A), fontSize = 12.sp)
                         }
                         if (setupProgress.stage == TerminalSetupStage.CLEANING) {
                             Text(
                                 "${setupProgress.extractedEntries} installer entries checked",
-                                color = Color(0xFF626A83),
+                                color = Color(0xFF8A8A8A),
                                 fontSize = 12.sp
                             )
                         }
                         if (setupProgress.stage == TerminalSetupStage.PREPARING && setupProgress.stepTotal > 0) {
                             Text(
                                 "Preparation step ${setupProgress.stepCompleted} of ${setupProgress.stepTotal}",
-                                color = Color(0xFF626A83),
+                                color = Color(0xFF8A8A8A),
                                 fontSize = 12.sp
                             )
+                        }
+                        if (setupProgress.stage == TerminalSetupStage.DEVELOPER_TOOLS) {
+                            setupProgress.lastActivity?.let { activity ->
+                                Text(activity.take(120), color = Color(0xFF8A8A8A), fontSize = 11.sp, maxLines = 2)
+                            }
+                            setupProgress.commandStatus?.let { status ->
+                                Text(status.take(160), color = Color(0xFFBDBDBD), fontSize = 11.sp, maxLines = 2)
+                            }
                         }
                         SetupStageProgress(
                             downloadFraction = when {
@@ -526,6 +656,7 @@ internal fun TerminalScreen() {
                                 TerminalSetupStage.PREPARING -> setupProgress.stepTotal.takeIf { it > 0 }?.let {
                                     setupProgress.stepCompleted.toFloat() / it
                                 }
+                                TerminalSetupStage.DEVELOPER_TOOLS -> null
                                 else -> setupProgress.extractionTotal.takeIf { it > 0L }?.let {
                                     setupProgress.extractedBytes.toFloat() / it
                                 }
@@ -534,22 +665,55 @@ internal fun TerminalScreen() {
                         )
                     } else if (!setupReady) {
                         Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                            if (installState.preflightFailed) {
+                                TextButton(
+                                    enabled = !installState.running,
+                                    onClick = { ArchLinuxArmInstaller.runPreflight(context) }
+                                ) { Text("Retry check") }
+                            }
+                            val passwd = java.io.File(ArchLinuxArmBootstrap.rootfs(context), "etc/passwd")
+                            val group = java.io.File(ArchLinuxArmBootstrap.rootfs(context), "etc/group")
+                            val usernameError = ArchLoginName.validate(
+                                archUsername,
+                                passwd.takeIf { it.isFile }?.readText().orEmpty(),
+                                ArchLoginName.isPersonalizationPending(ArchLinuxArmBootstrap.rootfs(context), archUsername) ||
+                                    ArchLoginName.fromRootfs(ArchLinuxArmBootstrap.rootfs(context)) == archUsername,
+                                group.takeIf { it.isFile }?.readText().orEmpty()
+                            )
                             Button(
-                                enabled = !installState.running && !installState.preflightPassed,
-                                onClick = { ArchLinuxArmInstaller.runPreflight(context) }
-                            ) { Text(if (installState.preflightPassed) "Launcher verified" else "Test launcher") }
-                            Button(
-                                enabled = installState.preflightPassed && !installState.running && installState.error == null,
-                                onClick = { ArchLinuxArmInstaller.start(context) }
-                            ) { Text("Install Arch") }
+                                enabled = !installState.running && usernameError == null && ArchRootfsRelease.isConfigured() &&
+                                    (reusableArchRootfs || installState.preflightPassed) && !installState.preflightFailed,
+                                onClick = { ArchLinuxArmInstaller.start(context, archUsername) }
+                            ) { Text(if (installState.error != null) "Retry setup" else if (reusableArchRootfs) "Continue setup" else "Install Arch") }
                         }
                         if (setupError != null) {
                             Text(
-                                "Open Logs and export diagnostics. This build will not automatically retry or remove the preserved rootfs.",
+                                "The rootfs and user files are preserved. Review Logs, then retry setup after resolving the reported issue.",
                                 color = Color(0xFFFFCC80),
                                 textAlign = TextAlign.Center,
                                 fontSize = 12.sp
                             )
+                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                TextButton(onClick = {
+                                    setupLogText = ArchDeveloperSetupLog.read(context)
+                                    showSetupLog = true
+                                }) { Text("View setup log") }
+                                TextButton(onClick = {
+                                    runCatching {
+                                        val file = TerminalDiagnostics.createShareableSetupLogFile(context)
+                                        val uri = FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
+                                        val intent = Intent(Intent.ACTION_SEND).apply {
+                                            type = "text/plain"
+                                            putExtra(Intent.EXTRA_STREAM, uri)
+                                            clipData = ClipData.newUri(context.contentResolver, "Arch setup log", uri)
+                                            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                                        }
+                                        context.startActivity(Intent.createChooser(intent, "Share Arch setup log"))
+                                    }.onFailure { failure ->
+                                        Toast.makeText(context, "Could not share setup log: ${failure.message}", Toast.LENGTH_LONG).show()
+                                    }
+                                }) { Text("Share setup log") }
+                            }
                         }
                     }
                 }
@@ -675,6 +839,32 @@ internal fun TerminalScreen() {
             onExport = { if (!exportRunning) exportDiagnostics.launch("tritonterm-diagnostics.jsonl") }
         )
     }
+    if (showSetupLog) {
+        AlertDialog(
+            onDismissRequest = { showSetupLog = false },
+            title = { Text("Arch setup log") },
+            text = {
+                SelectionContainer {
+                    Text(
+                        setupLogText,
+                        modifier = Modifier.fillMaxWidth().heightIn(max = 440.dp).verticalScroll(rememberScrollState()),
+                        fontFamily = FontFamily.Monospace,
+                        fontSize = 11.sp
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                    clipboard.setPrimaryClip(ClipData.newPlainText("Arch setup log", setupLogText))
+                    Toast.makeText(context, "Setup log copied", Toast.LENGTH_SHORT).show()
+                }) { Text("Copy") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showSetupLog = false }) { Text("Close") }
+            }
+        )
+    }
 }
 
 @Composable
@@ -697,15 +887,21 @@ private fun SetupStageProgress(
                 TerminalSetupStage.CLEANING -> "Cleanup"
                 TerminalSetupStage.INSTALLING -> "Unpack"
                 TerminalSetupStage.PREPARING -> "Prepare"
+                TerminalSetupStage.DEVELOPER_TOOLS -> "Developer tools"
                 else -> "Install"
             },
             fraction = when (installStage) {
                 TerminalSetupStage.VERIFYING -> installFraction
                 TerminalSetupStage.CLEANING -> null
                 TerminalSetupStage.INSTALLING -> installFraction
+                TerminalSetupStage.PREPARING, TerminalSetupStage.DEVELOPER_TOOLS -> installFraction
                 else -> 0f
             },
-            active = installStage in setOf(TerminalSetupStage.VERIFYING, TerminalSetupStage.INSTALLING) &&
+            active = installStage in setOf(
+                TerminalSetupStage.VERIFYING,
+                TerminalSetupStage.INSTALLING,
+                TerminalSetupStage.DEVELOPER_TOOLS
+            ) &&
                 installFraction == null,
             modifier = Modifier.weight(1f)
         )
@@ -719,12 +915,13 @@ private fun StageProgressBar(
     active: Boolean,
     modifier: Modifier = Modifier
 ) {
-    val offset = if (fraction == null && active) {
+    val animationsEnabled = remember { ValueAnimator.areAnimatorsEnabled() }
+    val offset = if (fraction == null && active && animationsEnabled) {
         val transition = rememberInfiniteTransition(label = "${title}Progress")
         val animatedOffset by transition.animateFloat(
             initialValue = -0.35f,
             targetValue = 1f,
-            animationSpec = infiniteRepeatable(tween(durationMillis = 1_000)),
+            animationSpec = infiniteRepeatable(tween(durationMillis = 5_000)),
             label = "${title}ProgressOffset"
         )
         animatedOffset
@@ -732,7 +929,7 @@ private fun StageProgressBar(
         0f
     }
     Column(modifier, verticalArrangement = Arrangement.spacedBy(7.dp)) {
-        Text(title, color = Color(0xFF626A83), fontSize = 11.sp)
+        Text(title, color = Color(0xFF929292), fontSize = 11.sp)
         Canvas(Modifier.fillMaxWidth().height(6.dp)) {
             val radius = CornerRadius(size.height / 2f)
             drawRoundRect(Color(0xFF292929), cornerRadius = radius)
@@ -740,7 +937,7 @@ private fun StageProgressBar(
                 val width = size.width * fraction.coerceIn(0f, 1f)
                 if (width > 0f) {
                     drawRoundRect(
-                        Color(0xFF8992B2),
+                        Color(0xFFBDBDBD),
                         size = Size(width, size.height),
                         cornerRadius = radius
                     )
@@ -751,7 +948,7 @@ private fun StageProgressBar(
                 val right = (left + segmentWidth).coerceAtMost(size.width)
                 if (right > left) {
                     drawRoundRect(
-                        Color(0xFF8992B2),
+                        Color(0xFFBDBDBD),
                         topLeft = Offset(left, 0f),
                         size = Size(right - left, size.height),
                         cornerRadius = radius
