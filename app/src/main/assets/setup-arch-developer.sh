@@ -2,7 +2,7 @@
 # Fresh TritonTerm Arch developer environment. Invoked as root inside PRoot.
 set -Eeuo pipefail
 
-readonly VERSION='3'
+readonly VERSION='4'
 readonly FAKEROOT_VERSION='2.1.4'
 readonly FAKEROOT_URL='https://deb.debian.org/debian/pool/main/f/fakeroot/fakeroot_2.1.4.orig.tar.xz'
 readonly FAKEROOT_SHA256='0822bd5a9f0cf19d2ba0546b88b0432d4d3d9917db62c57b74044ccadba06e49'
@@ -140,11 +140,32 @@ fi
 
 stage='development_user'
 if ! getent passwd "$DEV_USER" >/dev/null; then
-    say 'Creating the unprivileged template account.'
-    if getent passwd 1000 >/dev/null || getent group 1000 >/dev/null; then
-        die 24 'the image already uses template UID/GID 1000; refusing to repurpose an unrelated account or group'
+    uid_1000_entry="$(getent passwd 1000 || true)"
+    gid_1000_entry="$(getent group 1000 || true)"
+    if [[ -z "$uid_1000_entry" && -z "$gid_1000_entry" ]]; then
+        say 'Creating the unprivileged template account.'
+        useradd --create-home --uid 1000 --user-group --groups wheel --shell /usr/bin/fish "$DEV_USER"
+    else
+        # The official Arch Linux ARM base image reserves UID/GID 1000 for
+        # its default `alarm` login. Reuse that known template identity on this
+        # fresh image, preserving its numeric ownership and home contents.
+        IFS=: read -r uid_1000_name _ uid_1000_value uid_1000_gid _ uid_1000_home uid_1000_shell <<< "$uid_1000_entry"
+        IFS=: read -r gid_1000_name _ gid_1000_value gid_1000_members <<< "$gid_1000_entry"
+        if [[ "$uid_1000_name" != alarm || "$uid_1000_value" != 1000 || "$uid_1000_gid" != 1000 ||
+              "$uid_1000_home" != /home/alarm || "$uid_1000_shell" != /bin/bash ||
+              "$gid_1000_name" != alarm || "$gid_1000_value" != 1000 ]]; then
+            die 24 "UID/GID 1000 is occupied by an unexpected base-image identity (user=${uid_1000_name:-none}, group=${gid_1000_name:-none}); refusing to repurpose it"
+        fi
+        getent passwd "$DEV_USER" >/dev/null && die 24 'the template login name dev already exists with an unexpected UID'
+        getent group "$DEV_USER" >/dev/null && die 24 'the template group name dev already exists with an unexpected GID'
+        if [[ -e /home/dev ]]; then
+            die 24 'cannot rename the base alarm account because /home/dev already exists'
+        fi
+        say 'Renaming the verified Arch Linux ARM alarm template account to dev while preserving UID/GID 1000 and its home files.'
+        usermod --login "$DEV_USER" alarm
+        groupmod --new-name "$DEV_USER" alarm
+        usermod --home /home/dev --move-home "$DEV_USER"
     fi
-    useradd --create-home --uid 1000 --user-group --groups wheel --shell /usr/bin/fish "$DEV_USER"
 fi
 IFS=: read -r _ _ dev_uid dev_gid _ dev_home _ < <(getent passwd "$DEV_USER")
 [[ "${dev_uid:-}" == 1000 && "${dev_gid:-}" == 1000 && -n "${dev_home:-}" && "$dev_home" == /home/dev ]] ||
