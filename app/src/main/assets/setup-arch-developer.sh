@@ -345,6 +345,8 @@ bsdtar --numeric-owner -tvf "$fake_archive" | awk '
 say 'TCP fakeroot zstd-compressed bsdtar archive probe passed: root:root ownership preserved.'
 nested_fakeroot_version="$(run_dev_fish 'fakeroot -- /bin/sh -c "fakeroot -v"')"
 say "Nested TCP fakeroot version query passed: ${nested_fakeroot_version}"
+run_dev_fish 'fakeroot -- /usr/bin/pacman -Qi pacman >/dev/null'
+say 'TCP fakeroot package metadata query passed.'
 cat > "$smoke/PKGBUILD" <<'SMOKE_PKGBUILD'
 pkgname=tritonterm-default-smoke
 pkgver=1
