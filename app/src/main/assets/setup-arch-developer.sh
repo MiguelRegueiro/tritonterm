@@ -308,7 +308,11 @@ if [[ -L "$FAKEROOT_CURRENT" ]]; then rm "$FAKEROOT_CURRENT"; fi
 ln -s "$FAKEROOT_VERSION" "$FAKEROOT_CURRENT"
 ln -sfn "${FAKEROOT_CURRENT}/bin/fakeroot" "$dev_home/.local/bin/fakeroot"
 chown -h "$DEV_USER:$dev_group" "$dev_home/.local/bin/fakeroot"
-run_dev_fish 'fakeroot -- /bin/sh -c "test \"$(id -u)\" = 0"'
+fake_uid="$(run_dev_fish 'fakeroot -- /usr/bin/id -u')"
+fake_gid="$(run_dev_fish 'fakeroot -- /usr/bin/id -g')"
+[[ "$fake_uid" == 0 && "$fake_gid" == 0 ]] ||
+    die 31 "TCP fakeroot identity smoke failed (reported uid=${fake_uid:-empty}, gid=${fake_gid:-empty})"
+say 'TCP fakeroot identity smoke passed: fake uid=0 gid=0.'
 
 stage='makepkg_install_smoke'
 say 'Running makepkg -si as dev to validate TCP fakeroot and restricted pacman authorization.'
