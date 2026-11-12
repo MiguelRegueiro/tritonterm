@@ -3,6 +3,9 @@ package com.tritonterm.android.terminal
 import android.content.Context
 import android.content.ClipData
 import android.content.ClipboardManager
+import android.app.ActivityManager
+import android.app.ApplicationExitInfo
+import android.os.Debug
 import android.os.Build
 import android.system.Os
 import android.view.KeyEvent
@@ -41,6 +44,15 @@ internal class TerminalSessionController(
         }
     }
 
+    /** Start a replacement PTY only after the previous top-level session process has exited. */
+    fun restartFinishedSession(): TerminalSession {
+        check(TerminalSessionRecovery.canRestart(activeSession?.isRunning == true)) {
+            "The terminal session is still running."
+        }
+        activeSession = null
+        return start()
+    }
+
     fun close() {
         client.terminalView = null
         resetSession()
@@ -51,6 +63,7 @@ internal class TerminalSessionController(
         client.terminalView = null
         client.setupObserver = null
         client.setupFailureObserver = null
+        client.finishObserver = null
     }
 
     fun resetSession() {
@@ -58,6 +71,15 @@ internal class TerminalSessionController(
         activeSession?.finishIfRunning()
         activeSession = null
     }
+}
+
+internal object TerminalSessionRecovery {
+    fun canRestart(isRunning: Boolean): Boolean = !isRunning
+
+    fun signalNumber(exitStatus: Int): Int? = exitStatus.takeIf { it < 0 }?.unaryMinus()
+
+    fun processPidForExit(observedWhileRunning: Int?, pidAtFinish: Int): Int? =
+        observedWhileRunning?.takeIf { it > 0 } ?: pidAtFinish.takeIf { it > 0 }
 }
 
 /** Process-scoped PTY owner; Compose screens attach and detach views without ending the shell. */
@@ -81,6 +103,7 @@ internal object TerminalSessionHost {
     }
 
     private fun inspectPreviousProcess(context: Context) {
+        recordAppProcessExitHistory(context)
         val marker = File(context.filesDir, "usr/var/lib/pr/tritonterm-active-shell")
         if (!marker.isFile) return
         val lock = File(ArchLinuxArmBootstrap.rootfs(context), "var/lib/pacman/db.lck")
@@ -92,14 +115,91 @@ internal object TerminalSessionHost {
         )
         marker.delete()
     }
+
+    /** Android reports app-process exits here; it cannot attribute a killed PRoot child. */
+    private fun recordAppProcessExitHistory(context: Context) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) return
+        runCatching {
+            val manager = context.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
+            manager.getHistoricalProcessExitReasons(context.packageName, 0, 5).forEach { info ->
+                TerminalDiagnostics.record(
+                    context,
+                    "android_app_process_exit_history",
+                    "historical_exit",
+                    mapOf(
+                        "scope" to "application_process_only",
+                        "process_name" to info.processName,
+                        "pid" to info.pid,
+                        "reason_code" to info.reason,
+                        "reason" to processExitReasonName(info.reason),
+                        "status" to info.status,
+                        "description" to info.description,
+                        "timestamp_ms" to info.timestamp,
+                        "pss_kb" to info.pss,
+                        "rss_kb" to info.rss,
+                        "importance" to info.importance
+                    )
+                )
+            }
+        }.onFailure { failure ->
+            TerminalDiagnostics.record(
+                context,
+                "android_app_process_exit_history",
+                "unavailable",
+                mapOf("scope" to "application_process_only", "error" to failure.toString())
+            )
+        }
+    }
+
+    private fun processExitReasonName(reason: Int): String = when (reason) {
+        ApplicationExitInfo.REASON_LOW_MEMORY -> "low_memory"
+        ApplicationExitInfo.REASON_SIGNALED -> "signaled"
+        ApplicationExitInfo.REASON_EXCESSIVE_RESOURCE_USAGE -> "excessive_resource_usage"
+        ApplicationExitInfo.REASON_CRASH -> "crash"
+        ApplicationExitInfo.REASON_CRASH_NATIVE -> "native_crash"
+        ApplicationExitInfo.REASON_ANR -> "anr"
+        ApplicationExitInfo.REASON_USER_REQUESTED -> "user_requested"
+        ApplicationExitInfo.REASON_USER_STOPPED -> "user_stopped"
+        ApplicationExitInfo.REASON_DEPENDENCY_DIED -> "dependency_died"
+        ApplicationExitInfo.REASON_FREEZER -> "freezer"
+        ApplicationExitInfo.REASON_OTHER -> "other"
+        else -> "reason_$reason"
+    }
 }
 
 internal object PacmanRecoveryState {
-    fun hasDatabaseLock(context: Context): Boolean =
-        File(ArchLinuxArmBootstrap.rootfs(context), "var/lib/pacman/db.lck").exists()
+    enum class LockState { CLEAR, ACTIVE_TRANSACTION, POSSIBLY_STALE }
+
+    const val STALE_LOCK_WARNING_DELAY_MS = 5_000L
+
+    fun state(context: Context): LockState {
+        val lock = File(ArchLinuxArmBootstrap.rootfs(context), "var/lib/pacman/db.lck")
+        return classify(lock.exists(), lock.exists() && hasPacmanProcess())
+    }
+
+    fun classify(lockPresent: Boolean, pacmanProcessPresent: Boolean): LockState = when {
+        !lockPresent -> LockState.CLEAR
+        pacmanProcessPresent -> LockState.ACTIVE_TRANSACTION
+        else -> LockState.POSSIBLY_STALE
+    }
+
+    fun shouldWarn(state: LockState, noProcessDurationMs: Long): Boolean =
+        state == LockState.POSSIBLY_STALE && noProcessDurationMs >= STALE_LOCK_WARNING_DELAY_MS
+
+    fun hasDatabaseLock(context: Context): Boolean = state(context) != LockState.CLEAR
+
+    private fun hasPacmanProcess(): Boolean {
+        val commandPattern = Regex("(^|[\\s/])pacman([\\s\\u0000]|$)")
+        return File("/proc").listFiles().orEmpty().any { process ->
+            if (!process.name.all(Char::isDigit)) return@any false
+            val command = runCatching { File(process, "cmdline").readBytes().toString(Charsets.UTF_8) }.getOrNull()
+                ?: return@any false
+            commandPattern.containsMatchIn(command)
+        }
+    }
 }
 
-internal enum class TerminalSetupStage { IDLE, DOWNLOADING, VERIFYING, CLEANING, INSTALLING, INITIALIZING, READY, FAILED }
+internal enum class TerminalSetupStage { IDLE, DOWNLOADING, VERIFYING, CLEANING, INSTALLING, PREPARING, INITIALIZING, READY, FAILED }
 
 internal data class TerminalSetupProgress(
     val stage: TerminalSetupStage,
@@ -107,7 +207,9 @@ internal data class TerminalSetupProgress(
     val total: Long? = null,
     val extractedEntries: Long = 0L,
     val extractedBytes: Long = 0L,
-    val extractionTotal: Long = 0L
+    val extractionTotal: Long = 0L,
+    val stepCompleted: Int = 0,
+    val stepTotal: Int = 0
 )
 
 internal object TerminalSetupProgressFile {
@@ -209,14 +311,33 @@ internal class ArchLinuxArmBackend : TerminalBackend {
             "TMPDIR=${cache.absolutePath}",
             "PROOT_TMP_DIR=${cache.absolutePath}",
             "PROOT_NO_SECCOMP=1",
+            "PROOT_CRASH_DIAGNOSTICS=1",
+            "PROOT_CRASH_DIAGNOSTICS_FILE=${TerminalDiagnostics.crashFile(context).absolutePath}",
             "TRITONTERM_DIAGNOSTICS_FILE=${TerminalDiagnostics.file(context).absolutePath}",
             "PATH=${bin.absolutePath}:/system/bin:/system/xbin",
             "TERM=xterm-256color",
             "LANG=en_US.UTF-8"
         )
         File(context.filesDir, "home").mkdirs()
+        val rustDiagnostic = File(context.filesDir, "home/.tritonterm-diagnose-arch-rust.sh")
+        context.assets.open("diagnose-arch-rust.sh").use { source ->
+            rustDiagnostic.outputStream().use { destination -> source.copyTo(destination) }
+        }
         val startedAt = System.nanoTime()
+        TerminalDiagnostics.record(
+            context,
+            "proot_crash_recorder",
+            "configured",
+            mapOf(
+                "enabled" to true,
+                "output" to TerminalDiagnostics.crashFile(context).absolutePath,
+                "output_parent_exists" to TerminalDiagnostics.crashFile(context).parentFile?.isDirectory,
+                "output_parent_writable" to TerminalDiagnostics.crashFile(context).parentFile?.canWrite(),
+                "forwarded_by_pr_cli" to true
+            )
+        )
         TerminalDiagnostics.record(context, "shell_startup", "launch_requested", mapOf("executable" to cli))
+        val crashLogOffset = TerminalDiagnostics.crashFile(context).takeIf(File::isFile)?.length() ?: 0L
         return try {
             TerminalSession(
                 cli,
@@ -228,6 +349,7 @@ internal class ArchLinuxArmBackend : TerminalBackend {
                 2000,
                 client
             ).also {
+                TerminalDiagnostics.confirmCrashRecorder(context, crashLogOffset)
                 TerminalDiagnostics.record(
                     context,
                     "shell_startup",
@@ -265,21 +387,34 @@ internal class ArchLinuxArmBackend : TerminalBackend {
 
 internal class TritonSessionClient(private val context: Context) : TerminalSessionClient {
     var terminalView: TerminalView? = null
+    var finishObserver: (() -> Unit)? = null
     var setupObserver: ((TerminalSetupStage) -> Unit)? = null
     var setupFailureObserver: ((String) -> Unit)? = null
     private var setupReady = false
     private var previousTranscript = ""
     private val emittedMarkers = mutableSetOf<String>()
     private var shellOutputRecorded = false
+    private var observedProcessPid: Int? = null
 
     fun beginSetup(captureOutput: Boolean) {
         setupReady = !captureOutput
         previousTranscript = ""
         emittedMarkers.clear()
         shellOutputRecorded = false
+        observedProcessPid = null
     }
 
     override fun onTextChanged(changedSession: TerminalSession) {
+        val livePid = changedSession.pid.takeIf { it > 0 }
+        if (livePid != null && observedProcessPid == null) {
+            observedProcessPid = livePid
+            TerminalDiagnostics.record(
+                context,
+                "terminal_process",
+                "identity_observed",
+                mapOf("pid" to livePid, "scope" to "PTY_managed_top_level_process_pr_cli_execs_into_proot")
+            )
+        }
         val screenText = runCatching {
             changedSession.emulator?.screen?.transcriptText?.takeLast(4096).orEmpty()
         }.getOrDefault("")
@@ -313,12 +448,39 @@ internal class TritonSessionClient(private val context: Context) : TerminalSessi
     override fun onSessionFinished(finishedSession: TerminalSession) {
         TerminalSessionHost.markSessionInactive(context)
         TerminalForegroundService.stop(context)
+        val status = finishedSession.exitStatus
+        val pidAtFinish = finishedSession.pid
+        val reportedPid = TerminalSessionRecovery.processPidForExit(observedProcessPid, pidAtFinish)
+        val memory = runCatching {
+            val info = ActivityManager.MemoryInfo()
+            (context.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager).getMemoryInfo(info)
+            mapOf(
+                "host_available_memory_bytes" to info.availMem,
+                "host_low_memory_threshold_bytes" to info.threshold,
+                "host_low_memory_flag" to info.lowMemory,
+                "app_process_pss_kb" to Debug.getPss()
+            )
+        }.getOrDefault(emptyMap())
         TerminalDiagnostics.record(
             context,
             "terminal_process",
             "exited",
-            mapOf("exit_code" to finishedSession.exitStatus)
+            mapOf(
+                "exit_code" to status,
+                "termination_kind" to if (status < 0) "signal_observed_by_terminal_session" else "exit_status",
+                "signal_number" to TerminalSessionRecovery.signalNumber(status),
+                "observed_process_scope" to "PTY_managed_top_level_process_pr_cli_execs_into_proot",
+                "terminal_session_pid" to reportedPid,
+                "terminal_session_pid_source" to when {
+                    observedProcessPid != null -> "captured_while_session_was_alive"
+                    pidAtFinish > 0 -> "available_at_finish_callback"
+                    else -> "unavailable"
+                },
+                "terminal_session_pid_at_finish" to pidAtFinish,
+                "cause" to "unknown_from_wait_status_alone"
+            ) + memory
         )
+        finishObserver?.invoke()
         if (!setupReady && setupObserver != null) {
             val diagnostic = runCatching {
                 finishedSession.emulator?.screen?.transcriptText.orEmpty()

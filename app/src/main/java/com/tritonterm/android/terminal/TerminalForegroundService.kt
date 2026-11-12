@@ -37,6 +37,16 @@ internal class TerminalForegroundService : Service() {
 
     override fun onBind(intent: Intent?): IBinder? = null
 
+    override fun onTaskRemoved(rootIntent: Intent?) {
+        TerminalDiagnostics.record(applicationContext, "foreground_service", "task_removed", mapOf("service_continues" to true))
+        super.onTaskRemoved(rootIntent)
+    }
+
+    override fun onDestroy() {
+        TerminalDiagnostics.record(applicationContext, "foreground_service", "destroyed")
+        super.onDestroy()
+    }
+
     private fun notification(message: String): Notification {
         val launch = PendingIntent.getActivity(
             this,

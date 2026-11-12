@@ -3,11 +3,13 @@ package com.tritonterm.android.ui
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
+import android.content.Intent
 import android.net.Uri
 import android.view.KeyEvent
 import android.view.Menu
 import android.view.inputmethod.InputMethodManager
 import android.widget.Toast
+import androidx.core.content.FileProvider
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
@@ -66,6 +68,8 @@ import com.tritonterm.android.terminal.TerminalForegroundService
 import com.tritonterm.android.terminal.PacmanRecoveryState
 import com.tritonterm.android.terminal.ArchLinuxArmInstaller
 import com.tritonterm.android.terminal.TerminalDiagnostics
+import com.tritonterm.android.terminal.DiagnosticEvent
+import com.tritonterm.android.terminal.GuestCrashRecord
 import com.tritonterm.android.terminal.RuntimeDiagnosticsProbes
 import com.tritonterm.android.terminal.TerminalSetupProgress
 import com.tritonterm.android.terminal.TerminalSetupProgressFile
@@ -81,14 +85,12 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.nio.charset.StandardCharsets
 
-private const val DIAGNOSTICS_PREVIEW_CHARS = 80_000
-
 @Composable
 internal fun TerminalScreen() {
     val context = LocalContext.current
     val terminalController = remember(context) { TerminalSessionHost.controller(context) }
     val installState by ArchLinuxArmInstaller.state.collectAsState()
-    val pacmanLockPresent = remember(context) { PacmanRecoveryState.hasDatabaseLock(context) }
+    var pacmanLockWarning by remember(context) { mutableStateOf(false) }
     var setupReady by remember(terminalController) {
         mutableStateOf(terminalController.isReady(context))
     }
@@ -98,10 +100,16 @@ internal fun TerminalScreen() {
         mutableStateOf(TerminalSetupProgress(TerminalSetupStage.IDLE))
     }
     var session by remember(terminalController) { mutableStateOf<TerminalSession?>(null) }
+    var terminalProcessFinished by remember(terminalController) { mutableStateOf(false) }
     val setupScope = androidx.compose.runtime.rememberCoroutineScope()
 
     LaunchedEffect(terminalController) {
         if (terminalController.isReady(context)) {
+            if (!ArchLinuxArmInstaller.repositoryRefreshComplete(context)) {
+                setupReady = false
+                ArchLinuxArmInstaller.ensureRepositoryDatabases(context)
+                return@LaunchedEffect
+            }
             session = terminalController.start()
             setupReady = true
             return@LaunchedEffect
@@ -112,7 +120,7 @@ internal fun TerminalScreen() {
     LaunchedEffect(installState) {
         setupProgress = installState.progress
         setupError = installState.error
-        if (installState.ready && session == null) {
+        if (installState.ready && !installState.running && session == null) {
             try {
                 session = terminalController.start()
                 setupReady = true
@@ -122,6 +130,24 @@ internal fun TerminalScreen() {
                 TerminalDiagnostics.record(context, "shell_startup", "failed", mapOf("error" to setupError))
             }
         }
+    }
+
+    LaunchedEffect(setupReady) {
+        var noProcessSince: Long? = null
+        while (setupReady) {
+            val state = withContext(Dispatchers.IO) { PacmanRecoveryState.state(context) }
+            if (state == PacmanRecoveryState.LockState.POSSIBLY_STALE) {
+                val now = android.os.SystemClock.elapsedRealtime()
+                val firstSeen = noProcessSince ?: now.also { noProcessSince = it }
+                pacmanLockWarning = PacmanRecoveryState.shouldWarn(state, now - firstSeen)
+            } else {
+                noProcessSince = null
+                // A live pacman process owns its lock; ordinary user-initiated commands are quiet.
+                pacmanLockWarning = false
+            }
+            delay(1_000)
+        }
+        pacmanLockWarning = false
     }
 
     LaunchedEffect(installState.running) {
@@ -159,9 +185,19 @@ internal fun TerminalScreen() {
         }
     }
 
-    LaunchedEffect(installState.running, setupProgress.stage, setupProgress.extractedBytes, setupProgress.extractedEntries) {
+    LaunchedEffect(
+        installState.running,
+        setupProgress.stage,
+        setupProgress.extractedBytes,
+        setupProgress.extractedEntries,
+        setupProgress.stepCompleted
+    ) {
         if (!installState.running || setupReady || setupError != null ||
-            setupProgress.stage !in setOf(TerminalSetupStage.INSTALLING, TerminalSetupStage.INITIALIZING)
+            setupProgress.stage !in setOf(
+                TerminalSetupStage.INSTALLING,
+                TerminalSetupStage.PREPARING,
+                TerminalSetupStage.INITIALIZING
+            )
         ) return@LaunchedEffect
         setupWarning = null
         delay(90_000)
@@ -177,6 +213,16 @@ internal fun TerminalScreen() {
     }
 
     val sessionClient = terminalController.client
+    LaunchedEffect(session) {
+        terminalProcessFinished = session?.isRunning == false
+    }
+    DisposableEffect(sessionClient, setupScope) {
+        sessionClient.finishObserver = { setupScope.launch { terminalProcessFinished = true } }
+        onDispose {
+            sessionClient.finishObserver = null
+            terminalController.detachView()
+        }
+    }
     val configFile = remember(context) { TerminalConfig.file(context.filesDir) }
     val initialConfig = remember(configFile) { TerminalConfig.loadOrCreate(configFile) }
     var terminalFontSize by remember { mutableIntStateOf(initialConfig.fontSize) }
@@ -186,26 +232,36 @@ internal fun TerminalScreen() {
     var showConfig by remember { mutableStateOf(false) }
     var configText by remember { mutableStateOf("") }
     var showDiagnostics by remember { mutableStateOf(false) }
-    var diagnosticsText by remember { mutableStateOf("") }
+    var diagnosticEvents by remember { mutableStateOf(emptyList<DiagnosticEvent>()) }
+    var crashRecords by remember { mutableStateOf(emptyList<GuestCrashRecord>()) }
+    var recorderStatusText by remember { mutableStateOf("Recorder status unknown.") }
     var diagnosticsMessage by remember { mutableStateOf("") }
     var smokeRunning by remember { mutableStateOf(false) }
+    var exportRunning by remember { mutableStateOf(false) }
     var smokeResult by remember { mutableStateOf("Not run") }
     val exportDiagnostics = rememberLauncherForActivityResult(
         ActivityResultContracts.CreateDocument("application/x-ndjson")
     ) { uri: Uri? ->
+        TerminalDiagnostics.recordExportDestination(context, uri)
         if (uri == null) {
             diagnosticsMessage = "Export cancelled."
         } else {
-            val result = runCatching {
-                TerminalDiagnostics.flushProcessOutput()
-                val logText = TerminalDiagnostics.read(context)
-                check(logText.isNotBlank()) { "The diagnostics log is empty." }
-                context.contentResolver.openOutputStream(uri)?.use { output ->
-                    output.write(logText.toByteArray(Charsets.UTF_8))
-                    output.flush()
-                } ?: error("Could not open the selected destination.")
+            diagnosticsMessage = "Exporting and verifying diagnostics…"
+            exportRunning = true
+            setupScope.launch {
+                val result = runCatching { withContext(Dispatchers.IO) { TerminalDiagnostics.export(context, uri) } }
+                exportRunning = false
+                diagnosticsMessage = result.fold(
+                    onSuccess = {
+                        "Destination URI ${it.destinationUri}: verified ${it.uriReadbackBytes} bytes " +
+                            "(expected ${it.expectedBytes}, wrote ${it.bytesWritten}); " +
+                            "provider reports ${it.providerReportedBytes?.toString() ?: "size unavailable"} " +
+                            "after ${it.providerMetadataAttempts} metadata checks over ${it.providerMetadataWaitMs} ms." +
+                            (it.providerMetadataError?.let { error -> " Metadata note: $error" } ?: "")
+                    },
+                    onFailure = { "Export failed: ${it.message ?: it.javaClass.simpleName}" }
+                )
             }
-            diagnosticsMessage = if (result.isSuccess) "Diagnostics exported." else "Export failed: ${result.exceptionOrNull()?.message}"
         }
     }
     var useSystemKeyboard by remember { mutableStateOf(false) }
@@ -226,10 +282,6 @@ internal fun TerminalScreen() {
             }
         }
     }
-    DisposableEffect(terminalController) {
-        onDispose { terminalController.detachView() }
-    }
-
     Column(
         Modifier
             .fillMaxSize()
@@ -261,7 +313,9 @@ internal fun TerminalScreen() {
             Text(
                 "Logs",
                 modifier = Modifier.clickable {
-                    diagnosticsText = TerminalDiagnostics.read(context).takeLast(DIAGNOSTICS_PREVIEW_CHARS)
+                    diagnosticEvents = runCatching { TerminalDiagnostics.recentEvents(context) }.getOrDefault(emptyList())
+                    recorderStatusText = TerminalDiagnostics.recorderStatusText(context)
+                    crashRecords = TerminalDiagnostics.guestCrashRecords(context)
                     diagnosticsMessage = ""
                     showDiagnostics = true
                 }.padding(horizontal = 8.dp, vertical = 8.dp),
@@ -284,9 +338,9 @@ internal fun TerminalScreen() {
             )
         }
 
-        if (pacmanLockPresent && setupReady) {
+        if (pacmanLockWarning && setupReady) {
             Text(
-                "A pacman database lock exists. A transaction may still be running; do not start another pacman command. If the previous process stopped, verify pacman is no longer active before recovering the lock. See Logs for process recovery details.",
+                "A pacman database lock has remained without an active pacman process. It may be stale or left by an interrupted transaction. TritonTerm will not remove it; verify pacman is stopped before recovering the lock.",
                 modifier = Modifier.fillMaxWidth().background(Color(0xFF3B2D1A)).padding(horizontal = 12.dp, vertical = 8.dp),
                 color = Color(0xFFFFCC80),
                 fontSize = 12.sp
@@ -295,12 +349,13 @@ internal fun TerminalScreen() {
 
         val currentSession = session
         if (currentSession != null && setupReady) {
-            AndroidView(
-                modifier = Modifier
-                    .weight(1f)
-                    .fillMaxWidth(),
-                factory = { viewContext ->
-                    TerminalView(viewContext, null).apply {
+            Box(
+                modifier = Modifier.weight(1f).fillMaxWidth()
+            ) {
+                AndroidView(
+                    modifier = Modifier.fillMaxSize(),
+                    factory = { viewContext ->
+                        TerminalView(viewContext, null).apply {
                         setTextSize(terminalFontSize)
                         setTypeface(TerminalConfig(terminalFontFamily, terminalFontSize).typeface(context))
                         setTerminalViewClient(TerminalCallbacks(currentSession, zoomTerminal))
@@ -342,24 +397,56 @@ internal fun TerminalScreen() {
                         sessionClient.terminalView = this
                         attachSession(currentSession)
                         terminalViewHolder[0] = this
-                        TerminalForegroundService.startSession(context)
-                        setBackgroundColor(android.graphics.Color.BLACK)
-                        isFocusable = true
-                        isFocusableInTouchMode = true
+                            TerminalForegroundService.startSession(context)
+                            setBackgroundColor(android.graphics.Color.BLACK)
+                            isFocusable = true
+                            isFocusableInTouchMode = true
+                        }
+                    },
+                    update = {
+                        it.attachSession(currentSession)
+                        if (appliedFontSize != terminalFontSize) {
+                            it.setTextSize(terminalFontSize)
+                            appliedFontSize = terminalFontSize
+                        }
+                        if (appliedFontFamily != terminalFontFamily) {
+                            it.setTypeface(TerminalConfig(terminalFontFamily, terminalFontSize).typeface(context))
+                            appliedFontFamily = terminalFontFamily
+                        }
                     }
-                },
-                update = {
-                    it.attachSession(currentSession)
-                    if (appliedFontSize != terminalFontSize) {
-                        it.setTextSize(terminalFontSize)
-                        appliedFontSize = terminalFontSize
-                    }
-                    if (appliedFontFamily != terminalFontFamily) {
-                        it.setTypeface(TerminalConfig(terminalFontFamily, terminalFontSize).typeface(context))
-                        appliedFontFamily = terminalFontFamily
+                )
+                if (terminalProcessFinished) {
+                    val exitStatus = currentSession.exitStatus
+                    Column(
+                        modifier = Modifier
+                            .align(Alignment.BottomCenter)
+                            .fillMaxWidth()
+                            .background(Color(0xE6212128))
+                            .padding(horizontal = 16.dp, vertical = 12.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Text(
+                            if (exitStatus < 0) {
+                                "Terminal process ended after signal ${-exitStatus}. Start a new shell to continue."
+                            } else "Terminal process exited with status $exitStatus. Start a new shell to continue.",
+                            color = Color(0xFFE3E3E8),
+                            textAlign = TextAlign.Center,
+                            fontSize = 13.sp
+                        )
+                        Button(onClick = {
+                            runCatching {
+                                session = terminalController.restartFinishedSession()
+                                terminalProcessFinished = false
+                                TerminalForegroundService.startSession(context)
+                            }.onFailure { failure ->
+                                diagnosticsMessage = "Could not start a new shell: ${failure.message ?: failure.javaClass.simpleName}"
+                                TerminalDiagnostics.record(context, "shell_restart", "failed", mapOf("error" to failure.toString()))
+                            }
+                        }) { Text("Start new shell") }
                     }
                 }
-            )
+            }
         } else {
             Box(
                 modifier = Modifier.weight(1f).fillMaxWidth().background(Color.Black),
@@ -379,6 +466,7 @@ internal fun TerminalScreen() {
                             TerminalSetupStage.VERIFYING -> "Checking the downloaded Arch Linux ARM archive…"
                             TerminalSetupStage.CLEANING -> "Checking interrupted-install state without removing files…"
                             TerminalSetupStage.INSTALLING -> "Unpacking Arch Linux ARM…"
+                            TerminalSetupStage.PREPARING -> "Preparing the Arch userland for TritonTerm…"
                             TerminalSetupStage.INITIALIZING -> "Initializing Arch package keys…"
                             TerminalSetupStage.READY -> "Starting shell…"
                             TerminalSetupStage.FAILED -> "Setup failed."
@@ -420,6 +508,13 @@ internal fun TerminalScreen() {
                                 fontSize = 12.sp
                             )
                         }
+                        if (setupProgress.stage == TerminalSetupStage.PREPARING && setupProgress.stepTotal > 0) {
+                            Text(
+                                "Preparation step ${setupProgress.stepCompleted} of ${setupProgress.stepTotal}",
+                                color = Color(0xFF626A83),
+                                fontSize = 12.sp
+                            )
+                        }
                         SetupStageProgress(
                             downloadFraction = when {
                                 setupProgress.stage.ordinal >= TerminalSetupStage.VERIFYING.ordinal -> 1f
@@ -427,8 +522,13 @@ internal fun TerminalScreen() {
                                 else -> null
                             },
                             installStage = setupProgress.stage,
-                            installFraction = setupProgress.extractionTotal.takeIf { it > 0L }?.let {
-                                setupProgress.extractedBytes.toFloat() / it
+                            installFraction = when (setupProgress.stage) {
+                                TerminalSetupStage.PREPARING -> setupProgress.stepTotal.takeIf { it > 0 }?.let {
+                                    setupProgress.stepCompleted.toFloat() / it
+                                }
+                                else -> setupProgress.extractionTotal.takeIf { it > 0L }?.let {
+                                    setupProgress.extractedBytes.toFloat() / it
+                                }
                             },
                             modifier = Modifier.fillMaxWidth()
                         )
@@ -495,62 +595,84 @@ internal fun TerminalScreen() {
         )
     }
     if (showDiagnostics) {
-        AlertDialog(
-            onDismissRequest = { showDiagnostics = false },
-            title = { Text("Diagnostics") },
-            text = {
-                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                    Text(
-                        smokeResult,
-                        color = if (smokeResult.startsWith("PASS")) Color(0xFF81C784) else Color(0xFFFFCC80),
-                        fontSize = 12.sp
-                    )
-                    Text(
-                        diagnosticsMessage,
-                        color = Color(0xFFD5D5D5),
-                        fontSize = 12.sp
-                    )
-                    Text(
-                        diagnosticsText,
-                        modifier = Modifier.height(300.dp).verticalScroll(rememberScrollState()),
-                        color = Color(0xFFD5D5D5),
-                        fontFamily = FontFamily.Monospace,
-                        fontSize = 10.sp
-                    )
+        DiagnosticsScreen(
+            recorderStatus = recorderStatusText,
+            crashes = crashRecords,
+            events = diagnosticEvents,
+            message = diagnosticsMessage,
+            testResult = smokeResult,
+            busy = smokeRunning,
+            exporting = exportRunning,
+            onDismiss = { showDiagnostics = false },
+            onTestSegv = {
+                smokeRunning = true
+                smokeResult = "Running controlled guest SIGSEGV test…"
+                setupScope.launch {
+                    val result = withContext(Dispatchers.IO) { RuntimeDiagnosticsProbes.runControlledGuestSegv(context) }
+                    smokeRunning = false
+                    smokeResult = result.summary()
+                    diagnosticEvents = runCatching { TerminalDiagnostics.recentEvents(context) }.getOrDefault(emptyList())
+                    recorderStatusText = TerminalDiagnostics.recorderStatusText(context)
+                    crashRecords = TerminalDiagnostics.guestCrashRecords(context)
                 }
             },
-            confirmButton = {
-                TextButton(onClick = {
-                    val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                    TerminalDiagnostics.flushProcessOutput()
-                    clipboard.setPrimaryClip(
-                        ClipData.newPlainText("TritonTerm diagnostics", TerminalDiagnostics.read(context))
-                    )
-                    diagnosticsMessage = "Diagnostics copied to clipboard."
-                }) { Text("Copy") }
-            },
-            dismissButton = {
-                Row {
-                    TextButton(
-                        enabled = !smokeRunning,
-                        onClick = {
-                            smokeRunning = true
-                            smokeResult = "Running three runtime probes…"
-                            setupScope.launch {
-                                val results = withContext(Dispatchers.IO) {
-                                    RuntimeDiagnosticsProbes.run(context)
-                                }
-                                smokeRunning = false
-                                smokeResult = results.joinToString("\n") { it.summary() }
-                                diagnosticsText = TerminalDiagnostics.read(context).takeLast(DIAGNOSTICS_PREVIEW_CHARS)
-                            }
-                        }
-                    ) { Text("Run runtime probes") }
-                    TextButton(onClick = {
-                        exportDiagnostics.launch("tritonterm-diagnostics.jsonl")
-                    }) { Text("Export") }
+            onRunProbes = {
+                smokeRunning = true
+                smokeResult = "Running runtime probes…"
+                setupScope.launch {
+                    val results = withContext(Dispatchers.IO) { RuntimeDiagnosticsProbes.run(context) }
+                    smokeRunning = false
+                    smokeResult = results.joinToString("\n") { it.summary() }
+                    diagnosticEvents = runCatching { TerminalDiagnostics.recentEvents(context) }.getOrDefault(emptyList())
+                    recorderStatusText = TerminalDiagnostics.recorderStatusText(context)
+                    crashRecords = TerminalDiagnostics.guestCrashRecords(context)
                 }
-            }
+            },
+            onCopyLatest = {
+                val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                runCatching { TerminalDiagnostics.recentEventsText(context) }.onSuccess {
+                    clipboard.setPrimaryClip(ClipData.newPlainText("Recent TritonTerm diagnostics", it))
+                    diagnosticsMessage = "Recent events copied (${it.toByteArray(Charsets.UTF_8).size} bytes)."
+                }.onFailure { diagnosticsMessage = "Copy failed: ${it.message}" }
+            },
+            onCopyCrashes = {
+                val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                val crashes = TerminalDiagnostics.guestCrashRecordsText(context)
+                if (crashes == "No guest SIGSEGV records captured.") diagnosticsMessage = crashes
+                else {
+                    clipboard.setPrimaryClip(ClipData.newPlainText("Guest SIGSEGV records", crashes))
+                    diagnosticsMessage = "Guest crash records copied (${crashes.toByteArray(Charsets.UTF_8).size} bytes)."
+                }
+            },
+            onShare = {
+                runCatching { TerminalDiagnostics.recentExportText(context) }.onSuccess { text ->
+                    val intent = Intent(Intent.ACTION_SEND).apply {
+                        type = "application/x-ndjson"
+                        putExtra(Intent.EXTRA_TEXT, text)
+                    }
+                    context.startActivity(Intent.createChooser(intent, "Share recent diagnostics"))
+                    diagnosticsMessage = "Opened Android's share sheet for recent diagnostics."
+                }.onFailure { diagnosticsMessage = "Share failed: ${it.message}" }
+            },
+            onShareFile = {
+                runCatching {
+                    val file = TerminalDiagnostics.createShareableDiagnosticsFile(context)
+                    val uri = FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
+                    val intent = Intent(Intent.ACTION_SEND).apply {
+                        type = "application/x-ndjson"
+                        putExtra(Intent.EXTRA_STREAM, uri)
+                        clipData = ClipData.newUri(context.contentResolver, "TritonTerm diagnostics", uri)
+                        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                    }
+                    context.startActivity(Intent.createChooser(intent, "Share diagnostics file"))
+                    diagnosticsMessage = "Prepared ${file.length()} bytes and opened Android's share sheet."
+                }.onFailure { diagnosticsMessage = "Could not prepare diagnostics file: ${it.message}" }
+            },
+            onCopyMessage = {
+                val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                clipboard.setPrimaryClip(ClipData.newPlainText("Diagnostics export details", diagnosticsMessage))
+            },
+            onExport = { if (!exportRunning) exportDiagnostics.launch("tritonterm-diagnostics.jsonl") }
         )
     }
 }
@@ -574,6 +696,7 @@ private fun SetupStageProgress(
                 TerminalSetupStage.VERIFYING -> "Verify"
                 TerminalSetupStage.CLEANING -> "Cleanup"
                 TerminalSetupStage.INSTALLING -> "Unpack"
+                TerminalSetupStage.PREPARING -> "Prepare"
                 else -> "Install"
             },
             fraction = when (installStage) {
