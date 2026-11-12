@@ -46,13 +46,16 @@ internal object ArchLinuxArmInstaller {
 
     fun start(context: Context): Boolean {
         val appContext = context.applicationContext
+        if (ArchLinuxArmBootstrap.isInstalled(appContext)) {
+            if (repositoryDatabasesRefreshed(appContext)) {
+                mutableState.value = mutableState.value.copy(stage = TerminalSetupStage.READY, running = false, ready = true, error = null)
+                return true
+            }
+            return refreshRepositoryDatabasesOnce(appContext)
+        }
         if (!mutableState.value.preflightPassed) {
             mutableState.value = mutableState.value.copy(error = "Run the harmless installer launcher test before installing Arch Linux ARM.")
             return false
-        }
-        if (ArchLinuxArmBootstrap.isInstalled(appContext)) {
-            mutableState.value = mutableState.value.copy(stage = TerminalSetupStage.READY, running = false, ready = true, error = null)
-            return true
         }
         return runSingleFlight(appContext, "setup") { app ->
             TerminalDiagnostics.record(app, "setup", "started", mapOf("launch_mode" to "explicit_process"))
@@ -61,9 +64,9 @@ internal object ArchLinuxArmInstaller {
                 mutableState.value = mutableState.value.copy(stage = value.stage, progress = value)
             }
             ArchLinuxArmBootstrap.prepare(app, progress)
-            progress(TerminalSetupProgress(TerminalSetupStage.INSTALLING))
-            TerminalSetupProgressFile.begin(app)
             if (!ArchLinuxArmBootstrap.isRootfsExtracted(app)) {
+                progress(TerminalSetupProgress(TerminalSetupStage.INSTALLING))
+                TerminalSetupProgressFile.begin(app)
                 val install = runProcess(
                     app,
                     "installer_process",
@@ -73,11 +76,14 @@ internal object ArchLinuxArmInstaller {
                 check(install.exitCode == 0 && !install.timedOut) {
                     "Arch Linux ARM installation failed (exit ${install.exitCode}${if (install.timedOut) ", timed out" else ""}). The archive and partial rootfs were preserved. See Logs for output."
                 }
+            } else {
+                reportPreparationProgress(app, 0, "rootfs_extraction_already_complete")
             }
             check(ArchLinuxArmBootstrap.isRootfsExtracted(app)) {
                 "pr-cli exited successfully, but required rootfs validation failed. Existing data was preserved. See Logs."
             }
             if (resumingExtractedRootfs) validateInterruptedRootfsBeforeResume(app)
+            reportPreparationProgress(app, 1, "rootfs_validated")
             TerminalDiagnostics.record(
                 app,
                 "rootfs_validation",
@@ -85,34 +91,55 @@ internal object ArchLinuxArmInstaller {
                 mapOf("rootfs" to ArchLinuxArmBootstrap.rootfs(app).absolutePath)
             )
             PacmanConfigCompatibility.migrate(app)
+            reportPreparationProgress(app, 2, "pacman_configuration_ready")
             initializePacmanKeys(app)
             prepareDevelopmentUserland(app)
-            mutableState.value = ArchInstallState(
-                stage = TerminalSetupStage.READY,
-                progress = TerminalSetupProgress(TerminalSetupStage.READY),
-                preflightPassed = true,
-                ready = true
-            )
             TerminalDiagnostics.record(app, "setup", "completed")
         }
+    }
+
+    fun ensureRepositoryDatabases(context: Context): Boolean {
+        val appContext = context.applicationContext
+        if (!ArchLinuxArmBootstrap.isInstalled(appContext)) return false
+        if (repositoryDatabasesRefreshed(appContext)) return true
+        return refreshRepositoryDatabasesOnce(appContext)
+    }
+
+    fun repositoryRefreshComplete(context: Context): Boolean = repositoryDatabasesRefreshed(context)
+
+    private fun refreshRepositoryDatabasesOnce(context: Context): Boolean = runSingleFlight(context, "repository_refresh") { app ->
+        val progress = TerminalSetupProgress(TerminalSetupStage.PREPARING, stepCompleted = 0, stepTotal = 1)
+        mutableState.value = mutableState.value.copy(stage = progress.stage, progress = progress)
+        synchronizeRepositoryDatabases(app, reportPreparationProgress = false)
+        val complete = progress.copy(stepCompleted = 1)
+        mutableState.value = mutableState.value.copy(progress = complete)
+        TerminalDiagnostics.record(app, "repository_database_refresh", "completed", mapOf("upgrade_performed" to false))
     }
 
     private fun runSingleFlight(context: Context, phase: String, work: suspend (Context) -> Unit): Boolean {
         if (!inFlight.compareAndSet(false, true)) return false
         val appContext = context.applicationContext
         mutableState.value = mutableState.value.copy(running = true, error = null)
-        if (phase == "setup") TerminalForegroundService.startSetup(appContext)
+        if (phase == "setup" || phase == "repository_refresh") TerminalForegroundService.startSetup(appContext)
         scope.launch {
+            var succeeded = false
             try {
                 work(appContext)
+                succeeded = true
             } catch (failure: Exception) {
                 val message = failure.message ?: failure.javaClass.simpleName
                 mutableState.value = mutableState.value.copy(stage = TerminalSetupStage.FAILED, ready = false, error = message)
                 TerminalDiagnostics.record(appContext, phase, "failed", mapOf("error" to message))
             } finally {
+                if (phase == "setup" || phase == "repository_refresh") TerminalForegroundService.stop(appContext)
+                mutableState.value = mutableState.value.copy(
+                    stage = if (succeeded && (phase == "setup" || phase == "repository_refresh")) TerminalSetupStage.READY else mutableState.value.stage,
+                    progress = if (succeeded && (phase == "setup" || phase == "repository_refresh")) TerminalSetupProgress(TerminalSetupStage.READY) else mutableState.value.progress,
+                    preflightPassed = mutableState.value.preflightPassed || phase == "setup",
+                    ready = succeeded && (phase == "setup" || phase == "repository_refresh"),
+                    running = false
+                )
                 inFlight.set(false)
-                mutableState.value = mutableState.value.copy(running = false)
-                if (phase == "setup") TerminalForegroundService.stop(appContext)
             }
         }
         return true
@@ -272,24 +299,28 @@ internal object ArchLinuxArmInstaller {
         val marker = File(root, "root/.tritonterm-pacman-keyring-ready")
         if (marker.isFile) {
             TerminalDiagnostics.record(context, "pacman_keyring", "reused")
+            reportPreparationProgress(context, 5, "pacman_keyring_reused")
             return
         }
-        mutableState.value = mutableState.value.copy(stage = TerminalSetupStage.INITIALIZING)
+        mutableState.value = mutableState.value.copy(stage = TerminalSetupStage.PREPARING)
         TerminalDiagnostics.record(context, "pacman_key_init", "started")
         val init = runProcess(context, "pacman_key_init", "pacman-key --init", args = listOf(
             "login", ArchLinuxArmBootstrap.DISTRO_ALIAS, "--user", "root", "/bin/sh", "-lc", "pacman-key --init"
         ))
         check(init.exitCode == 0 && !init.timedOut) { "pacman-key --init failed (exit ${init.exitCode}). See Logs." }
+        reportPreparationProgress(context, 3, "pacman_keyring_initialized")
         TerminalDiagnostics.record(context, "pacman_key_populate", "started")
         val populate = runProcess(context, "pacman_key_populate", "pacman-key --populate", args = listOf(
             "login", ArchLinuxArmBootstrap.DISTRO_ALIAS, "--user", "root", "/bin/sh", "-lc", "pacman-key --populate archlinuxarm"
         ))
         check(populate.exitCode == 0 && !populate.timedOut) { "pacman-key --populate failed (exit ${populate.exitCode}). See Logs." }
+        reportPreparationProgress(context, 4, "pacman_keyring_populated")
         val mark = runProcess(context, "pacman_keyring_marker", "write keyring marker", args = listOf(
             "login", ArchLinuxArmBootstrap.DISTRO_ALIAS, "--user", "root", "/bin/sh", "-lc",
             "touch /root/.tritonterm-pacman-keyring-ready"
         ))
         check(mark.exitCode == 0 && !mark.timedOut) { "Could not persist pacman-key initialization state. See Logs." }
+        reportPreparationProgress(context, 5, "pacman_keyring_ready")
         TerminalDiagnostics.record(context, "pacman_keyring", "completed")
     }
 
@@ -340,6 +371,7 @@ internal object ArchLinuxArmInstaller {
             "removal_plan",
             mapOf("installed_package_count" to installed.size, "packages" to removalTargets)
         )
+        reportPreparationProgress(context, 6, "package_inventory_ready")
         if (removalTargets.isNotEmpty()) {
             val remove = runProcess(
                 context,
@@ -355,6 +387,7 @@ internal object ArchLinuxArmInstaller {
                 "Could not remove the generic image's kernel/firmware packages safely (exit ${remove.exitCode}). Pacman left dependency checks enabled. See Logs."
             }
         }
+        reportPreparationProgress(context, 7, "boot_packages_removed")
 
         val after = runProcess(
             context,
@@ -374,6 +407,7 @@ internal object ArchLinuxArmInstaller {
         check(remaining.isEmpty()) {
             "Boot-only packages remain after preparation: ${remaining.joinToString()}. See Logs."
         }
+        synchronizeRepositoryDatabases(context)
         val mark = runProcess(
             context,
             "userland_profile_marker",
@@ -384,6 +418,7 @@ internal object ArchLinuxArmInstaller {
             )
         )
         check(mark.exitCode == 0 && !mark.timedOut) { "Could not mark the validated Arch userland profile. See Logs." }
+        reportPreparationProgress(context, 9, "userland_profile_validated")
         TerminalDiagnostics.record(
             context,
             "userland_profile",
@@ -391,6 +426,58 @@ internal object ArchLinuxArmInstaller {
             mapOf("removed_packages" to removalTargets, "database_check" to "pacman -Dk")
         )
     }
+
+    /** Force fresh official repository databases once; this does not upgrade installed packages. */
+    private fun synchronizeRepositoryDatabases(context: Context, reportPreparationProgress: Boolean = true) {
+        val marker = repositoryRefreshMarker(context)
+        if (marker.isFile) {
+            if (reportPreparationProgress) reportPreparationProgress(context, 8, "repository_databases_already_refreshed")
+            return
+        }
+        check(!PacmanRecoveryState.hasDatabaseLock(context)) {
+            "A pacman database lock exists before repository refresh. It was preserved. Verify no pacman process is running before retrying setup."
+        }
+        TerminalDiagnostics.record(context, "repository_database_refresh", "started", mapOf("command" to "pacman -Syy --noconfirm"))
+        val sync = runProcess(
+            context,
+            "repository_database_refresh",
+            "pacman -Syy --noconfirm",
+            args = listOf("login", ArchLinuxArmBootstrap.DISTRO_ALIAS, "--user", "root", "/bin/sh", "-lc", "pacman -Syy --noconfirm")
+        )
+        check(sync.exitCode == 0 && !sync.timedOut) {
+            "Could not refresh official Arch Linux ARM repository databases (exit ${sync.exitCode}). No system packages were upgraded. See Logs."
+        }
+        val mark = runProcess(
+            context,
+            "repository_database_refresh_marker",
+            "mark repository databases refreshed",
+            args = listOf("login", ArchLinuxArmBootstrap.DISTRO_ALIAS, "--user", "root", "/bin/sh", "-lc", "touch /root/.tritonterm-repo-databases-v1")
+        )
+        check(mark.exitCode == 0 && !mark.timedOut) { "Repository databases refreshed, but refresh state could not be saved. See Logs." }
+        if (reportPreparationProgress) reportPreparationProgress(context, 8, "repository_databases_refreshed")
+    }
+
+    private fun repositoryDatabasesRefreshed(context: Context): Boolean = repositoryRefreshMarker(context).isFile
+
+    private fun repositoryRefreshMarker(context: Context): File =
+        File(ArchLinuxArmBootstrap.rootfs(context), "root/.tritonterm-repo-databases-v1")
+
+    private fun reportPreparationProgress(context: Context, completed: Int, checkpoint: String) {
+        val progress = TerminalSetupProgress(
+            stage = TerminalSetupStage.PREPARING,
+            stepCompleted = completed,
+            stepTotal = PREPARATION_STEP_COUNT
+        )
+        mutableState.value = mutableState.value.copy(stage = progress.stage, progress = progress)
+        TerminalDiagnostics.record(
+            context,
+            "userland_preparation_progress",
+            checkpoint,
+            mapOf("completed_steps" to completed, "total_steps" to PREPARATION_STEP_COUNT)
+        )
+    }
+
+    private const val PREPARATION_STEP_COUNT = 9
 }
 
 /** Package names are discovered from pacman; unrelated linux-* libraries and tools are retained. */
