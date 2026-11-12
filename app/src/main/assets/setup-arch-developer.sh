@@ -364,11 +364,12 @@ SMOKE_PKGBUILD
 chown "$DEV_USER:$dev_group" "$smoke/PKGBUILD"
 makepkg_result=0
 run_pacman_transaction 'makepkg smoke package install' run_dev_fish \
-    "cd '$smoke' && env PKGDEST='$smoke/pkgdest' strace -f -e trace=connect -o '$makepkg_connect_trace' makepkg --noconfirm --syncdeps --install --force" || makepkg_result=$?
+    "cd '$smoke' && env PKGDEST='$smoke/pkgdest' strace -f -e trace=process,network -o '$makepkg_connect_trace' makepkg --noconfirm --syncdeps --install --force" || makepkg_result=$?
 if (( makepkg_result != 0 )); then
-    say "makepkg failed with exit ${makepkg_result}; failed TCP connect syscalls follow. Full trace: ${makepkg_connect_trace}"
+    say "makepkg failed with exit ${makepkg_result}; fakeroot process and network lifecycle follows. Full trace: ${makepkg_connect_trace}"
     if [[ -f "$makepkg_connect_trace" ]]; then
-        awk '/connect\(.*= -1/ { print }' "$makepkg_connect_trace" | tail -n 80 >&2
+        awk '/execve\(|clone\(|fork\(|vfork\(|bind\(|listen\(|accept\(|connect\(/ && (/execve\(|clone\(|fork\(|vfork\(|bind\(|listen\(|accept\(/ || /connect\(.*= -1/)' \
+            "$makepkg_connect_trace" | tail -n 120 >&2
     fi
     die "$makepkg_result" 'package transaction failed: makepkg smoke package install'
 fi
