@@ -229,6 +229,12 @@ install -o "$DEV_USER" -g "$dev_group" -m 0644 \
 cat > "$dev_home/.config/pacman/makepkg.conf" <<'MAKEPKG_CONF'
 # TritonTerm: use PRoot-compatible, pacman-only authorization for package installs.
 PACMAN_AUTH=(/usr/bin/sudo -n)
+# Keep TCP fakeroot's loopback protocol available to packaging subprocesses.
+# XZ enables a sandbox for single-stream compression and that sandbox denies
+# network access, which blocks fakeroot's TCP preload. Zstandard is Arch's
+# normal package format and does not need that network-blocking compressor sandbox.
+PKGEXT='.pkg.tar.zst'
+COMPRESSZST=(zstd -c -z -q -)
 MAKEPKG_CONF
 cat > "$dev_home/.config/paru/paru.conf" <<'PARU_CONF'
 [bin]
@@ -348,19 +354,17 @@ nested_fakeroot_version="$(run_dev_fish 'fakeroot -- /bin/sh -c "fakeroot -v"')"
 say "Nested TCP fakeroot version query passed: ${nested_fakeroot_version}"
 run_dev_fish 'fakeroot -- /usr/bin/pacman -Qi pacman >/dev/null'
 say 'TCP fakeroot package metadata query passed.'
-for compressor in xz zstd; do
-    compressor_trace="$smoke/${compressor}-fakeroot.trace"
-    if ! run_dev_fish \
-        "strace -f -e trace=process,network -o '$compressor_trace' fakeroot -- /bin/sh -c 'set -o pipefail; printf smoke | /usr/bin/$compressor -c >/dev/null'"; then
-        say "The ${compressor} subprocess failed inside TCP fakeroot; process/network trace follows. Full trace: ${compressor_trace}"
-        if [[ -f "$compressor_trace" ]]; then
-            awk '/execve\(.*(fakeroot|faked|xz|zstd)|socket\(AF_INET|bind\(|listen\(|accept\(|connect\(.*= -1/ { print }' \
-                "$compressor_trace" | tail -n 80 >&2
-        fi
-        die 32 "TCP fakeroot ${compressor} subprocess smoke failed"
+zstd_trace="$smoke/zstd-fakeroot.trace"
+if ! run_dev_fish \
+    "strace -f -e trace=process,network -o '$zstd_trace' fakeroot -- /bin/sh -c 'set -o pipefail; printf smoke | /usr/bin/zstd -c -z -q - >/dev/null'"; then
+    say "The zstd subprocess failed inside TCP fakeroot; process/network trace follows. Full trace: ${zstd_trace}"
+    if [[ -f "$zstd_trace" ]]; then
+        awk '/execve\(.*(fakeroot|faked|zstd)|socket\(AF_INET|bind\(|listen\(|accept\(|connect\(.*= -1/ { print }' \
+            "$zstd_trace" | tail -n 80 >&2
     fi
-    say "TCP fakeroot ${compressor} subprocess smoke passed."
-done
+    die 32 'TCP fakeroot zstd subprocess smoke failed'
+fi
+say 'TCP fakeroot zstd subprocess smoke passed.'
 cat > "$smoke/PKGBUILD" <<'SMOKE_PKGBUILD'
 pkgname=tritonterm-default-smoke
 pkgver=1
