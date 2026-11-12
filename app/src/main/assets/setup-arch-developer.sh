@@ -343,6 +343,8 @@ bsdtar --numeric-owner -tvf "$fake_archive" | awk '
     END { exit !found }
 ' || die 32 'TCP fakeroot bsdtar archive probe did not record root:root ownership'
 say 'TCP fakeroot zstd-compressed bsdtar archive probe passed: root:root ownership preserved.'
+nested_fakeroot_version="$(run_dev_fish 'fakeroot -- /bin/sh -c "fakeroot -v"')"
+say "Nested TCP fakeroot version query passed: ${nested_fakeroot_version}"
 cat > "$smoke/PKGBUILD" <<'SMOKE_PKGBUILD'
 pkgname=tritonterm-default-smoke
 pkgver=1
