@@ -330,11 +330,11 @@ install -d -o "$DEV_USER" -g "$dev_group" -m 0750 "$smoke" "$smoke/pkgdest"
 selected_fakeroot="$(run_dev_fish 'command -v fakeroot')"
 say "makepkg PATH selects ${selected_fakeroot}."
 archive_probe="$smoke/archive-probe"
-fake_archive="$smoke/fakeroot-archive-smoke.tar"
+fake_archive="$smoke/fakeroot-archive-smoke.tar.zst"
 install -d -o "$DEV_USER" -g "$dev_group" -m 0750 "$archive_probe"
 printf 'TritonTerm fakeroot archive probe\n' > "$archive_probe/payload"
 chown -R "$DEV_USER:$dev_group" "$archive_probe"
-run_dev_fish "fakeroot -- /bin/sh -c 'chown -R 0:0 \"$archive_probe\" && /usr/bin/bsdtar --numeric-owner -cpf \"$fake_archive\" -C \"$archive_probe\" .'"
+run_dev_fish "fakeroot -- /bin/sh -c 'chown -R 0:0 \"$archive_probe\" && /usr/bin/bsdtar --numeric-owner --zstd -cpf \"$fake_archive\" -C \"$archive_probe\" .'"
 bsdtar --numeric-owner -tvf "$fake_archive" | awk '
     { print > "/dev/stderr" }
     $NF ~ /(^|\/)payload$/ && (($2 == "0" && $3 == "0") ||
@@ -342,7 +342,7 @@ bsdtar --numeric-owner -tvf "$fake_archive" | awk '
                                 ($2 == "root" && $3 == "root") || $2 == "0/0") { found=1 }
     END { exit !found }
 ' || die 32 'TCP fakeroot bsdtar archive probe did not record root:root ownership'
-say 'TCP fakeroot bsdtar archive probe passed: root:root ownership preserved.'
+say 'TCP fakeroot zstd-compressed bsdtar archive probe passed: root:root ownership preserved.'
 cat > "$smoke/PKGBUILD" <<'SMOKE_PKGBUILD'
 pkgname=tritonterm-default-smoke
 pkgver=1
