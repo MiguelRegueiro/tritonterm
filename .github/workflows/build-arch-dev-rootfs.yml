@@ -1,0 +1,59 @@
+name: Build Arch Linux ARM development rootfs
+
+on:
+  workflow_dispatch:
+    inputs:
+      rootfs_version:
+        description: Immutable rootfs version pinned by the APK build
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  build-rootfs:
+    # Native AArch64 execution avoids QEMU and produces guest-native Rust/Paru builds.
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 180
+    steps:
+      - name: Check out build recipes
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Install host image tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes curl gnupg libarchive-tools openssl
+
+      - name: Prepare protected signing inputs
+        env:
+          ROOTFS_SIGNING_KEY: ${{ secrets.ROOTFS_SIGNING_KEY }}
+          ROOTFS_SIGNING_PASSPHRASE: ${{ secrets.ROOTFS_SIGNING_PASSPHRASE }}
+        run: |
+          test -n "$ROOTFS_SIGNING_KEY"
+          test -n "$ROOTFS_SIGNING_PASSPHRASE"
+          umask 077
+          printf '%s' "$ROOTFS_SIGNING_KEY" > "$RUNNER_TEMP/rootfs-signing-key.pem"
+          printf '%s' "$ROOTFS_SIGNING_PASSPHRASE" > "$RUNNER_TEMP/rootfs-signing-passphrase"
+
+      - name: Build, validate, sign, and benchmark rootfs
+        env:
+          TRITONTERM_ROOTFS_SIGNING_KEY: ${{ runner.temp }}/rootfs-signing-key.pem
+          TRITONTERM_ROOTFS_SIGNING_PASSPHRASE_FILE: ${{ runner.temp }}/rootfs-signing-passphrase
+          TRITONTERM_ROOTFS_WORK_PARENT: ${{ runner.temp }}
+          ROOTFS_VERSION: ${{ inputs.rootfs_version }}
+        run: |
+          sudo --preserve-env=TRITONTERM_ROOTFS_SIGNING_KEY,TRITONTERM_ROOTFS_SIGNING_PASSPHRASE_FILE,TRITONTERM_ROOTFS_WORK_PARENT \
+            ./scripts/build-arch-dev-rootfs.sh "$ROOTFS_VERSION" "$GITHUB_WORKSPACE/dist/arch-rootfs"
+
+      - name: Upload review artifact (not a release)
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: tritonterm-arch-rootfs-${{ inputs.rootfs_version }}
+          path: dist/arch-rootfs/
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Remove signing material
+        if: always()
+        run: rm -f "$RUNNER_TEMP/rootfs-signing-key.pem" "$RUNNER_TEMP/rootfs-signing-passphrase"
