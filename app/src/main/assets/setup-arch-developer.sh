@@ -348,6 +348,19 @@ nested_fakeroot_version="$(run_dev_fish 'fakeroot -- /bin/sh -c "fakeroot -v"')"
 say "Nested TCP fakeroot version query passed: ${nested_fakeroot_version}"
 run_dev_fish 'fakeroot -- /usr/bin/pacman -Qi pacman >/dev/null'
 say 'TCP fakeroot package metadata query passed.'
+for compressor in xz zstd; do
+    compressor_trace="$smoke/${compressor}-fakeroot.trace"
+    if ! run_dev_fish \
+        "strace -f -e trace=process,network -o '$compressor_trace' fakeroot -- /bin/sh -c 'set -o pipefail; printf smoke | /usr/bin/$compressor -c >/dev/null'"; then
+        say "The ${compressor} subprocess failed inside TCP fakeroot; process/network trace follows. Full trace: ${compressor_trace}"
+        if [[ -f "$compressor_trace" ]]; then
+            awk '/execve\(.*(fakeroot|faked|xz|zstd)|socket\(AF_INET|bind\(|listen\(|accept\(|connect\(.*= -1/ { print }' \
+                "$compressor_trace" | tail -n 80 >&2
+        fi
+        die 32 "TCP fakeroot ${compressor} subprocess smoke failed"
+    fi
+    say "TCP fakeroot ${compressor} subprocess smoke passed."
+done
 cat > "$smoke/PKGBUILD" <<'SMOKE_PKGBUILD'
 pkgname=tritonterm-default-smoke
 pkgver=1
