@@ -176,7 +176,14 @@ install -d -o "$DEV_USER" -g "$dev_group" -m 0750 \
     "$dev_home/.local" "$dev_home/.local/bin" \
     "$dev_home/.config" "$dev_home/.config/fish/conf.d" \
     "$dev_home/.config/paru" "$dev_home/.config/pacman" \
-    "$dev_home/.cache/tritonterm" "$dev_home/.cargo" "$dev_home/.rustup"
+    "$dev_home/.cache/fish" "$dev_home/.cache/tritonterm" "$dev_home/.cargo" "$dev_home/.rustup"
+# The Arch Linux ARM base login already owns UID 1000, but its inherited dot
+# directories may have restrictive modes or unexpected group ownership. Make
+# the preserved template home writable by its renamed owner before starting
+# Fish or rustup; this changes no file's numeric UID.
+chown -R "$DEV_USER:$dev_group" "$dev_home"
+chmod u+rwx "$dev_home" "$dev_home/.config" "$dev_home/.config/fish" \
+    "$dev_home/.cache" "$dev_home/.cache/fish"
 usermod --shell /usr/bin/fish "$DEV_USER"
 usermod --append --groups wheel "$DEV_USER"
 
@@ -286,9 +293,13 @@ if [[ ! -x "${FAKEROOT_PREFIX}/bin/fakeroot" || ! -x "${FAKEROOT_PREFIX}/bin/fak
         fi
     )
     staged="${build}/dest${FAKEROOT_PREFIX}"
-    [[ -x "${staged}/bin/fakeroot" && -x "${staged}/bin/faked" &&
-       -f "${staged}/lib/libfakeroot/libfakeroot-0.so" ]] ||
+    if [[ ! -x "${staged}/bin/fakeroot" || ! -x "${staged}/bin/faked" ||
+          ! -f "${staged}/lib/libfakeroot/libfakeroot-0.so" ]]; then
+        say 'Staged TCP fakeroot files did not match the expected prefix layout; found these relevant paths:' >&2
+        find "$build/dest" \( -name fakeroot -o -name faked -o -name 'libfakeroot*' \) \
+            -printf '%M %u:%g %p -> %l\n' >&2 || true
         die 31 'staged fakeroot build is missing its wrapper, daemon, or preload library'
+    fi
     printf '%s\n' "$FAKEROOT_VERSION" > "${staged}/.tritonterm-version"
     mv "$staged" "$FAKEROOT_PREFIX"
     rm -rf "$build"
