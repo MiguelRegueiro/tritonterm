@@ -129,8 +129,8 @@ require_pacman_transaction 'pacman -Syu --needed --noconfirm' pacman -Syu --need
 stage='development_packages'
 say 'Installing build tools, fish, Starship, rustup, and narrowly scoped sudo through pacman.'
 require_pacman_transaction 'install developer packages' pacman -S --needed --noconfirm \
-    base-devel autoconf automake libtool curl ca-certificates git fish starship rustup sudo fakeroot
-for tool in gcc make autoreconf libtoolize curl sha256sum rustup fish starship sudo makepkg bsdtar; do
+    base-devel autoconf automake libtool curl ca-certificates git fish starship rustup sudo fakeroot strace
+for tool in gcc make autoreconf libtoolize curl sha256sum rustup fish starship sudo makepkg bsdtar strace; do
     command -v "$tool" >/dev/null || die 22 "required command is missing after package installation: ${tool}"
 done
 standalone_rust_packages="$(pacman -Qq | awk '$0 == "rust" || $0 == "cargo" || $0 == "rustfmt"')"
@@ -327,6 +327,7 @@ stage='makepkg_install_smoke'
 say 'Running makepkg -si as dev to validate TCP fakeroot and restricted pacman authorization.'
 smoke="/tmp/tritonterm-package-smoke-$$"
 install -d -o "$DEV_USER" -g "$dev_group" -m 0750 "$smoke" "$smoke/pkgdest"
+makepkg_connect_trace="$smoke/makepkg-connect.trace"
 selected_fakeroot="$(run_dev_fish 'command -v fakeroot')"
 say "makepkg PATH selects ${selected_fakeroot}."
 archive_probe="$smoke/archive-probe"
@@ -361,7 +362,16 @@ package() {
 }
 SMOKE_PKGBUILD
 chown "$DEV_USER:$dev_group" "$smoke/PKGBUILD"
-require_pacman_transaction 'makepkg smoke package install' run_dev_fish "cd '$smoke' && env PKGDEST='$smoke/pkgdest' makepkg --noconfirm --syncdeps --install --force"
+makepkg_result=0
+run_pacman_transaction 'makepkg smoke package install' run_dev_fish \
+    "cd '$smoke' && env PKGDEST='$smoke/pkgdest' strace -f -e trace=connect -o '$makepkg_connect_trace' makepkg --noconfirm --syncdeps --install --force" || makepkg_result=$?
+if (( makepkg_result != 0 )); then
+    say "makepkg failed with exit ${makepkg_result}; failed TCP connect syscalls follow. Full trace: ${makepkg_connect_trace}"
+    if [[ -f "$makepkg_connect_trace" ]]; then
+        awk '/connect\(.*= -1/ { print }' "$makepkg_connect_trace" | tail -n 80 >&2
+    fi
+    die "$makepkg_result" 'package transaction failed: makepkg smoke package install'
+fi
 test -f /usr/share/tritonterm-default-smoke/installed
 archive="$(find "$smoke/pkgdest" -maxdepth 1 -type f -name '*.pkg.tar.*' -print -quit)"
 [[ -n "$archive" ]] || die 32 'makepkg did not produce a package archive'
