@@ -201,6 +201,10 @@ fi
 stage='persistent_shell_configuration'
 cat > /etc/profile.d/tritonterm-devtools.sh <<'PROFILE'
 case ":${PATH:-}:" in
+    *":/opt/tritonterm/fakeroot-tcp/current/bin:"*) ;;
+    *) export PATH="/opt/tritonterm/fakeroot-tcp/current/bin:${PATH:-/usr/local/sbin:/usr/local/bin:/usr/bin:/bin}" ;;
+esac
+case ":${PATH:-}:" in
     *":${HOME}/.cargo/bin:"*) ;;
     *) export PATH="${HOME}/.cargo/bin:${PATH:-/usr/local/sbin:/usr/local/bin:/usr/bin:/bin}" ;;
 esac
@@ -212,7 +216,7 @@ export SYSTEMD_OFFLINE=1
 PROFILE
 chmod 0644 /etc/profile.d/tritonterm-devtools.sh
 cat > "$dev_home/.config/fish/conf.d/20-tritonterm-path.fish" <<'FISH_PATH'
-fish_add_path --prepend "$HOME/.cargo/bin" "$HOME/.local/bin"
+fish_add_path --prepend "/opt/tritonterm/fakeroot-tcp/current/bin" "$HOME/.cargo/bin" "$HOME/.local/bin"
 set -gx SYSTEMD_OFFLINE 1
 FISH_PATH
 cat > "$dev_home/.config/fish/conf.d/90-tritonterm-starship.fish" <<'FISH_PROMPT'
@@ -306,13 +310,18 @@ if [[ ! -x "${FAKEROOT_PREFIX}/bin/fakeroot" || ! -x "${FAKEROOT_PREFIX}/bin/fak
 fi
 if [[ -L "$FAKEROOT_CURRENT" ]]; then rm "$FAKEROOT_CURRENT"; fi
 ln -s "$FAKEROOT_VERSION" "$FAKEROOT_CURRENT"
-ln -sfn "${FAKEROOT_CURRENT}/bin/fakeroot" "$dev_home/.local/bin/fakeroot"
-chown -h "$DEV_USER:$dev_group" "$dev_home/.local/bin/fakeroot"
+rm -f "$dev_home/.local/bin/fakeroot"
 fake_uid="$(run_dev_fish 'fakeroot -- /usr/bin/id -u')"
 fake_gid="$(run_dev_fish 'fakeroot -- /usr/bin/id -g')"
 [[ "$fake_uid" == 0 && "$fake_gid" == 0 ]] ||
     die 31 "TCP fakeroot identity smoke failed (reported uid=${fake_uid:-empty}, gid=${fake_gid:-empty})"
 say 'TCP fakeroot identity smoke passed: fake uid=0 gid=0.'
+fake_file="/tmp/tritonterm-fakeroot-file-smoke-$$"
+fake_owner="$(run_dev_fish "fakeroot -- /bin/sh -c 'touch \"$fake_file\"; chown 0:0 \"$fake_file\"; /usr/bin/stat -c %u:%g \"$fake_file\"'")"
+[[ "$fake_owner" == 0:0 ]] ||
+    die 31 "TCP fakeroot file metadata smoke failed (reported owner=${fake_owner:-empty})"
+rm -f "$fake_file"
+say 'TCP fakeroot file metadata smoke passed: fake owner=0:0.'
 
 stage='makepkg_install_smoke'
 say 'Running makepkg -si as dev to validate TCP fakeroot and restricted pacman authorization.'
@@ -424,7 +433,7 @@ pacman -Qo /usr/bin/rustup
 pacman -Qo /usr/bin/paru
 [[ "$(getent passwd "$DEV_USER" | cut -d: -f7)" == /usr/bin/fish ]]
 [[ "$(readlink "$FAKEROOT_CURRENT")" == "$FAKEROOT_VERSION" ]]
-[[ "$(readlink "$dev_home/.local/bin/fakeroot")" == "${FAKEROOT_CURRENT}/bin/fakeroot" ]]
+run_dev_fish 'string match -q "/opt/tritonterm/fakeroot-tcp/current/bin/fakeroot" (command -v fakeroot)'
 [[ -x "$dev_home/.rustup/toolchains/stable-aarch64-unknown-linux-gnu/bin/rustc" ]]
 [[ -x /usr/bin/paru && -x /usr/bin/fish && -x /usr/bin/starship ]]
 printf '%s\n' "$VERSION" > "$READY_MARKER"
