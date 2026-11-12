@@ -161,7 +161,7 @@ if [[ -n "$remove_packages" ]]; then
     chroot_guest /usr/bin/pacman -Rns --noconfirm -- $remove_packages
 fi
 chroot_guest /usr/bin/pacman -Dk
-remaining_boot_packages="$(chroot_guest /usr/bin/pacman -Qq | awk '$0 == "linux-aarch64" || $0 == "linux-firmware" || ($0 ~ /^linux-firmware-/ && $0 != "linux-firmware-tools") || $0 == "mkinitcpio" || $0 == "mkinitcpio-busybox')"
+remaining_boot_packages="$(chroot_guest /usr/bin/pacman -Qq | awk '$0 == "linux-aarch64" || $0 == "linux-firmware" || ($0 ~ /^linux-firmware-/ && $0 != "linux-firmware-tools") || $0 == "mkinitcpio" || $0 == "mkinitcpio-busybox"')"
 [[ -z "$remaining_boot_packages" ]] || fail 4 "boot-only packages remain installed: $remaining_boot_packages"
 
 stage='image_personalization_contract'
