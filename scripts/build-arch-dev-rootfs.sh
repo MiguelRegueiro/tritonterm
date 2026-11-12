@@ -114,9 +114,13 @@ mount_guest_filesystems() {
     guest_mounts+=("$ROOTFS")
     mount --make-private "$ROOTFS"
     mkdir -p "$ROOTFS/dev" "$ROOTFS/proc" "$ROOTFS/sys"
-    mount --rbind /dev "$ROOTFS/dev"
+    # The build chroot is non-interactive and only needs the device nodes
+    # themselves (null, zero, random, etc.). A recursive bind also imports
+    # the host's nested /dev/pts, /dev/shm, and other mounts; on hosted ARM
+    # runners those can remain busy after the chroot has exited and prevent
+    # packaging the otherwise complete rootfs.
+    mount --bind /dev "$ROOTFS/dev"
     guest_mounts+=("$ROOTFS/dev")
-    mount --make-rslave "$ROOTFS/dev"
     mount -t proc proc "$ROOTFS/proc"
     guest_mounts+=("$ROOTFS/proc")
     mount -t sysfs sysfs "$ROOTFS/sys"
@@ -128,7 +132,11 @@ unmount_guest_filesystems() {
     for ((index=${#guest_mounts[@]} - 1; index >= 0; index--)); do
         target="${guest_mounts[index]}"
         if mountpoint -q "$target"; then
-            umount -R "$target"
+            if [[ "$target" == "$ROOTFS/dev" ]]; then
+                umount "$target"
+            else
+                umount -R "$target"
+            fi
         fi
     done
     guest_mounts=()
