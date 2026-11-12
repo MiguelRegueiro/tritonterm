@@ -118,6 +118,27 @@ report_line "installed_package_count=$(wc -l < "$OUTPUT_DIR/packages-${VERSION}.
 chroot_guest /usr/bin/su -l dev -s /usr/bin/fish -c 'rustup show && rustc --version && cargo --version && fish -ic "starship prompt"' > "$OUTPUT_DIR/toolchain-${VERSION}.txt"
 cp "$ROOTFS/var/cache/tritonterm/developer-setup.log" "$OUTPUT_DIR/build-log-${VERSION}.txt"
 
+stage='account_personalization_smoke'
+chroot_guest /usr/lib/tritonterm/personalize-account.sh tritonterm-review
+chroot_guest /bin/bash -lc '
+    entry="$(getent passwd tritonterm-review)"
+    [[ -n "$entry" ]]
+    IFS=: read -r name _ uid gid _ home shell <<< "$entry"
+    [[ "$name" == tritonterm-review && "$uid" == 1000 && "$gid" == 1000 &&
+       "$home" == /home/tritonterm-review && "$shell" == /usr/bin/fish ]]
+    [[ "$(getent group 1000 | cut -d: -f1)" == tritonterm-review ]]
+    id -nG tritonterm-review | tr " " "\n" | grep -qx wheel
+    [[ -d /home/tritonterm-review/.rustup/toolchains/stable-aarch64-unknown-linux-gnu ]]
+    [[ -d /home/tritonterm-review/.cargo ]]
+    [[ "$(cat /etc/tritonterm/selected-user)" == tritonterm-review ]]
+'
+printf 'TRITONTERM_ACCOUNT_PERSONALIZATION_SMOKE_PASSED\n' | tee -a "$report"
+chroot_guest /usr/bin/usermod --login dev tritonterm-review
+chroot_guest /usr/bin/groupmod --new-name dev tritonterm-review
+chroot_guest /usr/bin/usermod --home /home/dev --move-home dev
+rm -f "$ROOTFS/etc/tritonterm/selected-user" "$ROOTFS/etc/tritonterm/account-selection"
+chroot_guest /bin/bash -lc '[[ "$(getent passwd dev | cut -d: -f3-4)" == "1000:1000" && "$(getent passwd dev | cut -d: -f6-7)" == "/home/dev:/usr/bin/fish" ]]'
+
 stage='remove_machine_specific_state'
 chroot_guest /usr/bin/usermod --password '!' root
 chroot_guest /usr/bin/usermod --password '!' dev
