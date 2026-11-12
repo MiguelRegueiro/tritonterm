@@ -239,6 +239,12 @@ chroot_guest /usr/bin/usermod --password '!' dev
 chroot_guest /usr/bin/gpgconf --homedir /etc/pacman.d/gnupg --kill all
 active_password_hashes="$(awk -F: '$2 !~ /^(!|\*)/ { print $1 }' "$ROOTFS/etc/shadow")"
 [[ -z "$active_password_hashes" ]] || fail 4 "image contains accounts with active password hashes: $active_password_hashes"
+# Account-management tools retain previous databases in *- files. The base
+# Arch Linux ARM image's UID-1000 account can have a usable password hash in
+# shadow-, even after the live account is locked and renamed to dev. Never ship
+# these snapshots: first-boot personalization must not leave a recoverable
+# shared template credential in the image.
+rm -f "$ROOTFS/etc/passwd-" "$ROOTFS/etc/group-" "$ROOTFS/etc/shadow-" "$ROOTFS/etc/gshadow-"
 unmount_guest_filesystems
 rm -f "$ROOTFS/etc/resolv.conf"
 if [[ "$rootfs_resolv_existed" == true ]]; then
@@ -300,6 +306,10 @@ tar --numeric-owner --xattrs --acls -xzf "$OUTPUT_ARCHIVE" -C "$verify_dir"
     fail 6 're-extracted image contains the build host pacman keyring'
 [[ -z "$(awk -F: '$2 !~ /^(!|\*)/ { print $1 }' "$verify_dir/etc/shadow")" ]] ||
     fail 6 're-extracted image contains an active password hash'
+for account_backup in passwd- group- shadow- gshadow-; do
+    [[ ! -e "$verify_dir/etc/$account_backup" ]] ||
+        fail 6 "re-extracted image contains a stale account database backup: /etc/$account_backup"
+done
 report_line "archive_extraction_benchmark_seconds=$(( $(date +%s) - stage_started ))"
 report_line "total_build_seconds=$(( $(date +%s) - build_started ))"
 report_line "completed_utc=$(date -u +%FT%TZ)"
