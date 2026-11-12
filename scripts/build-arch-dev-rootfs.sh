@@ -133,7 +133,14 @@ unmount_guest_filesystems() {
         target="${guest_mounts[index]}"
         if mountpoint -q "$target"; then
             if [[ "$target" == "$ROOTFS/dev" ]]; then
-                umount "$target"
+                # Hosted runners may retain references to host device nodes
+                # after all chroot commands have exited. Detach this
+                # build-only mount subtree, then ensure it no longer overlays
+                # the rootfs before creating the archive.
+                umount -R -l "$target"
+                if mountpoint -q "$target"; then
+                    fail 4 "temporary device mount is still attached: $target"
+                fi
             else
                 umount -R "$target"
             fi
