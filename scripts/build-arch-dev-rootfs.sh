@@ -142,7 +142,21 @@ unmount_guest_filesystems() {
                     fail 4 "temporary device mount is still attached: $target"
                 fi
             else
-                umount -R "$target"
+                if ! umount -R "$target"; then
+                    local proc proc_root proc_name proc_cwd
+                    for proc in /proc/[0-9]*; do
+                        proc_root="$(readlink "$proc/root" 2>/dev/null || true)"
+                        case "$proc_root" in
+                            "$ROOTFS"|"$ROOTFS"/*)
+                                proc_name="$(cat "$proc/comm" 2>/dev/null || true)"
+                                proc_cwd="$(readlink "$proc/cwd" 2>/dev/null || true)"
+                                printf '[rootfs-build] chroot process holding mount: pid=%s name=%s root=%s cwd=%s\n' \
+                                    "${proc##*/}" "$proc_name" "$proc_root" "$proc_cwd" >&2
+                                ;;
+                        esac
+                    done
+                    return 1
+                fi
             fi
         fi
     done
@@ -215,6 +229,9 @@ chroot_guest /bin/bash -lc '[[ "$(getent passwd dev | cut -d: -f3-4)" == "1000:1
 stage='remove_machine_specific_state'
 chroot_guest /usr/bin/usermod --password '!' root
 chroot_guest /usr/bin/usermod --password '!' dev
+# pacman-key starts a persistent gpg-agent inside the chroot. Stop it before
+# unmounting so its chroot root cannot keep the temporary rootfs busy.
+chroot_guest /usr/bin/gpgconf --homedir /etc/pacman.d/gnupg --kill all
 active_password_hashes="$(awk -F: '$2 !~ /^(!|\*)/ { print $1 }' "$ROOTFS/etc/shadow")"
 [[ -z "$active_password_hashes" ]] || fail 4 "image contains accounts with active password hashes: $active_password_hashes"
 unmount_guest_filesystems
