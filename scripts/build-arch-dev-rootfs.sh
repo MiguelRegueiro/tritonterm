@@ -47,6 +47,7 @@ readonly BASE_ARCHIVE="$work_dir/$BASE_NAME"
 readonly BASE_SIGNATURE="$BASE_ARCHIVE.sig"
 readonly GOPGHOME="$work_dir/gnupg"
 readonly BUILD_LOG="$work_dir/rootfs-build.log"
+readonly ROOTFS_RESOLV_BACKUP="$work_dir/rootfs-resolv.conf.original"
 readonly ARCHIVE_NAME="tritonterm-archlinuxarm-aarch64-${VERSION}.tar.gz"
 readonly OUTPUT_ARCHIVE="$OUTPUT_DIR/$ARCHIVE_NAME"
 readonly OUTPUT_MANIFEST="$OUTPUT_DIR/$ARCHIVE_NAME.manifest"
@@ -80,7 +81,20 @@ stage_started="$(date +%s)"
 mkdir -p "$ROOTFS"
 bsdtar --numeric-owner -xpf "$BASE_ARCHIVE" -C "$ROOTFS"
 report_line "base_extraction_seconds=$(( $(date +%s) - stage_started ))"
-cp /etc/resolv.conf "$ROOTFS/etc/resolv.conf"
+resolver_source='/etc/resolv.conf'
+if [[ -s /run/systemd/resolve/resolv.conf ]] &&
+    awk '$1 == "nameserver" && $2 !~ /^127\./ && $2 != "::1" { found=1 } END { exit !found }' /run/systemd/resolve/resolv.conf; then
+    resolver_source='/run/systemd/resolve/resolv.conf'
+fi
+rootfs_resolv_existed=false
+if [[ -e "$ROOTFS/etc/resolv.conf" || -L "$ROOTFS/etc/resolv.conf" ]]; then
+    cp -a "$ROOTFS/etc/resolv.conf" "$ROOTFS_RESOLV_BACKUP"
+    rootfs_resolv_existed=true
+fi
+rm -f "$ROOTFS/etc/resolv.conf"
+install -m 0644 "$resolver_source" "$ROOTFS/etc/resolv.conf"
+report_line "build_resolver_source=$resolver_source"
+report_line "build_resolver_nameservers=$(awk '$1 == "nameserver" { printf "%s%s", sep, $2; sep="," } END { print "" }' "$resolver_source")"
 
 chroot_guest() {
     chroot "$ROOTFS" /usr/bin/env -i \
@@ -126,6 +140,11 @@ install -d -m 0700 "$ROOTFS/root/.tritonterm-setup"
 install -m 0755 app/src/main/assets/setup-arch-developer.sh "$ROOTFS/root/.tritonterm-setup/setup-arch-developer.sh"
 install -m 0644 app/src/main/assets/starship.toml "$ROOTFS/root/.tritonterm-setup/starship.toml"
 install -m 0644 app/src/main/assets/paru-bootstrap.PKGBUILD "$ROOTFS/root/.tritonterm-setup/paru-bootstrap.PKGBUILD"
+stage='guest_dns_preflight'
+resolved_mirror="$(chroot_guest /usr/bin/getent ahostsv4 mirror.archlinuxarm.org | awk 'NR == 1 { print $1 }')"
+[[ -n "$resolved_mirror" ]] || fail 7 'the guest could not resolve mirror.archlinuxarm.org before pacman provisioning'
+report_line "guest_mirror_ipv4=$resolved_mirror"
+stage='developer_environment_provisioning'
 chroot_guest /bin/bash -lc 'bash /root/.tritonterm-setup/setup-arch-developer.sh' 2>&1 | tee "$BUILD_LOG"
 report_line "developer_provisioning_seconds=$(( $(date +%s) - stage_started ))"
 
@@ -178,6 +197,10 @@ chroot_guest /usr/bin/usermod --password '!' dev
 active_password_hashes="$(awk -F: '$2 !~ /^(!|\*)/ { print $1 }' "$ROOTFS/etc/shadow")"
 [[ -z "$active_password_hashes" ]] || fail 4 "image contains accounts with active password hashes: $active_password_hashes"
 unmount_guest_filesystems
+rm -f "$ROOTFS/etc/resolv.conf"
+if [[ "$rootfs_resolv_existed" == true ]]; then
+    cp -a "$ROOTFS_RESOLV_BACKUP" "$ROOTFS/etc/resolv.conf"
+fi
 rm -f "$ROOTFS/etc/machine-id" "$ROOTFS/var/lib/dbus/machine-id" "$ROOTFS/root/.bash_history" "$ROOTFS/home/dev/.bash_history"
 rm -f "$ROOTFS"/etc/ssh/ssh_host_* 2>/dev/null || true
 rm -rf "$ROOTFS/root/.ssh" "$ROOTFS/home/dev/.ssh"
