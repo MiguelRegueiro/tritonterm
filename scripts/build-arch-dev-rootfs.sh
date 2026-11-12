@@ -107,6 +107,12 @@ chroot_guest() {
 }
 
 mount_guest_filesystems() {
+    # libalpm's CheckSpace logic needs the chroot root to appear as a mount
+    # point in /proc/self/mountinfo when it resolves the pacman cache's device.
+    # arch-chroot does this bind mount for the same reason.
+    mount --bind "$ROOTFS" "$ROOTFS"
+    guest_mounts+=("$ROOTFS")
+    mount --make-private "$ROOTFS"
     mkdir -p "$ROOTFS/dev" "$ROOTFS/proc" "$ROOTFS/sys"
     mount --rbind /dev "$ROOTFS/dev"
     guest_mounts+=("$ROOTFS/dev")
