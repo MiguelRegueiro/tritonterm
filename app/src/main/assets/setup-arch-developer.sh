@@ -265,7 +265,7 @@ if [[ -e "$FAKEROOT_CURRENT" && ! -L "$FAKEROOT_CURRENT" ]]; then
     die 26 "reserved fakeroot selector is not a symlink: ${FAKEROOT_CURRENT}"
 fi
 if [[ ! -x "${FAKEROOT_PREFIX}/bin/fakeroot" || ! -x "${FAKEROOT_PREFIX}/bin/faked" ||
-      ! -f "${FAKEROOT_PREFIX}/lib/libfakeroot/libfakeroot-0.so" ||
+      ! -f "${FAKEROOT_PREFIX}/lib/libfakeroot-0.so" ||
       ! -f "${FAKEROOT_PREFIX}/.tritonterm-version" ]]; then
     if [[ -e "$FAKEROOT_PREFIX" || -L "$FAKEROOT_PREFIX" ]]; then
         mv "$FAKEROOT_PREFIX" "${FAKEROOT_PREFIX}.incomplete.$(date +%s).$$"
@@ -294,7 +294,7 @@ if [[ ! -x "${FAKEROOT_PREFIX}/bin/fakeroot" || ! -x "${FAKEROOT_PREFIX}/bin/fak
     )
     staged="${build}/dest${FAKEROOT_PREFIX}"
     if [[ ! -x "${staged}/bin/fakeroot" || ! -x "${staged}/bin/faked" ||
-          ! -f "${staged}/lib/libfakeroot/libfakeroot-0.so" ]]; then
+          ! -f "${staged}/lib/libfakeroot-0.so" ]]; then
         say 'Staged TCP fakeroot files did not match the expected prefix layout; found these relevant paths:' >&2
         find "$build/dest" \( -name fakeroot -o -name faked -o -name 'libfakeroot*' \) \
             -printf '%M %u:%g %p -> %l\n' >&2 || true
