@@ -329,8 +329,8 @@ fake_owner="$(run_dev_fish "fakeroot -- /bin/sh -c 'touch \"$fake_file\"; chown 
 rm -f "$fake_file"
 say 'TCP fakeroot file metadata smoke passed: fake owner=0:0.'
 
-stage='makepkg_install_smoke'
-say 'Running makepkg -si as dev to validate TCP fakeroot and restricted pacman authorization.'
+stage='makepkg_archive_smoke'
+say 'Running normal makepkg as dev; the CI chroot is on a nosuid mount, so pacman installation is verified separately as root.'
 smoke="/tmp/tritonterm-package-smoke-$$"
 install -d -o "$DEV_USER" -g "$dev_group" -m 0750 "$smoke" "$smoke/pkgdest"
 makepkg_connect_trace="$smoke/makepkg-connect.trace"
@@ -380,17 +380,16 @@ package() {
 SMOKE_PKGBUILD
 chown "$DEV_USER:$dev_group" "$smoke/PKGBUILD"
 makepkg_result=0
-run_pacman_transaction 'makepkg smoke package install' run_dev_fish \
-    "cd '$smoke' && env PKGDEST='$smoke/pkgdest' strace -f -e trace=process,network -o '$makepkg_connect_trace' makepkg --noconfirm --syncdeps --install --force" || makepkg_result=$?
+run_dev_fish \
+    "cd '$smoke' && env PKGDEST='$smoke/pkgdest' strace -f -e trace=process,network -o '$makepkg_connect_trace' makepkg --noconfirm --syncdeps --force" || makepkg_result=$?
 if (( makepkg_result != 0 )); then
     say "makepkg failed with exit ${makepkg_result}; fakeroot process and network lifecycle follows. Full trace: ${makepkg_connect_trace}"
     if [[ -f "$makepkg_connect_trace" ]]; then
         awk '/execve\(|clone\(|fork\(|vfork\(|bind\(|listen\(|accept\(|connect\(/ && (/execve\(|clone\(|fork\(|vfork\(|bind\(|listen\(|accept\(/ || /connect\(.*= -1/)' \
             "$makepkg_connect_trace" | tail -n 120 >&2
     fi
-    die "$makepkg_result" 'package transaction failed: makepkg smoke package install'
+    die "$makepkg_result" 'makepkg smoke archive build failed'
 fi
-test -f /usr/share/tritonterm-default-smoke/installed
 archive="$(find "$smoke/pkgdest" -maxdepth 1 -type f -name '*.pkg.tar.*' -print -quit)"
 [[ -n "$archive" ]] || die 32 'makepkg did not produce a package archive'
 bsdtar -tvf "$archive" | awk '
@@ -402,6 +401,8 @@ bsdtar -tvf "$archive" | awk '
     }
     END { exit !found }
 ' || die 33 'makepkg archive did not preserve root:root ownership and mode 4755'
+require_pacman_transaction 'install makepkg smoke package' pacman -U --noconfirm "$archive"
+test -f /usr/share/tritonterm-default-smoke/installed
 require_pacman_transaction 'remove makepkg smoke package' pacman -Rns --noconfirm tritonterm-default-smoke
 rm -rf "$smoke"
 
@@ -436,8 +437,7 @@ package() {
 }
 PARU_SMOKE_PKGBUILD
 chown "$DEV_USER:$dev_group" "$paru_smoke/PKGBUILD"
-require_pacman_transaction 'Paru smoke package install' run_dev_fish "cd '$paru_smoke' && env PKGDEST='$paru_smoke/pkgdest' paru --noconfirm --skipreview -Bi ."
-test -f /usr/share/tritonterm-paru-default-smoke/installed
+run_dev_fish "cd '$paru_smoke' && env PKGDEST='$paru_smoke/pkgdest' paru --noconfirm --skipreview -B ."
 paru_archive="$(find "$paru_smoke/pkgdest" -maxdepth 1 -type f -name '*.pkg.tar.*' -print -quit)"
 [[ -n "$paru_archive" ]] || die 35 'Paru did not produce a package archive in the fresh PKGDEST'
 bsdtar -tvf "$paru_archive" | awk '
@@ -449,6 +449,8 @@ bsdtar -tvf "$paru_archive" | awk '
     }
     END { exit !found }
 ' || die 36 'Paru archive did not preserve root:root ownership and mode 4755'
+require_pacman_transaction 'install Paru smoke package' pacman -U --noconfirm "$paru_archive"
+test -f /usr/share/tritonterm-paru-default-smoke/installed
 require_pacman_transaction 'remove Paru smoke package' pacman -Rns --noconfirm tritonterm-paru-default-smoke
 rm -rf "$paru_smoke"
 
