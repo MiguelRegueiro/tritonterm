@@ -44,7 +44,10 @@ dependencies {
     implementation("androidx.compose.ui:ui")
     implementation("androidx.compose.ui:ui-tooling-preview")
     implementation("androidx.compose.material3:material3")
-    implementation("com.termux.termux-app:terminal-view:0.118.0")
+    implementation("com.termux.termux-app:terminal-view:0.118.0") {
+        exclude(group = "com.termux.termux-app", module = "terminal-emulator")
+    }
+    implementation(project(":terminal-emulator"))
     implementation("org.bouncycastle:bcpg-jdk18on:1.80.2")
     implementation("org.bouncycastle:bcprov-jdk18on:1.80.2")
     testImplementation("junit:junit:4.13.2")

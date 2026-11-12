@@ -268,7 +268,7 @@ internal class AndroidShellBackend : TerminalBackend {
             "TERM=xterm-256color",
             "LANG=C.UTF-8"
         )
-        return TerminalSession("/system/bin/sh", home, emptyArray(), environment, 2000, client)
+        return TerminalSession("/system/bin/sh", home, emptyArray(), environment, 2000, client, false)
     }
 }
 
@@ -347,7 +347,8 @@ internal class ArchLinuxArmBackend : TerminalBackend {
                 arrayOf(cli, "login", ArchLinuxArmBootstrap.DISTRO_ALIAS, "--user", "root", "/bin/bash", "-l"),
                 environment,
                 2000,
-                client
+                client,
+                false
             ).also {
                 TerminalDiagnostics.confirmCrashRecorder(context, crashLogOffset)
                 TerminalDiagnostics.record(

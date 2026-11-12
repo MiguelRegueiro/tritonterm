@@ -17,3 +17,4 @@ dependencyResolutionManagement {
 
 rootProject.name = "TritonTerm"
 include(":app")
+include(":terminal-emulator")
