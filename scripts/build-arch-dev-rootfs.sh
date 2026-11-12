@@ -15,17 +15,25 @@ stage='preflight'
 build_succeeded=0
 work_dir=''
 report=''
+guest_mounts=()
 report_line() { printf '%s\n' "$*" | tee -a "$report"; }
 fail() { local code="$1"; shift; printf '[rootfs-build] FAILED at %s (exit %s): %s\n' "$stage" "$code" "$*" >&2; exit "$code"; }
 on_error() { local code=$?; printf '[rootfs-build] FAILED at %s (exit %s): command: %s\n' "$stage" "$code" "$BASH_COMMAND" >&2; exit "$code"; }
 trap on_error ERR
+cleanup_guest_mounts() {
+    local index
+    for ((index=${#guest_mounts[@]} - 1; index >= 0; index--)); do
+        umount -R "${guest_mounts[index]}" 2>/dev/null || true
+    done
+}
+trap cleanup_guest_mounts EXIT
 
 [[ "$(id -u)" == 0 ]] || fail 2 'run through sudo on a native AArch64 runner'
 [[ "$(uname -m)" == aarch64 ]] || fail 2 'the image must be built on a native AArch64 Linux runner'
 [[ "$VERSION" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$ ]] || fail 2 'usage: build-arch-dev-rootfs.sh VERSION OUTPUT_DIR'
 [[ -s "$ROOTFS_SIGNING_KEY" && -s "$ROOTFS_SIGNING_PASSPHRASE_FILE" ]] ||
     fail 2 'set TRITONTERM_ROOTFS_SIGNING_KEY and TRITONTERM_ROOTFS_SIGNING_PASSPHRASE_FILE to the release-signing inputs'
-for command in curl gpg gpgv bsdtar chroot tar gzip sha256sum openssl; do
+for command in curl gpg gpgv bsdtar chroot mount mountpoint umount tar gzip sha256sum openssl; do
     command -v "$command" >/dev/null || fail 2 "required host command is missing: $command"
 done
 mkdir -p "$OUTPUT_DIR" "$WORK_PARENT"
@@ -83,6 +91,31 @@ chroot_guest() {
         SYSTEMD_OFFLINE=1 \
         "$@"
 }
+
+mount_guest_filesystems() {
+    mkdir -p "$ROOTFS/dev" "$ROOTFS/proc" "$ROOTFS/sys"
+    mount --rbind /dev "$ROOTFS/dev"
+    guest_mounts+=("$ROOTFS/dev")
+    mount --make-rslave "$ROOTFS/dev"
+    mount -t proc proc "$ROOTFS/proc"
+    guest_mounts+=("$ROOTFS/proc")
+    mount -t sysfs sysfs "$ROOTFS/sys"
+    guest_mounts+=("$ROOTFS/sys")
+}
+
+unmount_guest_filesystems() {
+    local index target
+    for ((index=${#guest_mounts[@]} - 1; index >= 0; index--)); do
+        target="${guest_mounts[index]}"
+        if mountpoint -q "$target"; then
+            umount -R "$target"
+        fi
+    done
+    guest_mounts=()
+}
+
+stage='chroot_mount_setup'
+mount_guest_filesystems
 
 stage='pacman_keyring'
 chroot_guest /bin/bash -lc 'pacman-key --init && pacman-key --populate archlinuxarm'
@@ -144,6 +177,7 @@ chroot_guest /usr/bin/usermod --password '!' root
 chroot_guest /usr/bin/usermod --password '!' dev
 active_password_hashes="$(awk -F: '$2 !~ /^(!|\*)/ { print $1 }' "$ROOTFS/etc/shadow")"
 [[ -z "$active_password_hashes" ]] || fail 4 "image contains accounts with active password hashes: $active_password_hashes"
+unmount_guest_filesystems
 rm -f "$ROOTFS/etc/machine-id" "$ROOTFS/var/lib/dbus/machine-id" "$ROOTFS/root/.bash_history" "$ROOTFS/home/dev/.bash_history"
 rm -f "$ROOTFS"/etc/ssh/ssh_host_* 2>/dev/null || true
 rm -rf "$ROOTFS/root/.ssh" "$ROOTFS/home/dev/.ssh"
