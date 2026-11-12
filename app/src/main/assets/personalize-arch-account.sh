@@ -90,6 +90,15 @@ IFS=: read -r final_name _ final_uid final_gid _ final_home final_shell <<< "$fi
 id -nG "$requested" | tr ' ' '\n' | grep -qx wheel || fail 'user is not in the wheel group'
 [[ -d "$target_home/.rustup" && -d "$target_home/.cargo" ]] || fail 'Rustup/Cargo home was not preserved during rename'
 
+# Fish's universal fish_user_paths can retain absolute paths from the template
+# account. Rebuild it from the renamed account's $HOME before the first shell.
+/usr/bin/su -l "$requested" -s /usr/bin/fish -c 'set --universal --erase fish_user_paths; or true'
+if [[ "$requested" != "$TEMPLATE_USER" ]]; then
+    /usr/bin/su -l "$requested" -s /usr/bin/fish -c \
+        'contains -- "$HOME/.local/bin" $PATH; and not contains -- /home/dev/.local/bin $PATH' ||
+        fail 'Fish PATH still contains a template-home path after account rename'
+fi
+
 temp_selected="${SELECTED_FILE}.new.$$"
 printf '%s\n' "$requested" > "$temp_selected"
 chmod 0644 "$temp_selected"

@@ -219,6 +219,11 @@ chroot_guest /bin/bash -lc '
     [[ -d /home/tritonterm-review/.cargo ]]
     [[ "$(cat /etc/tritonterm/selected-user)" == tritonterm-review ]]
 '
+chroot_guest /usr/bin/su -l tritonterm-review -s /usr/bin/fish -c \
+    'contains -- "$HOME/.local/bin" $PATH; and not contains -- /home/dev/.local/bin $PATH'
+if grep -Fq '/home/dev/.local/bin' "$ROOTFS/home/tritonterm-review/.config/fish/fish_variables"; then
+    fail 4 'renamed account Fish universal variables retain the template home path'
+fi
 printf 'TRITONTERM_ACCOUNT_PERSONALIZATION_SMOKE_PASSED\n' | tee -a "$report"
 chroot_guest /usr/bin/usermod --login dev tritonterm-review
 chroot_guest /usr/bin/groupmod --new-name dev tritonterm-review

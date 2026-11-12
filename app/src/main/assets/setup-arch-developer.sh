@@ -216,7 +216,7 @@ export SYSTEMD_OFFLINE=1
 PROFILE
 chmod 0644 /etc/profile.d/tritonterm-devtools.sh
 cat > "$dev_home/.config/fish/conf.d/20-tritonterm-path.fish" <<'FISH_PATH'
-fish_add_path --prepend "/opt/tritonterm/fakeroot-tcp/current/bin" "$HOME/.cargo/bin" "$HOME/.local/bin"
+fish_add_path --path --prepend "/opt/tritonterm/fakeroot-tcp/current/bin" "$HOME/.cargo/bin" "$HOME/.local/bin"
 set -gx SYSTEMD_OFFLINE 1
 FISH_PATH
 cat > "$dev_home/.config/fish/conf.d/90-tritonterm-starship.fish" <<'FISH_PROMPT'
