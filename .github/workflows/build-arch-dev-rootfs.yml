@@ -43,11 +43,19 @@ jobs:
           fi
           echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
           "$HOME/.cargo/bin/rustup" toolchain install 1.98.0 --profile minimal --no-self-update
+          "$HOME/.cargo/bin/rustup" target add aarch64-linux-android --toolchain 1.98.0
+
+      - name: Install pinned Android NDK for the embedded PRoot test binary
+        run: |
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --install "ndk;27.2.12479018"
+          mkdir -p third_party/oonid-pr/build/ndk
+          ln -s "$ANDROID_HOME/ndk/27.2.12479018" third_party/oonid-pr/build/ndk/android-ndk-r27c
 
       - name: Build native PRoot login test binaries
         run: |
           test "$(git -C third_party/oonid-pr rev-parse HEAD)" = 7029b1fe8fa84d64339cabe38f9c5be2ea2ae7ac
           ./scripts/prepare-proot-source.sh
+          "$HOME/.cargo/bin/cargo" +1.98.0 build --manifest-path third_party/oonid-pr/src/proot-integration-test/Cargo.toml --target aarch64-linux-android --release --locked
           "$HOME/.cargo/bin/cargo" +1.98.0 test --manifest-path third_party/oonid-pr/src/pr-cli/Cargo.toml --locked
           make -C third_party/oonid-pr/src/proot/src -j2 proot loader/loader
           "$HOME/.cargo/bin/cargo" +1.98.0 build --manifest-path third_party/oonid-pr/src/pr-cli/Cargo.toml --release --locked
