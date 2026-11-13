@@ -227,7 +227,7 @@ run_image_contract identity /usr/bin/su -l dev -s /usr/bin/fish -c \
 run_image_contract fakeroot_identity /usr/bin/su -l dev -s /usr/bin/fish -c 'test (fakeroot -- /usr/bin/id -u) = 0'
 run_image_contract sudo_pacman_allowed /usr/bin/su -l dev -s /usr/bin/fish -c 'sudo -n /usr/bin/pacman -Q pacman'
 run_image_contract sudo_unrestricted_root_denied /usr/bin/su -l dev -s /usr/bin/fish -c 'not sudo -n /usr/bin/id -u >/dev/null 2>&1'
-run_image_contract fish_abbreviation /usr/bin/su -l dev -s /usr/bin/fish -c 'abbr -q up'
+run_image_contract fish_abbreviation /usr/bin/su -l dev -s /usr/bin/fish -c 'fish -ic "abbr -q up"'
 run_image_contract fish_starship_prompt_function /usr/bin/su -l dev -s /usr/bin/fish -c 'functions fish_prompt | string match -q "*starship*"'
 printf 'TRITONTERM_NATIVE_ARM64_USERLAND_SMOKE_PASSED\n' | tee -a "$report"
 cp "$ROOTFS/var/cache/tritonterm/developer-setup.log" "$OUTPUT_DIR/build-log-${VERSION}.txt"
