@@ -5,6 +5,10 @@ version="${1:-}"
 rootfs_dir="${2:-}"
 output_dir="${3:-}"
 source_index_dir="${4:-}"
+android_version_code="${TRITONTERM_ANDROID_VERSION_CODE:-}"
+android_version_name="${TRITONTERM_ANDROID_VERSION_NAME:-${version}-exp.1}"
+release_tag="arch-rootfs-${version}-exp.1"
+release_base_url="https://github.com/MiguelRegueiro/tritonterm-releases/releases/download/${release_tag}"
 project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 [[ "$version" =~ ^[0-9]{4}\.[0-9]{2}\.[0-9]{2}\.[0-9]+$ ]] || {
@@ -13,6 +17,10 @@ project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 }
 [[ -d "$rootfs_dir" && -d "$output_dir" && -d "$source_index_dir" ]] || {
     printf 'Rootfs artifact, output, and exact package source index directories must already exist.\n' >&2
+    exit 2
+}
+[[ "$android_version_code" =~ ^[1-9][0-9]{0,8}$ ]] || {
+    printf 'Set TRITONTERM_ANDROID_VERSION_CODE to the exact positive APK version code.\n' >&2
     exit 2
 }
 
@@ -198,12 +206,13 @@ artifacts are unmodified Apache-2.0 binaries; their source projects and exact
 artifact hashes are documented there.
 
 The Android APK was built from the source commit and the included local changes
-patch using `scripts/build-apk.sh` with these values:
+patch using `scripts/build-signed-pinned-apk.sh` with these values:
 
-    TRITONTERM_ARCH_ROOTFS_VERSION=2026.11.13.1
-    TRITONTERM_ARCH_ROOTFS_RELEASE_TAG=arch-rootfs-2026.11.13.1-exp.1
-    TRITONTERM_ARCH_ROOTFS_RELEASE_BASE_URL=https://github.com/MiguelRegueiro/tritonterm-releases/releases/download/arch-rootfs-2026.11.13.1-exp.1
-    TRITONTERM_ANDROID_VERSION_CODE=4
+    TRITONTERM_ARCH_ROOTFS_VERSION=@VERSION@
+    TRITONTERM_ARCH_ROOTFS_RELEASE_TAG=@ROOTFS_RELEASE_TAG@
+    TRITONTERM_ARCH_ROOTFS_RELEASE_BASE_URL=@ROOTFS_RELEASE_BASE_URL@
+    TRITONTERM_ANDROID_VERSION_CODE=@ANDROID_VERSION_CODE@
+    TRITONTERM_ANDROID_VERSION_NAME=@ANDROID_VERSION_NAME@
 
 The local patch is included so the published source corresponds to the reviewed
 APK even though the private development repository remains at the recorded base
@@ -218,8 +227,8 @@ license, MIT Kerberos's BSD-style license, leancrypto's GPL/BSD options, LMDB's
 OpenLDAP license, popt's MIT-style terms, sudo's ISC-style terms, Vim's license,
 public-domain tzdata and IANA protocol data, and SQLite's public-domain notice.
 GnuPG's Unicode data license and ICU's Unicode License V3 notices are also included.
-For this exact image, the package inventory contains 193 installed records across
-170 package bases, with a package license expression and upstream URL for every
+For this exact image, the package inventory contains @PACKAGE_COUNT@ installed
+records across @PACKAGE_BASE_COUNT@ package bases, with a package license expression and upstream URL for every
 record. The custom identifiers (`custom`, `custom:OpenLDAP`, `custom:flex`,
 `custom:none`, and `custom:vim`) were checked against their corresponding license
 texts in the accompanying license bundle. The full declared license expressions
@@ -232,6 +241,12 @@ rootfs signing key, passphrase, developer credential, or device-specific signing
 material is included in this source bundle.
 EOF
 sed -e "s/@VERSION@/$version/g" \
+    -e "s/@ROOTFS_RELEASE_TAG@/$release_tag/g" \
+    -e "s|@ROOTFS_RELEASE_BASE_URL@|$release_base_url|g" \
+    -e "s/@ANDROID_VERSION_CODE@/$android_version_code/g" \
+    -e "s/@ANDROID_VERSION_NAME@/$android_version_name/g" \
+    -e "s/@PACKAGE_COUNT@/$(($(wc -l < "$license_csv") - 1))/g" \
+    -e "s/@PACKAGE_BASE_COUNT@/$(tail -n +2 "$license_csv" | cut -d, -f5 | sort -u | wc -l | tr -d ' ')/g" \
     -e "s/@PR_COMMIT@/$pr_commit/g" \
     -e "s/@TALLOC_COMMIT@/$talloc_commit/g" \
     -e "s/@APP_COMMIT@/$app_commit/g" \
