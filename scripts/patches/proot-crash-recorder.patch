@@ -1,0 +1,252 @@
+diff --git a/src/pr-cli/src/shared.rs b/src/pr-cli/src/shared.rs
+index 91c568e..5424865 100644
+--- a/src/pr-cli/src/shared.rs
++++ b/src/pr-cli/src/shared.rs
+@@ -570,7 +570,7 @@ pub fn build_proot_runtime_env() -> Vec<(&'static str, String)> {
+         .or_else(|_| std::env::var("TMPDIR"))
+         .unwrap_or_else(|_| format!("{}/tmp", get_prefix()));
+ 
+-    vec![
++    let mut runtime_env = vec![
+         ("PROOT_NO_SECCOMP", "1".to_string()),
+         (
+             "PROOT_L2S_DIR",
+@@ -579,7 +579,20 @@ pub fn build_proot_runtime_env() -> Vec<(&'static str, String)> {
+         ("PROOT_TMP_DIR", cache_dir.clone()),
+         ("TMPDIR", cache_dir),
+         ("PROOT_LOADER", get_native_loader()),
+-    ]
++    ];
++
++    // These are consumed by the native PRoot tracer, not the guest process.
++    // Keep the forwarding explicit alongside the other runtime-only variables.
++    for (name, key) in [
++        ("PROOT_CRASH_DIAGNOSTICS", "PROOT_CRASH_DIAGNOSTICS"),
++        ("PROOT_CRASH_DIAGNOSTICS_FILE", "PROOT_CRASH_DIAGNOSTICS_FILE"),
++    ] {
++        if let Ok(value) = std::env::var(key) {
++            runtime_env.push((name, value));
++        }
++    }
++
++    runtime_env
+ }
+ 
+ pub fn build_proot_child_env() -> Vec<(String, String)> {
+@@ -828,6 +841,26 @@ mod tests {
+         std::env::remove_var("PROOT_L2S_DIR");
+     }
+ 
++    #[test]
++    fn build_proot_runtime_env_forwards_crash_recorder_settings() {
++        let _guard = env_lock().lock().expect("lock env");
++        let saved_enabled = std::env::var_os("PROOT_CRASH_DIAGNOSTICS");
++        let saved_path = std::env::var_os("PROOT_CRASH_DIAGNOSTICS_FILE");
++        std::env::set_var("PROOT_CRASH_DIAGNOSTICS", "1");
++        std::env::set_var("PROOT_CRASH_DIAGNOSTICS_FILE", "/tmp/proot-crash.log");
++
++        let map: std::collections::BTreeMap<&str, String> =
++            build_proot_runtime_env().into_iter().collect();
++        assert_eq!(map.get("PROOT_CRASH_DIAGNOSTICS").map(String::as_str), Some("1"));
++        assert_eq!(
++            map.get("PROOT_CRASH_DIAGNOSTICS_FILE").map(String::as_str),
++            Some("/tmp/proot-crash.log")
++        );
++
++        restore_var("PROOT_CRASH_DIAGNOSTICS", saved_enabled);
++        restore_var("PROOT_CRASH_DIAGNOSTICS_FILE", saved_path);
++    }
++
+     #[test]
+     fn build_proot_child_env_includes_non_empty_android_vars() {
+         let _guard = env_lock().lock().expect("lock env");
+diff --git a/src/proot/src/tracee/event.c b/src/proot/src/tracee/event.c
+index 0f3a111..73f34b8 100644
+--- a/src/proot/src/tracee/event.c
++++ b/src/proot/src/tracee/event.c
+@@ -30,6 +30,8 @@
+ #include <string.h>     /* strcmp(3), */
+ #include <errno.h>      /* errno(3), */
+ #include <fcntl.h>      /* open, O_* */
++#include <signal.h>     /* siginfo_t, SIGSEGV */
++#include <stdio.h>      /* FILE, fopen, fprintf, fgets */
+ #include <stdbool.h>    /* bool, true, false, */
+ #include <assert.h>     /* assert(3), */
+ #include <stdlib.h>     /* atexit(3), getenv(3), */
+@@ -47,12 +49,156 @@
+ #include "ptrace/wait.h"
+ #include "extension/extension.h"
+ #include "execve/elf.h"
++#include "tracee/reg.h"
++#include "path/temp.h"
+ 
+ #include "attribute.h"
+ #include "compat.h"
+ 
+ static bool seccomp_after_ptrace_enter = false;
+ 
++static bool crash_diagnostics_enabled(void)
++{
++	const char *enabled = getenv("PROOT_CRASH_DIAGNOSTICS");
++	return enabled != NULL && strcmp(enabled, "1") == 0;
++}
++
++static bool crash_log_path(char *path, size_t path_size)
++{
++	const char *configured = getenv("PROOT_CRASH_DIAGNOSTICS_FILE");
++	int length;
++
++	if (configured != NULL && configured[0] != '\0')
++		length = snprintf(path, path_size, "%s", configured);
++	else
++		length = snprintf(path, path_size, "%s/crash-log.txt", get_temp_directory());
++
++	return length >= 0 && (size_t) length < path_size;
++}
++
++static void log_crash_recorder_startup(void)
++{
++	char path[PATH_MAX];
++	FILE *log;
++	int write_error = 0;
++
++	if (!crash_diagnostics_enabled())
++		return;
++	if (!crash_log_path(path, sizeof(path)))
++		return;
++	log = fopen(path, "a");
++	if (log == NULL)
++		return;
++	if (fprintf(log, "PROOT_CRASH_RECORDER active output=%s tracer_pid=%d\n", path, getpid()) < 0 || fflush(log) != 0)
++		write_error = errno == 0 ? EIO : errno;
++	if (fclose(log) != 0 && write_error == 0)
++		write_error = errno == 0 ? EIO : errno;
++	if (write_error != 0)
++		return;
++}
++
++/* Record enough context to identify guest SIGSEGVs without changing their
++ * delivery.  This is opt-in because /proc maps can reveal private paths. */
++static void log_guest_segv(const Tracee *tracee, int wait_status)
++{
++	char log_path[PATH_MAX];
++	char maps_path[PATH_MAX];
++	char status_path[PATH_MAX];
++	siginfo_t siginfo = {};
++	FILE *log;
++	FILE *maps;
++	FILE *status_file;
++	char line[512];
++	unsigned long tgid = 0;
++	size_t maps_bytes = 0;
++	int regs_status;
++	int info_status;
++	int instruction_status;
++	int i;
++	word_t pc;
++	word_t instruction;
++	const Reg arguments[] = { SYSARG_1, SYSARG_2, SYSARG_3, SYSARG_4, SYSARG_5, SYSARG_6 };
++
++	if (!crash_diagnostics_enabled())
++		return;
++	if (!crash_log_path(log_path, sizeof(log_path)))
++		return;
++	info_status = ptrace(PTRACE_GETSIGINFO, tracee->pid, NULL, &siginfo) < 0 ? -errno : 0;
++	regs_status = fetch_regs((Tracee *) tracee);
++	pc = regs_status == 0 ? peek_reg(tracee, CURRENT, INSTR_POINTER) : 0;
++	errno = 0;
++	instruction = regs_status == 0 ? peek_word(tracee, pc) : 0;
++	instruction_status = regs_status == 0 ? (errno == 0 ? 0 : -errno) : regs_status;
++	int status_path_length = snprintf(status_path, sizeof(status_path), "/proc/%d/status", tracee->pid);
++	if (status_path_length >= 0 && (size_t) status_path_length < sizeof(status_path)) {
++		status_file = fopen(status_path, "r");
++		if (status_file != NULL) {
++			while (fgets(line, sizeof(line), status_file) != NULL) {
++				if (sscanf(line, "Tgid:\t%lu", &tgid) == 1)
++					break;
++			}
++			fclose(status_file);
++		}
++	}
++	log = fopen(log_path, "a");
++	if (log == NULL)
++		return;
++	fprintf(log, "\nGUEST_SIGSEGV scope=guest_tracee pid=%d tgid=%lu vpid=%" PRIu64 " wait_status=0x%x exe=%s si_code=%d si_addr=%p siginfo_status=%d regs_status=%d pc_word_status=%d pc_word=0x%" PRIx64 "\n",
++		tracee->pid, tgid, tracee->vpid, wait_status, tracee->exe ?: "(unknown)", siginfo.si_code,
++		info_status == 0 ? siginfo.si_addr : NULL, info_status, regs_status, instruction_status, (uint64_t) instruction);
++	if (regs_status == 0) {
++		word_t stack_pointer = peek_reg(tracee, CURRENT, STACK_POINTER);
++		fprintf(log, "pc=0x%" PRIx64 " sp=0x%" PRIx64 " x8=0x%" PRIx64,
++			(uint64_t) pc, (uint64_t) stack_pointer,
++			(uint64_t) peek_reg(tracee, CURRENT, SYSARG_NUM));
++		for (i = 0; i < (int) (sizeof(arguments) / sizeof(arguments[0])); i++)
++			fprintf(log, " x%d=0x%" PRIx64, i, (uint64_t) peek_reg(tracee, CURRENT, arguments[i]));
++#if defined(ARCH_ARM64)
++		fprintf(log, " x6=0x%" PRIx64 " x7=0x%" PRIx64,
++			(uint64_t) tracee->_regs[CURRENT].regs[6], (uint64_t) tracee->_regs[CURRENT].regs[7]);
++#endif
++		fputc('\n', log);
++#if defined(ARCH_ARM64)
++		{
++			word_t frame = tracee->_regs[CURRENT].regs[29];
++			for (i = 0; i < 24; i++) {
++				word_t previous;
++				word_t return_address;
++				if (frame < stack_pointer || frame - stack_pointer > 1024 * 1024 || (frame & 0xf) != 0)
++					break;
++				errno = 0;
++				previous = peek_word(tracee, frame);
++				if (errno != 0) break;
++				return_address = peek_word(tracee, frame + sizeof(word_t));
++				if (errno != 0) break;
++				fprintf(log, "frame[%d]=0x%" PRIx64 " return=0x%" PRIx64 "\n",
++					i, (uint64_t) frame, (uint64_t) return_address);
++				if (previous <= frame) break;
++				frame = previous;
++			}
++		}
++#endif
++	}
++	if (snprintf(maps_path, sizeof(maps_path), "/proc/%d/maps", tracee->pid) < (int) sizeof(maps_path)) {
++		maps = fopen(maps_path, "r");
++		if (maps != NULL) {
++			fputs("maps:\n", log);
++			while (maps_bytes < 65536 && fgets(line, sizeof(line), maps) != NULL) {
++				size_t length = strlen(line);
++				if (length > 65536 - maps_bytes)
++					break;
++				fwrite(line, 1, length, log);
++				maps_bytes += length;
++			}
++			fclose(maps);
++		} else {
++			fprintf(log, "maps_unavailable errno=%d\n", errno);
++		}
++	}
++	fflush(log);
++	fclose(log);
++}
++
+ /**
+  * Start @tracee->exe with the given @argv[].  This function
+  * returns -errno if an error occurred, otherwise 0.
+@@ -263,6 +409,8 @@ int event_loop()
+ 	long status;
+ 	int signum;
+ 
++	log_crash_recorder_startup();
++
+ 	/* Kill all tracees when exiting.  */
+ 	status = atexit(kill_all_tracees);
+ 	if (status != 0)
+@@ -642,6 +790,10 @@ int handle_tracee_event(Tracee *tracee, int tracee_status)
+ 			}
+ 			break;
+ 
++		case SIGSEGV:
++			log_guest_segv(tracee, tracee_status);
++			break;
++
+ 		case SIGSYS: {
+ 			siginfo_t siginfo = {};
+ 			ptrace(PTRACE_GETSIGINFO, tracee->pid, NULL, &siginfo);

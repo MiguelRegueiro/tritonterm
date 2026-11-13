@@ -518,30 +518,6 @@ index 5424865..41c64d4 100644
  
      args
  }
-@@ -585,7 +600,10 @@ pub fn build_proot_runtime_env() -> Vec<(&'static str, String)> {
-     // Keep the forwarding explicit alongside the other runtime-only variables.
-     for (name, key) in [
-         ("PROOT_CRASH_DIAGNOSTICS", "PROOT_CRASH_DIAGNOSTICS"),
--        ("PROOT_CRASH_DIAGNOSTICS_FILE", "PROOT_CRASH_DIAGNOSTICS_FILE"),
-+        (
-+            "PROOT_CRASH_DIAGNOSTICS_FILE",
-+            "PROOT_CRASH_DIAGNOSTICS_FILE",
-+        ),
-     ] {
-         if let Ok(value) = std::env::var(key) {
-             runtime_env.push((name, value));
-@@ -851,7 +869,10 @@ mod tests {
- 
-         let map: std::collections::BTreeMap<&str, String> =
-             build_proot_runtime_env().into_iter().collect();
--        assert_eq!(map.get("PROOT_CRASH_DIAGNOSTICS").map(String::as_str), Some("1"));
-+        assert_eq!(
-+            map.get("PROOT_CRASH_DIAGNOSTICS").map(String::as_str),
-+            Some("1")
-+        );
-         assert_eq!(
-             map.get("PROOT_CRASH_DIAGNOSTICS_FILE").map(String::as_str),
-             Some("/tmp/proot-crash.log")
 @@ -904,6 +925,30 @@ mod tests {
          std::env::remove_var("PROOT_L2S_DIR");
      }

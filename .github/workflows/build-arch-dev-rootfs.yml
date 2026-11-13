@@ -29,6 +29,12 @@ jobs:
           sudo apt-get update
           sudo apt-get install --yes build-essential curl gnupg libarchive-tools libtalloc-dev openssl pkg-config
 
+      - name: Initialize the pinned PRoot talloc source
+        run: |
+          git -c url.https://github.com/.insteadOf=git@github.com: \
+            -C third_party/oonid-pr submodule update --init vendor/samba
+          test "$(git -C third_party/oonid-pr/vendor/samba rev-parse HEAD)" = 2f8dfde1210395175e726455bdb63a7b97245a72
+
       - name: Prepare the pinned native PRoot test toolchain
         run: |
           if ! command -v rustup >/dev/null 2>&1; then
@@ -40,7 +46,7 @@ jobs:
 
       - name: Build native PRoot login test binaries
         run: |
-          test "$(git -C third_party/oonid-pr rev-parse HEAD)" = 31afc11ca3e675fa8bbbe530979afc8c467218dc
+          test "$(git -C third_party/oonid-pr rev-parse HEAD)" = 7029b1fe8fa84d64339cabe38f9c5be2ea2ae7ac
           ./scripts/prepare-proot-source.sh
           "$HOME/.cargo/bin/cargo" +1.98.0 test --manifest-path third_party/oonid-pr/src/pr-cli/Cargo.toml --locked
           make -C third_party/oonid-pr/src/proot/src -j2 proot loader/loader

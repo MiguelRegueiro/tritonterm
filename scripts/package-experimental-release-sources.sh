@@ -186,14 +186,11 @@ The combined app source is licensed under GPLv3-only in `LICENSE` and `COPYING`;
 the Termux module exceptions and notices remain in `terminal-emulator/LICENSE.md`.
 The APK's Bouncy Castle 1.80.2 license and Apache-2.0 notice for its modified BZIP2
 component are included in the app's runtime license assets.
-The PRoot source snapshot `@PR_COMMIT@` descends from upstream oonid/pr commit
-`7029b1fe8fa84d64339cabe38f9c5be2ea2ae7ac` and includes two local commits for
-guest SIGSEGV recording and extraction progress. Those commits are not public
-upstream Git refs; this archive contains the exact source snapshot. Additional
-checked-out PRoot changes are included both as the exact overlay and as
-`third_party/oonid-pr/TRITONTERM_WORKTREE_CHANGES.patch`, applicable to the pinned
-commit. TritonTerm's other changes are preserved in the tracked patches under
-`scripts/patches/`; the build script checks and applies them when needed. The exact
+The PRoot source is pinned to public upstream oonid/pr commit `@PR_COMMIT@`.
+All TritonTerm changes, including guest SIGSEGV recording and extraction progress,
+are preserved in the tracked patches under `scripts/patches/`; the build script
+checks and applies them when needed. This archive contains the exact upstream
+source tree, committed patch stack, and a reproducible build recipe. The exact
 talloc source required by the PRoot native build
 is included at `third_party/oonid-pr/vendor/samba/lib/talloc` from Samba commit
 `@TALLOC_COMMIT@`. The AOSP bionic Git submodule
