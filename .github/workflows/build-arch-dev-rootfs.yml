@@ -57,6 +57,7 @@ jobs:
           retention-days: 1
 
   build-rootfs:
+    needs: build-android-proot-test-binary
     # Signing secrets are available only to explicit dispatches from the reviewed default branch.
     if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
     # Native AArch64 execution avoids QEMU and produces guest-native Rust/Paru builds.
