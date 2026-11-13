@@ -55,7 +55,8 @@ jobs:
         run: |
           test "$(git -C third_party/oonid-pr rev-parse HEAD)" = 7029b1fe8fa84d64339cabe38f9c5be2ea2ae7ac
           ./scripts/prepare-proot-source.sh
-          "$HOME/.cargo/bin/cargo" +1.98.0 build --manifest-path third_party/oonid-pr/src/proot-integration-test/Cargo.toml --target aarch64-linux-android --release --locked
+          (cd third_party/oonid-pr/src/proot-integration-test && \
+            "$HOME/.cargo/bin/cargo" +1.98.0 build --target aarch64-linux-android --release --locked)
           "$HOME/.cargo/bin/cargo" +1.98.0 test --manifest-path third_party/oonid-pr/src/pr-cli/Cargo.toml --locked
           make -C third_party/oonid-pr/src/proot/src -j2 proot loader/loader
           "$HOME/.cargo/bin/cargo" +1.98.0 build --manifest-path third_party/oonid-pr/src/pr-cli/Cargo.toml --release --locked
