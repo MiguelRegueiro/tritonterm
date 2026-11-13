@@ -34,11 +34,40 @@ internal object ArchLinuxArmInstaller {
     fun start(context: Context): Boolean {
         val appContext = context.applicationContext
         if (ArchLinuxArmBootstrap.isInstalled(appContext)) {
-            mutableState.value = mutableState.value.copy(
-                stage = TerminalSetupStage.READY, running = false, ready = true,
-                error = null, featureWarnings = emptyList()
-            )
-            return true
+            return runSingleFlight(appContext, "setup") { app ->
+                TerminalDiagnostics.record(app, "setup", "started", mapOf("launch_mode" to "validate_existing_rootfs"))
+                check(ArchRootfsRelease.isPreparedImage(ArchLinuxArmBootstrap.rootfs(app))) {
+                    "The installed Arch rootfs does not match the APK's pinned development image. It was left untouched."
+                }
+                check(ArchGuestUser.hasUsableShell(ArchLinuxArmBootstrap.rootfs(app))) {
+                    "The installed rootfs does not contain the triton Fish login. It was left untouched."
+                }
+                val featureWarnings = runCatching { verifyDeveloperImage(app).toMutableList() }
+                    .getOrElse { failure ->
+                        TerminalDiagnostics.record(
+                            app, "arch_developer_image_validation", "feature_check_runner_failed",
+                            mapOf("error" to failure.toString())
+                        )
+                        mutableListOf("Feature checks could not run: ${failure.message ?: failure.javaClass.simpleName}")
+                    }
+                check(initializePacmanKeys(app) == null) {
+                    "Arch Linux ARM signing keys could not be initialized and verified. Setup is not ready; retry setup after checking the setup log."
+                }
+                requireTcpFakeroot(featureWarnings)
+                mutableState.value = mutableState.value.copy(featureWarnings = featureWarnings.distinct())
+                TerminalDiagnostics.record(
+                    app,
+                    "developer_image",
+                    if (featureWarnings.isEmpty()) "feature_checks_passed" else "feature_checks_completed_with_warnings",
+                    mapOf(
+                        "version" to ArchRootfsRelease.pinnedVersion(),
+                        "account" to ArchGuestUser.NAME,
+                        "feature_warning_count" to featureWarnings.distinct().size,
+                        "feature_warnings" to featureWarnings.distinct()
+                    )
+                )
+                TerminalDiagnostics.record(app, "setup", "completed", mapOf("rootfs_reused" to true))
+            }
         }
         return runSingleFlight(appContext, "setup") { app ->
             TerminalDiagnostics.record(app, "setup", "started", mapOf("launch_mode" to "explicit_process"))
@@ -82,12 +111,10 @@ internal object ArchLinuxArmInstaller {
                     )
                     mutableListOf("Feature checks could not run: ${failure.message ?: failure.javaClass.simpleName}")
                 }
-            runCatching { initializePacmanKeys(app) }
-                .onSuccess { warning -> warning?.let(featureWarnings::add) }
-                .onFailure { failure ->
-                    TerminalDiagnostics.record(app, "pacman_keyring", "feature_check_failed", mapOf("error" to failure.toString()))
-                    featureWarnings += "Pacman keyring initialization could not run: ${failure.message ?: failure.javaClass.simpleName}"
-                }
+            check(initializePacmanKeys(app) == null) {
+                "Arch Linux ARM signing keys could not be initialized and verified. Setup is not ready; retry setup after checking the setup log."
+            }
+            requireTcpFakeroot(featureWarnings)
             mutableState.value = mutableState.value.copy(featureWarnings = featureWarnings.distinct())
             TerminalDiagnostics.record(
                 app,
@@ -96,7 +123,8 @@ internal object ArchLinuxArmInstaller {
                 mapOf(
                     "version" to ArchRootfsRelease.pinnedVersion(),
                     "account" to ArchGuestUser.NAME,
-                    "feature_warning_count" to featureWarnings.distinct().size
+                    "feature_warning_count" to featureWarnings.distinct().size,
+                    "feature_warnings" to featureWarnings.distinct()
                 )
             )
             TerminalDiagnostics.record(app, "setup", "completed")
@@ -142,12 +170,14 @@ internal object ArchLinuxArmInstaller {
         phase: String,
         operation: String,
         timeoutMs: Long? = null,
-        args: List<String>
+        args: List<String>,
+        environmentOverrides: Map<String, String> = emptyMap(),
+        recordOutput: Boolean = true
     ): ProcessResult {
         val cli = File(context.applicationInfo.nativeLibraryDir, "libpr-cli.so")
         val prefix = File(context.filesDir, "usr")
         val home = File(context.filesDir, "home")
-        val temp = File(context.cacheDir, "proot")
+        val temp = ProotTempDirectory.forApp(context)
         val command = listOf(cli.absolutePath) + args
         val processBuilder = ProcessBuilder(command)
             .directory(context.filesDir)
@@ -166,6 +196,7 @@ internal object ArchLinuxArmInstaller {
             put("PATH", "${File(prefix, "bin").absolutePath}:/system/bin:/system/xbin")
             put("TERM", "xterm-256color")
             put("LANG", "en_US.UTF-8")
+            environmentOverrides.forEach { (key, value) -> put(key, value) }
         }
         val started = System.nanoTime()
         TerminalDiagnostics.record(
@@ -212,8 +243,8 @@ internal object ArchLinuxArmInstaller {
             )
         )
         val combinedOutput = StringBuffer()
-        val stdout = drain(context, phase, "stdout", process.inputStream, combinedOutput)
-        val stderr = drain(context, phase, "stderr", process.errorStream, combinedOutput)
+        val stdout = drain(context, phase, "stdout", process.inputStream, combinedOutput, recordOutput)
+        val stderr = drain(context, phase, "stderr", process.errorStream, combinedOutput, recordOutput)
         val completed = timeoutMs?.let { process.waitFor(it, TimeUnit.MILLISECONDS) } ?: run { process.waitFor(); true }
         if (!completed) {
             process.destroyForcibly()
@@ -236,7 +267,14 @@ internal object ArchLinuxArmInstaller {
         return result
     }
 
-    private fun drain(context: Context, phase: String, streamName: String, input: InputStream, output: StringBuffer): Thread =
+    private fun drain(
+        context: Context,
+        phase: String,
+        streamName: String,
+        input: InputStream,
+        output: StringBuffer,
+        recordOutput: Boolean
+    ): Thread =
         Thread({
             runCatching {
                 BufferedReader(InputStreamReader(input, Charsets.UTF_8)).use { reader ->
@@ -254,7 +292,7 @@ internal object ArchLinuxArmInstaller {
                                 mutableState.value = current.copy(progress = nextProgress)
                             }
                         }
-                        TerminalDiagnostics.appendProcessOutput(context, streamName, "$line\n")
+                        if (recordOutput) TerminalDiagnostics.appendProcessOutput(context, streamName, "$line\n")
                     }
                 }
             }.onFailure { failure ->
@@ -263,47 +301,30 @@ internal object ArchLinuxArmInstaller {
         }, "tritonterm-$phase-$streamName").apply { isDaemon = true; start() }
 
     private fun initializePacmanKeys(context: Context): String? {
-        val root = ArchLinuxArmBootstrap.rootfs(context)
-        val marker = File(root, "root/.tritonterm-pacman-keyring-ready")
-        if (marker.isFile) {
-            TerminalDiagnostics.record(context, "pacman_keyring", "reused")
-            return null
-        }
         mutableState.value = mutableState.value.copy(stage = TerminalSetupStage.PREPARING)
-        TerminalDiagnostics.record(context, "pacman_key_init", "started")
-        val init = runProcess(context, "pacman_key_init", "pacman-key --init", timeoutMs = 120_000, args = listOf(
-            "login", ArchLinuxArmBootstrap.DISTRO_ALIAS, "--user", "root", "/bin/sh", "-lc", "pacman-key --init"
-        ))
-        if (init.exitCode != 0 || init.timedOut) {
-            val warning = "pacman-key --init failed (exit ${init.exitCode})"
-            TerminalDiagnostics.record(context, "pacman_key_init", "feature_check_failed", mapOf("exit_code" to init.exitCode, "timed_out" to init.timedOut))
-            return warning
+        return runCatching { repairPacmanKeyring(context); null }
+            .onFailure { failure ->
+                TerminalDiagnostics.record(context, "pacman_keyring", "feature_check_failed", mapOf("error" to failure.toString()))
+            }
+            .getOrElse { failure -> "Pacman keyring initialization/population failed: ${failure.message ?: failure.javaClass.simpleName}" }
+    }
+
+    private fun requireTcpFakeroot(featureWarnings: List<String>) {
+        val failures = featureWarnings.filter { warning ->
+            warning.contains("fakeroot", ignoreCase = true) ||
+                warning.contains("faked", ignoreCase = true) ||
+                warning.contains("feature checks could not run", ignoreCase = true) ||
+                warning.contains("feature-check runner did not complete", ignoreCase = true)
         }
-        TerminalDiagnostics.record(context, "pacman_key_populate", "started")
-        val populate = runProcess(context, "pacman_key_populate", "pacman-key --populate", timeoutMs = 60_000, args = listOf(
-            "login", ArchLinuxArmBootstrap.DISTRO_ALIAS, "--user", "root", "/bin/sh", "-lc", "pacman-key --populate archlinuxarm"
-        ))
-        if (populate.exitCode != 0 || populate.timedOut) {
-            val warning = "pacman-key --populate failed (exit ${populate.exitCode})"
-            TerminalDiagnostics.record(context, "pacman_key_populate", "feature_check_failed", mapOf("exit_code" to populate.exitCode, "timed_out" to populate.timedOut))
-            return warning
+        check(failures.isEmpty()) {
+            "TCP fakeroot did not pass its installed-image checks: ${failures.joinToString("; ")}"
         }
-        val mark = runProcess(context, "pacman_keyring_marker", "write keyring marker", timeoutMs = 20_000, args = listOf(
-            "login", ArchLinuxArmBootstrap.DISTRO_ALIAS, "--user", "root", "/bin/sh", "-lc",
-            "touch /root/.tritonterm-pacman-keyring-ready"
-        ))
-        if (mark.exitCode != 0 || mark.timedOut) {
-            val warning = "Could not persist pacman-key initialization state (exit ${mark.exitCode})"
-            TerminalDiagnostics.record(context, "pacman_keyring_marker", "feature_check_failed", mapOf("exit_code" to mark.exitCode, "timed_out" to mark.timedOut))
-            return warning
-        }
-        TerminalDiagnostics.record(context, "pacman_keyring", "completed")
-        return null
     }
 
     private fun verifyDeveloperImage(context: Context): List<String> {
         val root = ArchLinuxArmBootstrap.rootfs(context)
         val warnings = mutableListOf<String>()
+        recordPermissionModelProbe(context, root)
         val missing = ArchDeveloperEnvironment.missingRequirements(root)
         missing.forEach { requirement ->
             warnings += requirement
@@ -349,7 +370,7 @@ internal object ArchLinuxArmInstaller {
                 context,
                 "arch_developer_image_validation",
                 "feature_check_runner_failed",
-                mapOf("account" to ArchGuestUser.NAME, "exit_code" to result.exitCode, "timed_out" to result.timedOut, "output" to result.output.takeLast(4000))
+                mapOf("account" to ArchGuestUser.NAME, "exit_code" to result.exitCode, "timed_out" to result.timedOut, "output_tail" to result.output.takeLast(4000))
             )
         }
         TerminalDiagnostics.record(
@@ -362,9 +383,210 @@ internal object ArchLinuxArmInstaller {
                 "gid" to ArchGuestUser.GID,
                 "cwd" to ArchGuestUser.HOME,
                 "feature_warning_count" to warnings.distinct().size,
-                "path" to Regex("(?m)^CHECK_INFO PATH=(.*)$").find(result.output)?.groupValues?.get(1)
+                "feature_warnings" to warnings.distinct(),
+                "path" to Regex("(?m)^CHECK_INFO PATH=(.*)$").find(result.output)?.groupValues?.get(1),
+                "smoke_output_tail" to result.output.takeLast(4000)
             )
         )
         return warnings.distinct()
+    }
+
+    /** Compare Android inode/sidecar metadata with stat, access, and exec under the shipped PRoot. */
+    internal fun runPermissionModelProbe(context: Context) {
+        val appContext = context.applicationContext
+        val root = ArchLinuxArmBootstrap.rootfs(appContext)
+        check(ArchLinuxArmBootstrap.isRootfsExtracted(appContext)) { "Arch rootfs is not installed." }
+        recordPermissionModelProbe(appContext, root)
+    }
+
+    /** Read-only package environment probe using the same login Fish as the interactive terminal. */
+    internal fun runPackageManagerProbe(context: Context) {
+        val appContext = context.applicationContext
+        check(ArchLinuxArmBootstrap.isRootfsExtracted(appContext)) { "Arch rootfs is not installed." }
+        recordPermissionModelProbe(appContext, ArchLinuxArmBootstrap.rootfs(appContext))
+        val args = listOf("login", ArchLinuxArmBootstrap.DISTRO_ALIAS, "--user", ArchGuestUser.NAME,
+            "/usr/bin/fish", "-l", "-i", "-c", ProotPermissionProbe.packageManagerScript())
+        val result = runProcess(
+            appContext,
+            "package_manager_probe",
+            "selected fakeroot, library access, signing-key inventory, and independent DNS checks",
+            timeoutMs = 30_000,
+            args = args,
+            recordOutput = false
+        )
+        TerminalDiagnostics.record(
+            appContext,
+            "package_manager_probe",
+            if (result.exitCode == 0 && !result.timedOut) "completed" else "failed",
+            mapOf("exit_code" to result.exitCode, "timed_out" to result.timedOut, "output" to result.output.takeLast(5000))
+        )
+        check(result.exitCode == 0 && !result.timedOut) {
+            "Package environment probe failed (exit ${result.exitCode}, timed_out=${result.timedOut}): ${result.output.takeLast(1200)}"
+        }
+    }
+
+    /** Rebuild device-local pacman trust from the official keyring packaged in the rootfs. */
+    internal fun repairPacmanKeyring(context: Context): String {
+        val appContext = context.applicationContext
+        check(ArchLinuxArmBootstrap.isRootfsExtracted(appContext)) { "Arch rootfs is not installed." }
+        val fingerprint = ProotPermissionProbe.ALARM_SIGNING_FINGERPRINT
+        val command = ProotPermissionProbe.pacmanKeyringRepairScript()
+        TerminalDiagnostics.record(appContext, "pacman_keyring_repair", "started", mapOf("fingerprint" to fingerprint))
+        val result = runProcess(
+            appContext,
+            "pacman_keyring_repair",
+            "initialize and populate the official Arch Linux ARM keyring",
+            timeoutMs = 180_000,
+            args = listOf("login", ArchLinuxArmBootstrap.DISTRO_ALIAS, "--user", "root", "/bin/sh", "-lc", command),
+            recordOutput = false
+        )
+        val passed = !result.timedOut && result.exitCode == 0 &&
+            result.output.contains("TRITONTERM_PACMAN_KEYRING_REPAIRED fingerprint=$fingerprint")
+        TerminalDiagnostics.record(
+            appContext,
+            "pacman_keyring_repair",
+            if (passed) "completed" else "failed",
+            mapOf("exit_code" to result.exitCode, "timed_out" to result.timedOut, "output" to result.output.takeLast(5000))
+        )
+        check(passed) {
+            "Pacman keyring repair failed (exit ${result.exitCode}, timed_out=${result.timedOut}): ${result.output.takeLast(2000)}"
+        }
+        return result.output
+    }
+
+    private fun recordPermissionModelProbe(context: Context, root: File) {
+        val targets = ProotPermissionProbe.targets
+        val hostSnapshot = targets.associate { relative ->
+            val file = File(root, relative)
+            val sidecar = ProotPermissionProbe.sidecarPath(root, relative)
+            val inode = runCatching { android.system.Os.stat(file.absolutePath) }.getOrNull()
+            val sidecarStat = runCatching { android.system.Os.stat(sidecar.absolutePath) }.getOrNull()
+            relative to mapOf(
+                "exists" to file.exists(),
+                "host_mode_octal" to inode?.st_mode?.and(0xFFF)?.let(Integer::toOctalString),
+                "host_uid" to inode?.st_uid,
+                "host_gid" to inode?.st_gid,
+                "host_access_x_ok" to runCatching {
+                    android.system.Os.access(file.absolutePath, android.system.OsConstants.X_OK)
+                    true
+                }.getOrDefault(false),
+                "host_access_x_errno" to runCatching {
+                    android.system.Os.access(file.absolutePath, android.system.OsConstants.X_OK)
+                    0
+                }.getOrElse { failure ->
+                    (failure as? android.system.ErrnoException)?.errno ?: -1
+                },
+                "sidecar_exists" to sidecar.isFile,
+                "sidecar_mode_octal" to sidecarStat?.st_mode?.and(0xFFF)?.let(Integer::toOctalString),
+                "sidecar_contents" to runCatching { sidecar.readText().trim() }.getOrNull()
+            )
+        }
+        TerminalDiagnostics.record(
+            context,
+            "proot_permission_probe",
+            "android_host_snapshot",
+            mapOf("entries" to hostSnapshot)
+        )
+
+        val login = listOf("login", ArchLinuxArmBootstrap.DISTRO_ALIAS, "--user", ArchGuestUser.NAME)
+        val statResult = runProcess(
+            context,
+            "proot_permission_probe",
+            "guest stat modes and owners",
+            timeoutMs = 15_000,
+            args = login + listOf("/usr/bin/stat", "-c", "%A %a %u:%g %n") + targets.map { "/$it" },
+            recordOutput = false
+        )
+        TerminalDiagnostics.record(
+            context,
+            "proot_permission_probe",
+            "guest_stat_result",
+            mapOf(
+                "exit_code" to statResult.exitCode,
+                "timed_out" to statResult.timedOut,
+                "output" to statResult.output.takeLast(6000)
+            )
+        )
+
+        val accessResult = runProcess(
+            context,
+            "proot_permission_probe",
+            "Fish test -x through PRoot",
+            timeoutMs = 15_000,
+            args = login + listOf("/usr/bin/fish", "-l", "-c", ProotPermissionProbe.fishAccessScript()),
+            recordOutput = false
+        )
+        TerminalDiagnostics.record(
+            context,
+            "proot_permission_probe",
+            "access_result",
+            mapOf(
+                "exit_code" to accessResult.exitCode,
+                "timed_out" to accessResult.timedOut,
+                "output" to accessResult.output.takeLast(6000)
+            )
+        )
+
+        val probeName = ".tritonterm-permission-probe-${android.os.Process.myPid()}.pl"
+        // PRoot bind-mounts the app's PROOT_TMP_DIR over guest /tmp. Staging
+        // this under rootfs/tmp makes the host file invisible to the guest.
+        val guestSource = File(ProotTempDirectory.forApp(context), probeName)
+        val sourceAvailable = runCatching {
+            context.assets.open("proot-permission-syscall-probe.pl").use { input ->
+                guestSource.outputStream().use { output -> input.copyTo(output) }
+            }
+        }.onFailure { failure ->
+            TerminalDiagnostics.record(
+                context, "proot_permission_probe", "syscall_source_copy_failed",
+                mapOf("error" to failure.toString(), "guest_source" to guestSource.absolutePath)
+            )
+        }.isSuccess
+        if (sourceAvailable) {
+            try {
+                listOf(
+                    "/usr/bin/id",
+                    "/opt/tritonterm/fakeroot-tcp/2.1.4/bin/faked",
+                    "/opt/tritonterm/fakeroot-tcp/2.1.4/lib/libfakeroot.so",
+                    "/opt/tritonterm/fakeroot-tcp/2.1.4/lib/libfakeroot-0.so"
+                ).forEach { target ->
+                    val syscallResult = runProcess(
+                        context,
+                        "proot_permission_probe",
+                        "stat/faccessat/faccessat2 errno probe on $target",
+                        timeoutMs = 15_000,
+                        args = login + listOf("/usr/bin/perl", "/tmp/$probeName", target),
+                        recordOutput = false
+                    )
+                    TerminalDiagnostics.record(
+                        context,
+                        "proot_permission_probe",
+                        "syscall_probe_result",
+                        mapOf("path" to target, "exit_code" to syscallResult.exitCode,
+                            "timed_out" to syscallResult.timedOut, "output" to syscallResult.output.takeLast(3000))
+                    )
+                }
+            } finally {
+                guestSource.delete()
+            }
+        }
+
+        val execResult = runProcess(
+            context,
+            "proot_permission_probe",
+            "direct PRoot execve of /usr/bin/id",
+            timeoutMs = 15_000,
+            args = login + listOf("/usr/bin/id"),
+            recordOutput = false
+        )
+        TerminalDiagnostics.record(
+            context,
+            "proot_permission_probe",
+            "execve_result",
+            mapOf(
+                "exit_code" to execResult.exitCode,
+                "timed_out" to execResult.timedOut,
+                "output" to execResult.output.takeLast(6000)
+            )
+        )
     }
 }

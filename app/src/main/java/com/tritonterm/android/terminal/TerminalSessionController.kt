@@ -329,7 +329,7 @@ internal class ArchLinuxArmBackend : TerminalBackend {
         val prefix = File(context.filesDir, "usr")
         val bin = File(prefix, "bin")
         val nativeLibs = File(context.applicationInfo.nativeLibraryDir)
-        val cache = File(context.cacheDir, "proot")
+        val cache = ProotTempDirectory.forApp(context)
         listOf(
             bin,
             File(prefix, "tmp"),
