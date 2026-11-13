@@ -87,6 +87,17 @@ rm -rf "$pr_archive_root/vendor"
 mkdir -p "$pr_archive_root/vendor/samba/lib"
 cp -a "$pr_source/vendor/samba/lib/talloc" "$pr_archive_root/vendor/samba/lib/talloc"
 install -m 0644 "$pr_source/vendor/samba/COPYING" "$pr_archive_root/vendor/samba/COPYING"
+# The checked-out PRoot tree may carry reviewed local changes that are not yet
+# represented by the submodule commit. Preserve the exact diff and overlay the
+# changed source files so this archive contains the source used for the APK's
+# native PRoot binary, not just the upstream base snapshot.
+git -C "$pr_source" diff --binary HEAD > \
+    "$pr_archive_root/TRITONTERM_WORKTREE_CHANGES.patch"
+while IFS= read -r -d '' changed_path; do
+    [[ -f "$pr_source/$changed_path" ]] || continue
+    mkdir -p "$pr_archive_root/$(dirname "$changed_path")"
+    cp -p "$pr_source/$changed_path" "$pr_archive_root/$changed_path"
+done < <(git -C "$pr_source" diff --name-only -z HEAD)
 printf '%s\n' "$pr_commit" > "$pr_archive_root/TRITONTERM_SOURCE_COMMIT"
 printf '%s\n' "$talloc_commit" > \
     "$pr_archive_root/vendor/samba/TRITONTERM_TALLOC_COMMIT"
@@ -170,8 +181,10 @@ component are included in the app's runtime license assets.
 The PRoot source snapshot `@PR_COMMIT@` descends from upstream oonid/pr commit
 `7029b1fe8fa84d64339cabe38f9c5be2ea2ae7ac` and includes two local commits for
 guest SIGSEGV recording and extraction progress. Those commits are not public
-upstream Git refs; this archive contains the exact source snapshot. TritonTerm's
-additional changes are preserved in the snapshot and in the tracked patches under
+upstream Git refs; this archive contains the exact source snapshot. Additional
+checked-out PRoot changes are included both as the exact overlay and as
+`third_party/oonid-pr/TRITONTERM_WORKTREE_CHANGES.patch`, applicable to the pinned
+commit. TritonTerm's other changes are preserved in the tracked patches under
 `scripts/patches/`; the build script checks and applies them when needed. The exact
 talloc source required by the PRoot native build
 is included at `third_party/oonid-pr/vendor/samba/lib/talloc` from Samba commit
