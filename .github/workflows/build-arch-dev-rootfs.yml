@@ -109,7 +109,7 @@ jobs:
             third_party/oonid-pr/vendor/bionic/libc/kernel/uapi/linux/ashmem.h \
             "$RUNNER_TEMP/proot-host-uapi/linux/ashmem.h"
           CPATH="$RUNNER_TEMP/proot-host-uapi" \
-            make -C third_party/oonid-pr/src/proot/src -j2 proot loader/loader
+            make -C third_party/oonid-pr/src/proot/src -j2 HAS_LOADER_32BIT= proot loader/loader
           "$HOME/.cargo/bin/cargo" +1.98.0 build --manifest-path third_party/oonid-pr/src/pr-cli/Cargo.toml --release --locked
           install -d -m 0755 "$RUNNER_TEMP/tritonterm-native-pr-cli"
           install -m 0755 third_party/oonid-pr/src/proot/src/proot "$RUNNER_TEMP/tritonterm-native-pr-cli/libproot.so"
