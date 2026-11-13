@@ -41,8 +41,20 @@ class ArchRootfsReadinessTest {
 
             assertFalse(ArchRootfsReadiness.isExtracted(root, marker))
             assertFalse(ArchRootfsReadiness.isPrepared(root, marker))
+            assertTrue(ArchRootfsReadiness.isInterruptedExtractionRetryable(root, marker))
         } finally {
             marker.delete()
+            root.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun incompleteRootfsWithoutPrCliInstallMarkerIsNotAutomaticallyRetryable() {
+        val root = Files.createTempDirectory("tritonterm-rootfs-unknown-").toFile()
+        val marker = java.io.File(checkNotNull(root.parentFile), ".archlinuxarm.pr-cli-installing")
+        try {
+            assertFalse(ArchRootfsReadiness.isInterruptedExtractionRetryable(root, marker))
+        } finally {
             root.deleteRecursively()
         }
     }

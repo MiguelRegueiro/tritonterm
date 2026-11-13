@@ -1,0 +1,15 @@
+diff --git a/src/proot/src/GNUmakefile b/src/proot/src/GNUmakefile
+index 0f943f3..0000000 100644
+--- a/src/proot/src/GNUmakefile
++++ b/src/proot/src/GNUmakefile
+@@ -14,6 +14,9 @@ CC       ?= $(CROSS_COMPILE)gcc
+ LD       = $(CC)
+ STRIP    ?= $(CROSS_COMPILE)strip
+ OBJCOPY  ?= $(CROSS_COMPILE)objcopy
+ OBJDUMP  ?= $(CROSS_COMPILE)objdump
++# Preserve guest UID/GID and setuid semantics in app-private storage using
++# PRoot's per-path .proot-meta-file records.
++CPPFLAGS += -DUSERLAND -DTRITONTERM_USERLAND_METADATA_MODE=1
+ 
+ CPPFLAGS += -D_FILE_OFFSET_BITS=64 -D_GNU_SOURCE -I. -I$(VPATH)
+ CFLAGS   += -Wall -Wextra -O2

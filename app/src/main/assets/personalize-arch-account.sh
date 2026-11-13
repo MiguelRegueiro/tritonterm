@@ -7,6 +7,7 @@ readonly TEMPLATE_UID='1000'
 readonly STATE_DIR='/etc/tritonterm'
 readonly STATE_FILE="${STATE_DIR}/account-selection"
 readonly SELECTED_FILE="${STATE_DIR}/selected-user"
+readonly SUDOERS_FILE='/etc/sudoers.d/10-tritonterm-pacman'
 readonly RUN_LOG='/var/cache/tritonterm/developer-setup.log'
 stage='account_validation'
 
@@ -89,6 +90,17 @@ IFS=: read -r final_name _ final_uid final_gid _ final_home final_shell <<< "$fi
    "$final_home" == "$target_home" && "$final_shell" == /usr/bin/fish ]] || fail 'account fields did not match the requested configuration'
 id -nG "$requested" | tr ' ' '\n' | grep -qx wheel || fail 'user is not in the wheel group'
 [[ -d "$target_home/.rustup" && -d "$target_home/.cargo" ]] || fail 'Rustup/Cargo home was not preserved during rename'
+
+stage='sudo_policy'
+sudoers_tmp="${SUDOERS_FILE}.new.$$"
+printf '%s ALL=(root) NOPASSWD: /usr/bin/pacman\n' "$requested" > "$sudoers_tmp"
+chmod 0440 "$sudoers_tmp"
+if ! visudo -cf "$sudoers_tmp" >/dev/null; then
+    rm -f "$sudoers_tmp"
+    fail 'personalized Pacman sudo policy failed visudo validation'
+fi
+mv -f "$sudoers_tmp" "$SUDOERS_FILE"
+visudo -cf /etc/sudoers >/dev/null || fail 'complete sudo policy failed visudo validation'
 
 # Fish's universal fish_user_paths can retain absolute paths from the template
 # account. Rebuild it from the renamed account's $HOME before the first shell.

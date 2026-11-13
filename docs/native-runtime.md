@@ -4,8 +4,9 @@
 
 The bundled executables are built from the pinned [`oonid/pr` source](../third_party/oonid-pr), not downloaded as release assets or copied from a temporary directory.
 
-- Upstream commit: `7029b1fe8fa84d64339cabe38f9c5be2ea2ae7ac`
-- Source URL: <https://github.com/oonid/pr/tree/7029b1fe8fa84d64339cabe38f9c5be2ea2ae7ac>
+- Upstream base commit: `7029b1fe8fa84d64339cabe38f9c5be2ea2ae7ac`
+- TritonTerm PRoot source snapshot: `31afc11ca3e675fa8bbbe530979afc8c467218dc` (contains local commits for guest SIGSEGV recording and extraction progress)
+- Upstream base source URL: <https://github.com/oonid/pr/tree/7029b1fe8fa84d64339cabe38f9c5be2ea2ae7ac>
 - CLI source: `third_party/oonid-pr/src/pr-cli/` (GPL-3.0-or-later)
 - PRoot source: `third_party/oonid-pr/src/proot/` (GPL-2.0-or-later; upstream identifies the combined `libproot.so` build as GPL-3.0-or-later due to its talloc component)
 - Loader source: `third_party/oonid-pr/src/proot/src/loader/` (GPL-2.0-or-later)
@@ -14,7 +15,7 @@ The bundled executables are built from the pinned [`oonid/pr` source](../third_p
 - Build toolchain: NDK r27c (upstream verifies its archive SHA-256), Rust 1.98.0, and the committed Cargo lockfiles
 - GPL-2.0-or-later, GPL-3.0-or-later, and LGPL-3.0-or-later license texts are included in `app/src/main/assets/licenses/runtime/`.
 
-The exact corresponding GPL source is available from this repository: the `third_party/oonid-pr` gitlink pins upstream source, while the tracked patches add extraction progress, structured installer diagnostics, and opt-in preservation of failed install artifacts. The preservation flag is set only by TritonTerm's diagnostic installer process; upstream cleanup remains unchanged for other invocations. Its talloc dependency is pinned at `vendor/samba` commit `2f8dfde1210395175e726455bdb63a7b97245a72`. The source locations, upstream license files, local patches, and build recipe are all present in the checkout; the license texts are also bundled in the APK. Run `git submodule update --init third_party/oonid-pr third_party/archlinuxarm-keyring`; the build wrapper initializes the required talloc submodule, applies the tracked patches, builds the GPL binaries, copies them into TritonTerm's `jniLibs`, and verifies their hashes against [`native-runtime.sha256`](native-runtime.sha256).
+The exact corresponding GPL source is included in the public `tritonterm-android-pr-source` release archive. PRoot source snapshot `31afc11ca3e675fa8bbbe530979afc8c467218dc` contains local commits beyond upstream base `7029b1fe8fa84d64339cabe38f9c5be2ea2ae7ac`, including guest SIGSEGV recording and extraction progress; those local commits are not public upstream Git refs. The tracked patches add structured installer diagnostics, opt-in preservation of failed install artifacts, and the Arch-only USERLAND account/filesystem metadata profile. The preservation flag is set only by TritonTerm's diagnostic installer process; upstream cleanup remains unchanged for other invocations. The Arch profile records archive UID/GID and mode in PRoot sidecars and launches the selected passwd UID/GID at its home. PRoot applies those records to `stat`, `statx`, permission checks, and emulated setuid execution; it does not change Android process credentials. Its talloc dependency is pinned at `vendor/samba` commit `2f8dfde1210395175e726455bdb63a7b97245a72`. The source archive contains those exact trees, commit markers, upstream license files, local patches, and build recipe; the license texts are also bundled in the APK. Run `scripts/build-proot-runtime.sh` from the extracted source archive with Rust 1.98.0 and NDK r27c, or initialize the submodules in the private checkout. The build wrapper applies tracked patches, builds the GPL binaries, copies them into TritonTerm's `jniLibs`, and verifies their hashes against [`native-runtime.sha256`](native-runtime.sha256).
 
 For device diagnosis, the pinned `pr-cli` source also writes structured install, cache, cleanup, extraction, validation, and PRoot launch events to the path in `TRITONTERM_DIAGNOSTICS_FILE`. TritonTerm preserves the verified archive and refuses to start a new install when an incomplete rootfs already exists. The packaged CLI hash in both manifests reflects this instrumentation build.
 
@@ -24,12 +25,25 @@ TritonTerm's `pr-cli` patch reports checksum progress for distributions that use
 
 There are 11 native libraries in the universal debug APK: three TritonTerm PRoot executables and two upstream Android libraries for each ABI. AndroidX Graphics Path is resolved from its pinned Gradle coordinate. Termux's terminal emulator Java sources and `libtermux.so` are vendored from the documented upstream 0.118.0 revision so TritonTerm can apply its small, source-level session UI patch. [`native-binaries.sha256`](native-binaries.sha256) records each library as extracted from the APK, and [`scripts/verify-packaged-native-libs.sh`](../scripts/verify-packaged-native-libs.sh) checks both the set and each hash after every APK build.
 
+The APK also uses the unmodified Termux `terminal-view` 0.118.0 AAR. Its exact
+corresponding Java source is available at the immutable Termux source commit
+`6e2689f55295fa444be8ac8592c527c2c5ef3253`, under `terminal-view/`, and as the
+versioned source artifact at
+`https://jitpack.io/com/github/termux/termux-app/terminal-view/v0.118.0/terminal-view-v0.118.0-sources.jar`.
+Termux's GPLv3-only notice and module exceptions are in `terminal-emulator/LICENSE.md`;
+the source headers and notices govern each module. The full TritonTerm source and
+local modifications are in the public source archive. Bouncy Castle `bcpg-jdk18on`
+and `bcprov-jdk18on` 1.80.2 provide the OpenPGP verifier; their license is included
+in `app/src/main/assets/licenses/runtime/Bouncy-Castle-License.txt`, and the
+OpenPGP library's modified BZIP2 component is covered by the bundled Apache-2.0
+notice.
+
 | Library | Upstream source / revision | Build or artifact | License |
 | --- | --- | --- | --- |
-| `libpr-cli.so` | `oonid/pr`, commit `7029b1fe8fa84d64339cabe38f9c5be2ea2ae7ac`, `src/pr-cli/` | `scripts/build-proot-runtime.sh`; Cargo locked build for `aarch64-linux-android` | GPL-3.0-or-later |
-| `libproot.so` | `oonid/pr`, same commit, `src/proot/` plus talloc from `vendor/samba` commit `2f8dfde1210395175e726455bdb63a7b97245a72` | `scripts/build-proot-runtime.sh` → upstream `scripts/build.sh --arch=arm64`; NDK r27c | GPL-3.0-or-later (combined build; talloc source is LGPL-3.0-or-later) |
-| `libproot-loader.so` | `oonid/pr`, same commit, `src/proot/src/loader/` | Same NDK build recipe as `libproot.so` | GPL-2.0-or-later |
-| `libtermux.so` | [`termux/termux-app`](https://github.com/termux/termux-app/tree/6e2689f55295fa444be8ac8592c527c2c5ef3253), commit `6e2689f55295fa444be8ac8592c527c2c5ef3253`, `terminal-emulator/src/main/jni/` | Unchanged per-ABI binaries from Gradle artifact `com.termux.termux-app:terminal-emulator:0.118.0`; source-level session patch documented in [`termux-terminal-session-patch.md`](termux-terminal-session-patch.md); AAR SHA-256 `fd0d262041b42713a5685625711a01f87d86c559eaa9cc663f82bc73520d08b5` | Apache-2.0 |
+| `libpr-cli.so` | `oonid/pr` snapshot `31afc11ca3e675fa8bbbe530979afc8c467218dc`, based on upstream `7029b1fe8fa84d64339cabe38f9c5be2ea2ae7ac`, `src/pr-cli/` | `scripts/build-proot-runtime.sh`; Cargo locked build for `aarch64-linux-android` | GPL-3.0-or-later |
+| `libproot.so` | Same PRoot source snapshot, `src/proot/` plus talloc from `vendor/samba` commit `2f8dfde1210395175e726455bdb63a7b97245a72` | `scripts/build-proot-runtime.sh` → upstream `scripts/build.sh --arch=arm64`; NDK r27c | GPL-3.0-or-later (combined build; talloc source is LGPL-3.0-or-later) |
+| `libproot-loader.so` | Same PRoot source snapshot, `src/proot/src/loader/` | Same NDK build recipe as `libproot.so` | GPL-2.0-or-later |
+| `libtermux.so` | [`termux/termux-app`](https://github.com/termux/termux-app/tree/6e2689f55295fa444be8ac8592c527c2c5ef3253), commit `6e2689f55295fa444be8ac8592c527c2c5ef3253`, `terminal-emulator/src/main/jni/` | Unchanged per-ABI binaries from Gradle artifact `com.termux.termux-app:terminal-emulator:0.118.0`; source-level session patch documented in [`termux-terminal-session-patch.md`](termux-terminal-session-patch.md); AAR SHA-256 `fd0d262041b42713a5685625711a01f87d86c559eaa9cc663f82bc73520d08b5` | Apache-2.0 exception for this module |
 | `libandroidx.graphics.path.so` | AndroidX [`frameworks/support`](https://android.googlesource.com/platform/frameworks/support/), `graphics/graphics-path/`, release snapshot commit `8a05a22af450d589ef911d772a001a49dcb05b71` | Google Maven artifact `androidx.graphics:graphics-path:1.0.1`; source task `:graphics:graphics-path:assembleRelease`; AAR SHA-256 `8ca4032b6d79b351f0b59ad4b580eddbb9423e1652f7c958830687f1eee2ec03` | Apache-2.0 |
 
 ## Arch Linux ARM rootfs trust

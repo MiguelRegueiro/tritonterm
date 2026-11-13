@@ -174,6 +174,7 @@ stage_started="$(date +%s)"
 install -d -m 0700 "$ROOTFS/root/.tritonterm-setup"
 install -m 0755 app/src/main/assets/setup-arch-developer.sh "$ROOTFS/root/.tritonterm-setup/setup-arch-developer.sh"
 install -m 0644 app/src/main/assets/starship.toml "$ROOTFS/root/.tritonterm-setup/starship.toml"
+install -m 0644 app/src/main/assets/tritonterm-fish-config.fish "$ROOTFS/root/.tritonterm-setup/tritonterm-fish-config.fish"
 install -m 0644 app/src/main/assets/paru-bootstrap.PKGBUILD "$ROOTFS/root/.tritonterm-setup/paru-bootstrap.PKGBUILD"
 stage='guest_dns_preflight'
 resolved_mirror="$(chroot_guest /usr/bin/getent ahostsv4 mirror.archlinuxarm.org | awk 'NR == 1 { print $1 }')"
@@ -198,11 +199,17 @@ install -d -m 0755 "$ROOTFS/etc/tritonterm" "$ROOTFS/usr/lib/tritonterm"
 install -m 0755 app/src/main/assets/personalize-arch-account.sh "$ROOTFS/usr/lib/tritonterm/personalize-account.sh"
 printf '%s\n' "$VERSION" > "$ROOTFS/etc/tritonterm/rootfs-release"
 chmod 0644 "$ROOTFS/etc/tritonterm/rootfs-release"
+printf '%s\n' 'v1' > "$ROOTFS/etc/tritonterm/proot-userland-metadata-v1"
+chmod 0644 "$ROOTFS/etc/tritonterm/proot-userland-metadata-v1"
 touch "$ROOTFS/root/.tritonterm-userland-profile-v1"
 chroot_guest /usr/bin/pacman -Qo /usr/bin/fakeroot /usr/bin/rustup /usr/bin/paru > "$OUTPUT_DIR/package-ownership-${VERSION}.txt"
 chroot_guest /usr/bin/pacman -Q > "$OUTPUT_DIR/packages-${VERSION}.txt"
 report_line "installed_package_count=$(wc -l < "$OUTPUT_DIR/packages-${VERSION}.txt" | tr -d ' ')"
 chroot_guest /usr/bin/su -l dev -s /usr/bin/fish -c 'rustup show && rustc --version && cargo --version && fish -ic "starship prompt"' > "$OUTPUT_DIR/toolchain-${VERSION}.txt"
+chroot_guest /usr/bin/su -l dev -s /usr/bin/fish -c \
+    'test (id -u) = 1000; and test (id -g) = 1000; and test "$HOME" = /home/dev; and test "$PWD" = "$HOME"; and test "$SHELL" = /usr/bin/fish; and test (fakeroot -- /usr/bin/id -u) = 0; and sudo -n /usr/bin/pacman -Q pacman >/dev/null; and abbr -q up; and functions fish_prompt | string match -q "*starship*"' \
+    > "$OUTPUT_DIR/native-identity-${VERSION}.txt"
+printf 'TRITONTERM_NATIVE_ARM64_USERLAND_SMOKE_PASSED\n' | tee -a "$report"
 cp "$ROOTFS/var/cache/tritonterm/developer-setup.log" "$OUTPUT_DIR/build-log-${VERSION}.txt"
 
 stage='account_personalization_smoke'
@@ -221,6 +228,8 @@ chroot_guest /bin/bash -lc '
 '
 chroot_guest /usr/bin/su -l tritonterm-review -s /usr/bin/fish -c \
     'contains -- "$HOME/.local/bin" $PATH; and not contains -- /home/dev/.local/bin $PATH'
+chroot_guest /usr/bin/su -l tritonterm-review -s /usr/bin/fish -c \
+    'sudo -n /usr/bin/pacman -Q pacman >/dev/null; and not sudo -n /usr/bin/id -u >/dev/null 2>&1'
 if grep -Fq '/home/dev/.local/bin' "$ROOTFS/home/tritonterm-review/.config/fish/fish_variables"; then
     fail 4 'renamed account Fish universal variables retain the template home path'
 fi
@@ -229,6 +238,9 @@ chroot_guest /usr/bin/usermod --login dev tritonterm-review
 chroot_guest /usr/bin/groupmod --new-name dev tritonterm-review
 chroot_guest /usr/bin/usermod --home /home/dev --move-home dev
 rm -f "$ROOTFS/etc/tritonterm/selected-user" "$ROOTFS/etc/tritonterm/account-selection"
+printf '%s\n' 'dev ALL=(root) NOPASSWD: /usr/bin/pacman' > "$ROOTFS/etc/sudoers.d/10-tritonterm-pacman"
+chmod 0440 "$ROOTFS/etc/sudoers.d/10-tritonterm-pacman"
+chroot_guest /usr/bin/visudo -cf /etc/sudoers
 chroot_guest /bin/bash -lc '[[ "$(getent passwd dev | cut -d: -f3-4)" == "1000:1000" && "$(getent passwd dev | cut -d: -f6-7)" == "/home/dev:/usr/bin/fish" ]]'
 
 stage='remove_machine_specific_state'

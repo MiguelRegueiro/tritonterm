@@ -76,16 +76,26 @@ internal object ArchLinuxArmBootstrap {
                 )
                 return
             }
-            TerminalDiagnostics.record(
-                context,
-                "rootfs_check",
-                "incomplete_rootfs_preserved",
-                mapOf(
-                    "rootfs" to existingRootfs.absolutePath,
-                    "marker_present" to File(existingRootfs.parentFile, ".${DISTRO_ALIAS}.pr-cli-installing").exists()
+            val marker = installingMarker(context)
+            if (ArchRootfsReadiness.isInterruptedExtractionRetryable(existingRootfs, marker)) {
+                TerminalDiagnostics.record(
+                    context,
+                    "rootfs_check",
+                    "interrupted_extraction_retryable",
+                    mapOf("rootfs" to existingRootfs.absolutePath, "marker" to marker.absolutePath)
                 )
-            )
-            error("An existing Arch rootfs was found but is not marked complete. It was preserved; export Diagnostics before retrying.")
+            } else {
+                TerminalDiagnostics.record(
+                    context,
+                    "rootfs_check",
+                    "incomplete_rootfs_preserved",
+                    mapOf(
+                        "rootfs" to existingRootfs.absolutePath,
+                        "marker_present" to marker.exists()
+                    )
+                )
+                error("An existing Arch rootfs was found but is not marked complete. It was preserved; export Diagnostics before retrying.")
+            }
         }
 
         val prefix = File(context.filesDir, "usr")
@@ -118,8 +128,17 @@ internal object ArchLinuxArmBootstrap {
             onProgress(TerminalSetupProgress(TerminalSetupStage.DOWNLOADING))
             download("$releaseBase/${manifestFile.name}", manifestFile, MAX_SIGNATURE_BYTES) {}
             download("$releaseBase/${signature.name}", signature, MAX_SIGNATURE_BYTES) {}
-            val releaseManifest = ArchRootfsRelease.parseAndVerify(context, manifestFile, signature)
-            check(releaseManifest.archive == archive.name) { "Signed rootfs asset name does not match the APK's pinned image." }
+            val releaseManifest = try {
+                ArchRootfsRelease.parseAndVerify(context, manifestFile, signature)
+            } catch (failure: Exception) {
+                check(discardInvalidCacheFile(manifestFile) && discardInvalidCacheFile(signature)) {
+                    "Could not discard the invalid cached release manifest or signature; retry after freeing app cache storage."
+                }
+                throw failure
+            }
+            check(isExpectedSignedArchiveName(releaseManifest)) {
+                "Signed rootfs asset name does not match the APK's pinned image."
+            }
             download("$releaseBase/${releaseManifest.archive}", archive, MAX_ARCHIVE_BYTES) { progress ->
                 onProgress(
                     TerminalSetupProgress(
@@ -131,7 +150,22 @@ internal object ArchLinuxArmBootstrap {
                 )
             }
             onProgress(TerminalSetupProgress(TerminalSetupStage.VERIFYING, extractionTotal = releaseManifest.size))
-            ArchRootfsRelease.verifyArchive(archive, releaseManifest)
+            try {
+                ArchRootfsRelease.verifyArchive(archive, releaseManifest)
+            } catch (failure: Exception) {
+                if (!isRootfsExtracted(context)) {
+                    check(discardInvalidCacheFile(archive)) {
+                        "The downloaded rootfs failed verification and could not be removed from cache; retry after freeing app cache storage."
+                    }
+                    TerminalDiagnostics.record(
+                        context,
+                        "archive_download",
+                        "invalid_archive_discarded_for_retry",
+                        mapOf("archive" to archive.absolutePath, "error" to failure.message)
+                    )
+                }
+                throw failure
+            }
             onProgress(TerminalSetupProgress(TerminalSetupStage.VERIFYING, extractedBytes = releaseManifest.size, extractionTotal = releaseManifest.size))
             TerminalDiagnostics.record(
                 context,
@@ -191,6 +225,11 @@ internal object ArchLinuxArmBootstrap {
             .lowercase(Locale.ROOT)
         return "$key-$basename"
     }
+
+    /** Validates the public signed filename, independently of its URL-hashed cache filename. */
+    internal fun isExpectedSignedArchiveName(manifest: ArchRootfsRelease.Manifest): Boolean =
+        manifest.version == ArchRootfsRelease.pinnedVersion() &&
+            manifest.archive == ArchRootfsRelease.archiveName(manifest.version)
 
     private suspend fun download(
         address: String,
@@ -288,6 +327,8 @@ internal object ArchLinuxArmBootstrap {
 
     private fun sha256(bytes: ByteArray) =
         MessageDigest.getInstance("SHA-256").digest(bytes).toHex()
+
+    private fun discardInvalidCacheFile(file: File): Boolean = !file.exists() || file.delete()
 }
 
 internal object ArchRootfsReadiness {
@@ -296,13 +337,17 @@ internal object ArchRootfsReadiness {
     fun isExtracted(root: File, installingMarker: File): Boolean =
         File(root, "etc/os-release").isFile && !installingMarker.exists()
 
+    fun isInterruptedExtractionRetryable(root: File, installingMarker: File): Boolean =
+        root.isDirectory && !java.nio.file.Files.isSymbolicLink(root.toPath()) &&
+            installingMarker.isFile && !java.nio.file.Files.isSymbolicLink(installingMarker.toPath())
+
     fun isPrepared(root: File, installingMarker: File): Boolean =
         isExtracted(root, installingMarker) && File(root, PROFILE_MARKER).isFile
 }
 
 /** Readiness is committed only after the complete default developer toolchain passes smoke checks. */
 internal object ArchDeveloperEnvironment {
-    const val VERSION = "3"
+    const val VERSION = "5"
     const val SOURCE_SHA256 = "0822bd5a9f0cf19d2ba0546b88b0432d4d3d9917db62c57b74044ccadba06e49"
     const val PARU_VERSION = "2.2.0"
     const val FAKEROOT_VERSION = "2.1.4"
@@ -322,7 +367,6 @@ internal object ArchDeveloperEnvironment {
                 }.firstOrNull()
             }
         }.getOrNull()
-        val shim = devHome?.let { File(root, "${it.trimStart('/')}/.local/bin/fakeroot") }
         val sudoers = File(root, "etc/sudoers.d/10-tritonterm-pacman")
         val home = devHome?.trimStart('/') ?: return false
         val homeFile = File(root, home)
@@ -330,23 +374,35 @@ internal object ArchDeveloperEnvironment {
         val paruConfig = File(homeFile, ".config/paru/paru.conf")
         return marker.isFile && runCatching { marker.readText().trim() == VERSION }.getOrDefault(false) &&
             File(prefix, "bin/fakeroot").canExecute() && File(prefix, "bin/faked").canExecute() &&
-            File(prefix, "lib/libfakeroot/libfakeroot-0.so").isFile &&
+            File(prefix, "lib/libfakeroot-0.so").isFile &&
+            File(prefix, "lib/libfakeroot.so").isFile &&
             File(root, "$FAKEROOT_PREFIX/current").let { it.isSymbolicLinkTo(FAKEROOT_VERSION) } &&
-            shim?.let { it.isSymbolicLinkTo("/opt/tritonterm/fakeroot-tcp/current/bin/fakeroot") } == true &&
             File(root, "etc/profile.d/tritonterm-devtools.sh").let { profile ->
-                profile.isFile && runCatching { profile.readText().contains("export SYSTEMD_OFFLINE=1") }.getOrDefault(false)
+                profile.isFile && runCatching {
+                    profile.readText().contains("/opt/tritonterm/fakeroot-tcp/$FAKEROOT_VERSION/bin") &&
+                        profile.readText().contains("export SYSTEMD_OFFLINE=1")
+                }.getOrDefault(false)
             } &&
             File(homeFile, ".config/fish/conf.d/20-tritonterm-path.fish").let { fishEnv ->
-                fishEnv.isFile && runCatching { fishEnv.readText().contains("set -gx SYSTEMD_OFFLINE 1") }.getOrDefault(false)
+                fishEnv.isFile && runCatching {
+                    fishEnv.readText().contains("/opt/tritonterm/fakeroot-tcp/$FAKEROOT_VERSION/bin") &&
+                        fishEnv.readText().contains("set -gx SYSTEMD_OFFLINE 1")
+                }.getOrDefault(false)
             } &&
             listOf("makepkg", "sudo", "rustup", "rustc", "cargo", "fish", "starship", "paru", "fakeroot")
                 .all { File(root, "usr/bin/$it").canExecute() } &&
             File(homeFile, ".rustup/toolchains/stable-aarch64-unknown-linux-gnu/bin/rustc").canExecute() &&
             File(homeFile, ".config/starship.toml").isFile &&
-            File(homeFile, ".config/fish/conf.d/90-tritonterm-starship.fish").isFile &&
+            File(homeFile, ".config/fish/config.fish").let { fishConfig ->
+                fishConfig.isFile && runCatching {
+                    val config = fishConfig.readText()
+                    config.contains("function fish_greeting") && config.contains("abbr --add up 'paru -Syu'") &&
+                        config.contains("starship init fish | source")
+                }.getOrDefault(false)
+            } &&
             makepkgConfig.isFile && runCatching { makepkgConfig.readText().contains("PACMAN_AUTH=(/usr/bin/sudo -n)") }.getOrDefault(false) &&
             paruConfig.isFile && runCatching { paruConfig.readText().contains("Sudo = /usr/bin/sudo") }.getOrDefault(false) &&
-            sudoers.isFile && runCatching { sudoers.readText().lines().contains("%wheel ALL=(root) NOPASSWD: /usr/bin/pacman") }.getOrDefault(false) &&
+            sudoers.isFile && runCatching { sudoers.readText().lines().contains("$selectedUser ALL=(root) NOPASSWD: /usr/bin/pacman") }.getOrDefault(false) &&
             File(root, "etc/group").let { groups ->
                 groups.isFile && runCatching {
                     groups.readLines().any { line ->

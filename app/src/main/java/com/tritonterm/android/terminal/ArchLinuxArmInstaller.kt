@@ -305,6 +305,7 @@ internal object ArchLinuxArmInstaller {
             put("TMPDIR", temp.absolutePath)
             put("PROOT_TMP_DIR", temp.absolutePath)
             put("PROOT_NO_SECCOMP", "1")
+            put("TRITONTERM_PROOT_USERLAND_METADATA", "1")
             put("TRITONTERM_DIAGNOSTICS_FILE", TerminalDiagnostics.file(context).absolutePath)
             put("TRITONTERM_PRESERVE_FAILED_ROOTFS", "1")
             put("PATH", "${File(prefix, "bin").absolutePath}:/system/bin:/system/xbin")
@@ -329,6 +330,7 @@ internal object ArchLinuxArmInstaller {
                     "TMPDIR" to temp.absolutePath,
                     "PROOT_TMP_DIR" to temp.absolutePath,
                     "PROOT_NO_SECCOMP" to "1",
+                    "TRITONTERM_PROOT_USERLAND_METADATA" to "1",
                     "TRITONTERM_DIAGNOSTICS_FILE" to TerminalDiagnostics.file(context).absolutePath,
                     "TRITONTERM_PRESERVE_FAILED_ROOTFS" to "1",
                     "PATH" to "${File(prefix, "bin").absolutePath}:/system/bin:/system/xbin",
@@ -556,7 +558,7 @@ internal object ArchLinuxArmInstaller {
             "A symbolic link occupies TritonTerm's reserved setup directory. Remove it from the guest rootfs and retry."
         }
         check(assetDir.mkdirs() || assetDir.isDirectory) { "Could not create the setup asset directory in the Arch rootfs." }
-        listOf("setup-arch-developer.sh", "starship.toml", "paru-bootstrap.PKGBUILD").forEach { name ->
+        listOf("setup-arch-developer.sh", "starship.toml", "tritonterm-fish-config.fish", "paru-bootstrap.PKGBUILD").forEach { name ->
             val destination = File(assetDir, name)
             val staged = File(assetDir, "$name.new-${System.currentTimeMillis()}")
             context.assets.open(name).use { input -> staged.outputStream().use { output -> input.copyTo(output) } }
@@ -643,6 +645,27 @@ internal object ArchLinuxArmInstaller {
         check(ArchLoginName.fromRootfs(root) == username) {
             "Account personalization returned success without persisting the selected username."
         }
+        val shellCheck = runProcess(
+            context,
+            "arch_guest_identity_smoke",
+            "verify selected user's Fish identity, TCP fakeroot, Starship, and Pacman authorization",
+            timeoutMs = 60_000,
+            args = listOf(
+                "login", ArchLinuxArmBootstrap.DISTRO_ALIAS, "--user", username,
+                "/usr/bin/fish", "-l", "-i", "-c",
+                "test (id -u) = 1000; and test (id -g) = 1000; and test \"\$HOME\" = \"/home/\$USER\"; and test \"\$PWD\" = \"\$HOME\"; and test \"\$SHELL\" = /usr/bin/fish; and test (command -v fakeroot) = /opt/tritonterm/fakeroot-tcp/2.1.4/bin/fakeroot; and test -r /opt/tritonterm/fakeroot-tcp/2.1.4/lib/libfakeroot.so; and test (fakeroot -- /usr/bin/id -u) = 0; and sudo -n /usr/bin/pacman -Q pacman >/dev/null; and not sudo -n /usr/bin/id -u >/dev/null 2>&1; and abbr -q up; and functions fish_prompt | string match -q '*starship*'; or exit 41; echo TRITONTERM_GUEST_DEFAULTS_PASSED"
+            )
+        )
+        check(shellCheck.exitCode == 0 && !shellCheck.timedOut &&
+            shellCheck.output.contains("TRITONTERM_GUEST_DEFAULTS_PASSED")) {
+            "The selected account failed the guest identity, Fish/Starship, TCP fakeroot, or sudo smoke test (exit ${shellCheck.exitCode}). See Logs. ${shellCheck.output.takeLast(1200)}"
+        }
+        TerminalDiagnostics.record(
+            context,
+            "arch_guest_identity_smoke",
+            "passed",
+            mapOf("username" to username, "uid" to 1000, "gid" to 1000, "cwd" to "/home/$username", "checks" to listOf("fish", "starship", "fakeroot", "sudo-pacman"))
+        )
         TerminalDiagnostics.record(context, "arch_account_personalization", "completed", mapOf("username" to username))
     }
 
