@@ -2,7 +2,7 @@
 # Fresh TritonTerm Arch developer environment. Invoked as root inside PRoot.
 set -Eeuo pipefail
 
-readonly VERSION='4'
+readonly VERSION='5'
 readonly FAKEROOT_VERSION='2.1.4'
 readonly FAKEROOT_URL='https://deb.debian.org/debian/pool/main/f/fakeroot/fakeroot_2.1.4.orig.tar.xz'
 readonly FAKEROOT_SHA256='0822bd5a9f0cf19d2ba0546b88b0432d4d3d9917db62c57b74044ccadba06e49'
@@ -189,20 +189,20 @@ usermod --append --groups wheel "$DEV_USER"
 
 stage='restricted_package_authorization'
 sudoers='/etc/sudoers.d/10-tritonterm-pacman'
-sudoers_line='%wheel ALL=(root) NOPASSWD: /usr/bin/pacman'
+sudoers_line="${DEV_USER} ALL=(root) NOPASSWD: /usr/bin/pacman"
 install -d -m 0750 /etc/sudoers.d
 printf '%s\n' "$sudoers_line" > "${sudoers}.tritonterm-new"
 chmod 0440 "${sudoers}.tritonterm-new"
 mv -f "${sudoers}.tritonterm-new" "$sudoers"
 if ! visudo -cf /etc/sudoers; then
-    die 25 'sudoers validation failed; only pacman is authorized for members of wheel'
+    die 25 'sudoers validation failed; only pacman is authorized for the development account'
 fi
 
 stage='persistent_shell_configuration'
 cat > /etc/profile.d/tritonterm-devtools.sh <<'PROFILE'
 case ":${PATH:-}:" in
-    *":/opt/tritonterm/fakeroot-tcp/current/bin:"*) ;;
-    *) export PATH="/opt/tritonterm/fakeroot-tcp/current/bin:${PATH:-/usr/local/sbin:/usr/local/bin:/usr/bin:/bin}" ;;
+    *":/opt/tritonterm/fakeroot-tcp/2.1.4/bin:"*) ;;
+    *) export PATH="/opt/tritonterm/fakeroot-tcp/2.1.4/bin:${PATH:-/usr/local/sbin:/usr/local/bin:/usr/bin:/bin}" ;;
 esac
 case ":${PATH:-}:" in
     *":${HOME}/.cargo/bin:"*) ;;
@@ -216,14 +216,11 @@ export SYSTEMD_OFFLINE=1
 PROFILE
 chmod 0644 /etc/profile.d/tritonterm-devtools.sh
 cat > "$dev_home/.config/fish/conf.d/20-tritonterm-path.fish" <<'FISH_PATH'
-fish_add_path --path --prepend "/opt/tritonterm/fakeroot-tcp/current/bin" "$HOME/.cargo/bin" "$HOME/.local/bin"
+fish_add_path --path --prepend "/opt/tritonterm/fakeroot-tcp/2.1.4/bin" "$HOME/.cargo/bin" "$HOME/.local/bin"
 set -gx SYSTEMD_OFFLINE 1
 FISH_PATH
-cat > "$dev_home/.config/fish/conf.d/90-tritonterm-starship.fish" <<'FISH_PROMPT'
-if status is-interactive
-    starship init fish | source
-end
-FISH_PROMPT
+install -o "$DEV_USER" -g "$dev_group" -m 0644 \
+    "${ASSET_DIR}/tritonterm-fish-config.fish" "$dev_home/.config/fish/config.fish"
 install -o "$DEV_USER" -g "$dev_group" -m 0644 \
     "${ASSET_DIR}/starship.toml" "$dev_home/.config/starship.toml"
 cat > "$dev_home/.config/pacman/makepkg.conf" <<'MAKEPKG_CONF'
@@ -243,7 +240,6 @@ Pacman = /usr/bin/pacman
 Sudo = /usr/bin/sudo
 PARU_CONF
 chmod 0644 "$dev_home/.config/fish/conf.d/20-tritonterm-path.fish" \
-    "$dev_home/.config/fish/conf.d/90-tritonterm-starship.fish" \
     "$dev_home/.config/pacman/makepkg.conf" "$dev_home/.config/paru/paru.conf"
 
 run_dev_fish() { su -l "$DEV_USER" -s /usr/bin/fish -c "$1"; }
@@ -304,7 +300,7 @@ if [[ ! -x "${FAKEROOT_PREFIX}/bin/fakeroot" || ! -x "${FAKEROOT_PREFIX}/bin/fak
     )
     staged="${build}/dest${FAKEROOT_PREFIX}"
     if [[ ! -x "${staged}/bin/fakeroot" || ! -x "${staged}/bin/faked" ||
-          ! -f "${staged}/lib/libfakeroot-0.so" ]]; then
+          ! -f "${staged}/lib/libfakeroot-0.so" || ! -r "${staged}/lib/libfakeroot.so" ]]; then
         say 'Staged TCP fakeroot files did not match the expected prefix layout; found these relevant paths:' >&2
         find "$build/dest" \( -name fakeroot -o -name faked -o -name 'libfakeroot*' \) \
             -printf '%M %u:%g %p -> %l\n' >&2 || true
@@ -401,9 +397,9 @@ bsdtar -tvf "$archive" | awk '
     }
     END { exit !found }
 ' || die 33 'makepkg archive did not preserve root:root ownership and mode 4755'
-require_pacman_transaction 'install makepkg smoke package' pacman -U --noconfirm "$archive"
+run_dev_fish "sudo -n /usr/bin/pacman -U --noconfirm '$archive'"
 test -f /usr/share/tritonterm-default-smoke/installed
-require_pacman_transaction 'remove makepkg smoke package' pacman -Rns --noconfirm tritonterm-default-smoke
+run_dev_fish 'sudo -n /usr/bin/pacman -Rns --noconfirm tritonterm-default-smoke'
 rm -rf "$smoke"
 
 stage='paru_source_build'
@@ -483,7 +479,9 @@ pacman -Qo /usr/bin/rustup
 pacman -Qo /usr/bin/paru
 [[ "$(getent passwd "$DEV_USER" | cut -d: -f7)" == /usr/bin/fish ]]
 [[ "$(readlink "$FAKEROOT_CURRENT")" == "$FAKEROOT_VERSION" ]]
-run_dev_fish 'string match -q "/opt/tritonterm/fakeroot-tcp/current/bin/fakeroot" (command -v fakeroot)'
+run_dev_fish "string match -q '${FAKEROOT_PREFIX}/bin/fakeroot' (command -v fakeroot)"
+run_dev_fish "test -r '${FAKEROOT_PREFIX}/lib/libfakeroot.so'"
+run_dev_fish 'sudo -n /usr/bin/pacman -Q pacman >/dev/null'
 [[ -x "$dev_home/.rustup/toolchains/stable-aarch64-unknown-linux-gnu/bin/rustc" ]]
 [[ -x /usr/bin/paru && -x /usr/bin/fish && -x /usr/bin/starship ]]
 printf '%s\n' "$VERSION" > "$READY_MARKER"

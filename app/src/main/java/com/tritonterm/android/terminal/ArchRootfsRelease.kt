@@ -33,7 +33,10 @@ internal object ArchRootfsRelease {
 
     fun isPreparedImage(root: File): Boolean {
         val marker = File(root, "etc/tritonterm/rootfs-release")
+        val metadataMode = File(root, "etc/tritonterm/proot-userland-metadata-v1")
         return marker.isFile && !java.nio.file.Files.isSymbolicLink(marker.toPath()) &&
+            metadataMode.isFile && !java.nio.file.Files.isSymbolicLink(metadataMode.toPath()) &&
+            runCatching { metadataMode.readText().trim() == "v1" }.getOrDefault(false) &&
             runCatching { marker.readText().trim() == pinnedVersion() }.getOrDefault(false) && pinnedVersion() != "unconfigured"
     }
 

@@ -1,0 +1,551 @@
+diff --git a/AGENTS.md b/AGENTS.md
+index 54849aa..455eab8 100644
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -206,7 +206,7 @@ Commit message policy:
+ 4. **No host shell or host tools** — `PrBootstrap` prepares `files/usr` with Kotlin file APIs, and pr-cli does its file work in Rust. The APK ships no busybox; don't add a `/system/bin/sh` script or a host-tool call.
+ 5. **ARM64 x0 clobber bug** — register x0 may be clobbered by kernel before proot reads it at SIGSYS time. All handlers use ORIGINAL register version.
+ 6. **TLS alignment** — proot needs 64-byte PT_TLS alignment for Bionic. Build script patches this.
+-7. **Fake root required** — `--change-id=0:0` (proot `-0`) must always be passed. dpkg and other tools check `getuid() == 0`.
++7. **Guest identity is profile-specific** — privileged installer commands use `--change-id=0:0`. Login to TritonTerm's Arch profile, which carries `etc/tritonterm/proot-userland-metadata-v1`, uses the selected passwd UID/GID and home. PRoot emulates these guest credentials; the Android process remains inside the app sandbox. Do not generalize the Arch profile's identity mode to other rootfs without ownership metadata and tests.
+ 8. **Kernel release format** — `--kernel-release` takes ONLY the release string (e.g. `6.17.0-pr`), NOT the full `uname` output. The libc6 preinst script parses this with shell arithmetic.
+ 
+ ## Superpowers Workflow
+diff --git a/docs/important-notes.md b/docs/important-notes.md
+index 9edc1a8..0e4b446 100644
+--- a/docs/important-notes.md
++++ b/docs/important-notes.md
+@@ -247,41 +247,38 @@ replaced atomically (temporary file + rename), and one that cannot be read as te
+ 
+ **Current behaviour** (`src/pr-cli/src/login.rs`, `shared.rs`):
+ 
+-- `pr-cli login <distro> --user <name>` looks the user up in the container's `/etc/passwd`
+-  and fails if the user is missing, but only the **home directory** is used, as `HOME`.
+-  The session always starts in `/` (`--cwd=/` in `build_proot_args()`).
+-- The session always starts `/bin/sh -l`; the user's login shell from `/etc/passwd` is
+-  ignored (Ubuntu's `/bin/bash` for root, for example).
+-- PRoot always gets `--change-id=0:0`, so every user, `--user alice` included, runs as fake
+-  root: `id -u` is 0 and new files appear owned by root.
++- `pr-cli login <distro> --user <name>` looks the user up in the container's `/etc/passwd`.
++  Generic rootfs sessions keep the established fake-root behavior. The TritonTerm Arch image
++  opts into passwd UID/GID and home-directory semantics by carrying
++  `/etc/tritonterm/proot-userland-metadata-v1`; this marker is valid only with archive metadata
++  sidecars produced by the Android rootfs extractor and the matching `USERLAND` PRoot build.
++- The requested command or shell still comes from the caller. TritonTerm launches Fish for its
++  selected Arch account, with `HOME`, `USER`, `LOGNAME`, and `SHELL` taken from that account.
++- PRoot does not change the Android process credentials. A guest UID 0 reached through an
++  emulated setuid `sudo` is root only inside the app-private Arch rootfs; it is not Android
++  device root and it cannot escape the app sandbox. The Arch sudo policy grants the named
++  development account passwordless execution of `/usr/bin/pacman`, since makepkg/Paru need
++  package installation. Pacman's package hooks run as guest root, as they do on Arch systems.
+ 
+ **History:** `2f2bdbc` started the passwd shell in the passwd home with
+-`--change-id=<uid>:<gid>`; `96c383d` (making login work under targetSdk 28 / W^X) replaced
+-that with `/bin/sh -l`, `--cwd=/` and `--change-id=0:0` without recording why. AGENTS.md
+-Critical Constraint 7 now requires `--change-id=0:0`: dpkg and other tools check
+-`getuid() == 0`.
+-
+-**What could change, and what stands in the way:**
+-
+-- **Start in the home directory:** pass the passwd home as `--cwd`. Low risk.
+-- **Login shell:** try the passwd shell and fall back to `/bin/sh -l`. The check has to run
+-  inside the session (for example `/bin/sh -l -c 'exec "$shell" -l || exec /bin/sh -l'`),
+-  not on the host: shells are often absolute symlinks (`/bin/sh -> /bin/busybox`) or L2S
+-  links that point outside the rootfs when followed from the host, and under W^X the mode
+-  bits do not say whether a file can be executed.
+-- **Non-root users:** not a matter of passing `--change-id=<uid>:<gid>`. It conflicts with
+-  Constraint 7, and fake_id0 is built around fake root:
+-  - every file owned by the real app uid, which is the whole rootfs, would appear owned by
+-    the user, and the kernel lets the app uid write all of it, so the user could edit
+-    `/etc/passwd`: there is no permission separation to gain;
+-  - `chown()` is answered with the caller's uid (`chown.c`), which non-root callers read as
+-    an error, and the utimes / permission-error masking applies only when `euid == 0`.
+-  It would need fake_id0 to keep its own per-file ownership, not just a flag.
+-- **Groups:** this build is not USERLAND, so `getgroups()` returns the app's real Android
+-  gids (inet 3003 and others), which are not in `/etc/group`; `id` shows them.
+-
+-Each of these changes what existing scripts see (`id`, `$SHELL`, `$PWD`), so it needs its own
+-tests and a device run.
++`--change-id=<uid>:<gid>`; `96c383d` replaced that with fake root while working around the
++older app-storage permission model. The Arch profile now opts back into a guest account
++identity only when its complete per-path metadata is present. Other distributions retain
++the established fake-root login behavior.
++- **Guest account metadata:** Android private storage cannot set archive UID/GID and setuid
++  bits on host inodes. TritonTerm's Arch extractor therefore stores the archive mode and
++  ownership in hidden `.proot-meta-file.*` sidecars. The Arch-only `USERLAND` build consults
++  those records for permission checks, stat results, chown, and setuid execution. The selected
++  account path is enabled only when the rootfs contains the explicit profile marker; generic
++  distributions retain fake UID 0. This emulation is not a security boundary between guest
++  users because all guest processes still share the Android app UID.
++- **Groups:** USERLAND's supplementary `setgroups()`/`getgroups()` emulation remains incomplete.
++  The Arch profile records wheel membership for standard tools, but sudo authorization uses an
++  explicit username rule rather than depending on supplementary-group syscall emulation.
++
++The Arch-specific change is covered by extraction and login unit tests plus native image
++smokes. Android/PRoot must still be verified on the target device because native Linux
++ownership and setuid behavior differ from Android app-private storage.
+ 
+ ### Commands and environment of `pr-cli login`
+ 
+diff --git a/src/pr-cli/src/install.rs b/src/pr-cli/src/install.rs
+index 58a73ca..2ab430f 100644
+--- a/src/pr-cli/src/install.rs
++++ b/src/pr-cli/src/install.rs
+@@ -3,6 +3,8 @@ use std::fs;
+ use std::io::{Read, Write};
+ use std::os::unix::fs::PermissionsExt;
+ use std::os::unix::io::AsRawFd;
++use std::os::unix::ffi::{OsStrExt, OsStringExt};
++use std::ffi::OsString;
+ use std::path::{Path, PathBuf};
+ use std::process::Command;
+ 
+@@ -736,6 +738,24 @@ fn extract_tarball(
+     strip_components: usize,
+     exclude: &[&str],
+ ) -> Result<(), String> {
++    extract_tarball_with_userland_metadata(
++        archive_path,
++        dest,
++        strip_components,
++        exclude,
++        std::env::var_os("TRITONTERM_PROOT_USERLAND_METADATA").as_deref() == Some(std::ffi::OsStr::new("1")),
++    )
++}
++
++fn extract_tarball_with_userland_metadata(
++    archive_path: &str,
++    dest: &str,
++    strip_components: usize,
++    exclude: &[&str],
++    userland_metadata: bool,
++) -> Result<(), String> {
++    // TRITONTERM_ARCH_USERLAND_EXTRACTION_V1 records archive ownership/modes
++    // for PRoot while keeping Android host inodes unprivileged.
+     let root = Path::new(dest);
+     fs::create_dir_all(root).map_err(|e| format!("create {}: {}", dest, e))?;
+     let archive_size = fs::metadata(archive_path)
+@@ -783,6 +803,14 @@ fn extract_tarball(
+             let mut entry = entry.map_err(|e| format!("read tar entry: {}", e))?;
+             let path = entry.path().map_err(|e| format!("get tar path: {}", e))?;
+             let Some(relative) = strip_archive_path(&path, strip_components)? else {
++                if userland_metadata && entry.header().entry_type().is_dir() {
++                    write_userland_root_metadata(
++                        root,
++                        entry.header().mode().unwrap_or(0o755),
++                        entry.header().uid().unwrap_or(0),
++                        entry.header().gid().unwrap_or(0),
++                    )?;
++                }
+                 continue;
+             };
+             if exclude.iter().any(|exc| relative.starts_with(exc)) {
+@@ -808,10 +836,28 @@ fn extract_tarball(
+                         target.display()
+                     ));
+                 }
++                if userland_metadata {
++                    write_userland_metadata(
++                        root,
++                        &relative,
++                        entry.header().mode().unwrap_or(0o644),
++                        entry.header().uid().unwrap_or(0),
++                        entry.header().gid().unwrap_or(0),
++                    )?;
++                }
+                 continue;
+             }
+ 
+             unpack_entry(root, &relative, &mut entry)?;
++            if userland_metadata {
++                write_userland_metadata(
++                    root,
++                    &relative,
++                    entry.header().mode().unwrap_or(0o644),
++                    entry.header().uid().unwrap_or(0),
++                    entry.header().gid().unwrap_or(0),
++                )?;
++            }
+             let entries = extracted_entries.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+             if entries == 1 || entries % 64 == 0 {
+                 write_extraction_progress(
+@@ -842,6 +888,48 @@ fn extract_tarball(
+     Ok(())
+ }
+ 
++fn write_userland_root_metadata(root: &Path, mode: u32, uid: u64, gid: u64) -> Result<(), String> {
++    let path = root.join(".proot-meta-file.");
++    let temporary = root.join(format!(".proot-meta-file.tmp.{}", std::process::id()));
++    let contents = format!("{:o}\n{}\n{}\n", mode & 0o7777, uid, gid);
++    fs::write(&temporary, contents)
++        .map_err(|e| format!("write guest metadata for /: {}", e))?;
++    fs::set_permissions(&temporary, fs::Permissions::from_mode(0o600))
++        .map_err(|e| format!("protect guest metadata for /: {}", e))?;
++    fs::rename(&temporary, &path).map_err(|e| format!("commit guest metadata for /: {}", e))
++}
++
++/// Store archive ownership and mode outside host inode metadata. Android app
++/// storage cannot chown files to guest UID 0 and clears setuid bits, while the
++/// PRoot USERLAND fake_id0 extension reads this per-path record to enforce the
++/// guest's real Unix ownership, permissions, and setuid behavior.
++fn write_userland_metadata(
++    root: &Path,
++    relative: &Path,
++    mode: u32,
++    uid: u64,
++    gid: u64,
++) -> Result<(), String> {
++    let dest = resolve_in_root(root, relative, false)?;
++    let name = dest
++        .file_name()
++        .ok_or_else(|| format!("metadata target has no filename: {}", dest.display()))?;
++    let mut metadata_name = OsString::from_vec(b".proot-meta-file.".to_vec());
++    metadata_name.push(OsString::from_vec(name.as_bytes().to_vec()));
++    let metadata_path = dest
++        .parent()
++        .ok_or_else(|| format!("metadata target has no parent: {}", dest.display()))?
++        .join(metadata_name);
++    let temporary = metadata_path.with_extension(format!("tmp.{}", std::process::id()));
++    let contents = format!("{:o}\n{}\n{}\n", mode & 0o7777, uid, gid);
++    fs::write(&temporary, contents)
++        .map_err(|e| format!("write guest metadata for {}: {}", relative.display(), e))?;
++    fs::set_permissions(&temporary, fs::Permissions::from_mode(0o600))
++        .map_err(|e| format!("protect guest metadata for {}: {}", relative.display(), e))?;
++    fs::rename(&temporary, &metadata_path)
++        .map_err(|e| format!("commit guest metadata for {}: {}", relative.display(), e))
++}
++
+ fn write_installer_progress(stage: &str, bytes_read: u64, archive_size: u64, entries: u64) {
+     let path = format!("{}/var/lib/pr/tritonterm-install-progress", get_prefix());
+     let _ = fs::write(
+@@ -1836,7 +1924,7 @@ pub fn command_install(
+ mod tests {
+     use super::*;
+     use crate::install_marker::BUSY;
+-    use std::os::unix::fs::PermissionsExt;
++    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+     use std::path::PathBuf;
+     use std::time::{SystemTime, UNIX_EPOCH};
+ 
+@@ -1968,6 +2056,53 @@ mod tests {
+         let _ = fs::remove_dir_all(&tmp);
+     }
+ 
++    #[test]
++    fn android_userland_extraction_records_archive_owners_modes_and_setuid_bits() {
++        let tmp = unique_temp_dir("pr-cli-extract-userland-metadata");
++        fs::create_dir_all(&tmp).expect("mkdir tmp");
++        let archive = tmp.join("rootfs.tar.xz");
++        write_raw_xz_tar(
++            &archive,
++            &[
++                RawEntry::Dir("top/"),
++                RawEntry::Dir("top/etc/"),
++                RawEntry::File("top/etc/sudo.conf", b"policy", 0o644),
++                RawEntry::File("top/usr/bin/sudo", b"sudo", 0o4755),
++                RawEntry::Hardlink("top/usr/bin/sudo-alias", "top/usr/bin/sudo"),
++            ],
++        );
++        let rootfs = tmp.join("rootfs");
++
++        extract_tarball_with_userland_metadata(
++            archive.to_str().unwrap(),
++            rootfs.to_str().unwrap(),
++            1,
++            &[],
++            true,
++        )
++        .expect("extract with Android ownership metadata");
++
++        assert_eq!(
++            fs::read_to_string(rootfs.join(".proot-meta-file.")).unwrap(),
++            "755\n0\n0\n"
++        );
++        assert_eq!(
++            fs::read_to_string(rootfs.join("etc/.proot-meta-file.sudo.conf")).unwrap(),
++            "644\n0\n0\n"
++        );
++        assert_eq!(
++            fs::read_to_string(rootfs.join("usr/bin/.proot-meta-file.sudo")).unwrap(),
++            "4755\n0\n0\n"
++        );
++        assert_eq!(
++            fs::read_to_string(rootfs.join("usr/bin/.proot-meta-file.sudo-alias")).unwrap(),
++            "644\n0\n0\n"
++        );
++        let physical_mode = fs::metadata(rootfs.join("usr/bin/sudo")).unwrap().mode();
++        assert_eq!(physical_mode & 0o6000, 0, "Android host inode must not rely on setuid");
++        let _ = fs::remove_dir_all(&tmp);
++    }
++
+     #[test]
+     fn extract_tarball_rejects_an_entry_that_climbs_out_of_the_rootfs() {
+         let tmp = unique_temp_dir("pr-cli-extract-dotdot");
+diff --git a/src/pr-cli/src/login.rs b/src/pr-cli/src/login.rs
+index f811ae5..9333e15 100644
+--- a/src/pr-cli/src/login.rs
++++ b/src/pr-cli/src/login.rs
+@@ -23,7 +23,10 @@ extern "C" {
+ fn android_log(_msg: &str) {}
+ 
+ struct PasswdEntry {
++    uid: u32,
++    gid: u32,
+     home: String,
++    shell: String,
+ }
+ 
+ fn parse_passwd_entry(line: &str) -> Option<PasswdEntry> {
+@@ -32,7 +35,10 @@ fn parse_passwd_entry(line: &str) -> Option<PasswdEntry> {
+         return None;
+     }
+     Some(PasswdEntry {
++        uid: fields[2].parse().ok()?,
++        gid: fields[3].parse().ok()?,
+         home: fields[5].to_string(),
++        shell: fields[6].to_string(),
+     })
+ }
+ 
+@@ -48,6 +54,11 @@ fn find_user_in_passwd(passwd_path: &str, user: &str) -> Result<PasswdEntry, Str
+     Err(format!("no user '{}' defined in /etc/passwd", user))
+ }
+ 
++fn uses_userland_account_metadata(rootfs: &str) -> bool {
++    // TRITONTERM_ARCH_USERLAND_LOGIN_V1: this profile alone uses passwd IDs.
++    Path::new(rootfs).join("etc/tritonterm/proot-userland-metadata-v1").is_file()
++}
++
+ fn update_etc_environment(rootfs: &str) {
+     let mut lines: Vec<String> = Vec::new();
+     let Ok(existing) = read_rootfs_file(Path::new(rootfs), "etc/environment") else {
+@@ -220,7 +231,20 @@ pub fn command_login(
+ 
+     update_etc_environment(&rootfs);
+ 
+-    let args = build_proot_args(&rootfs, isolated, no_link2symlink, custom_bind);
++    let (guest_uid, guest_gid, guest_cwd) = if uses_userland_account_metadata(&rootfs) {
++        (entry.uid, entry.gid, entry.home.as_str())
++    } else {
++        (0, 0, "/")
++    };
++    let args = build_proot_args_for_identity(
++        &rootfs,
++        isolated,
++        no_link2symlink,
++        custom_bind,
++        guest_uid,
++        guest_gid,
++        guest_cwd,
++    );
+ 
+     let mut login_env: Vec<String> = vec![format!("PATH={}", get_default_path_env())];
+ 
+@@ -277,6 +301,8 @@ pub fn command_login(
+     ));
+     child_env.push(("HOME".to_string(), entry.home.clone()));
+     child_env.push(("USER".to_string(), user.to_string()));
++    child_env.push(("LOGNAME".to_string(), user.to_string()));
++    child_env.push(("SHELL".to_string(), entry.shell.clone()));
+     child_env.push((
+         "TERM".to_string(),
+         std::env::var("TERM").unwrap_or_else(|_| "xterm-256color".to_string()),
+@@ -419,7 +445,10 @@ mod tests {
+     fn parse_passwd_entry_accepts_valid_line() {
+         let line = "alice:x:1000:1000:Alice:/home/alice:/bin/sh";
+         let entry = parse_passwd_entry(line).expect("parse passwd line");
++        assert_eq!(entry.uid, 1000);
++        assert_eq!(entry.gid, 1000);
+         assert_eq!(entry.home, "/home/alice");
++        assert_eq!(entry.shell, "/bin/sh");
+     }
+ 
+     #[test]
+@@ -427,6 +456,20 @@ mod tests {
+         assert!(parse_passwd_entry("too:few:fields").is_none());
+     }
+ 
++    #[test]
++    fn only_the_metadata_backed_arch_profile_uses_the_passwd_identity() {
++        let tmp = unique_temp_dir("pr-cli-userland-account-metadata");
++        fs::create_dir_all(tmp.join("etc/tritonterm")).expect("create metadata marker directory");
++        assert!(!uses_userland_account_metadata(tmp.to_str().unwrap()));
++        fs::write(
++            tmp.join("etc/tritonterm/proot-userland-metadata-v1"),
++            "archive metadata is represented by PRoot sidecars\n",
++        )
++        .expect("write metadata marker");
++        assert!(uses_userland_account_metadata(tmp.to_str().unwrap()));
++        let _ = fs::remove_dir_all(tmp);
++    }
++
+     #[test]
+     fn find_user_in_passwd_finds_expected_user() {
+         let tmp_dir = unique_temp_dir("pr-cli-login-passwd");
+@@ -441,6 +484,9 @@ mod tests {
+         let entry = find_user_in_passwd(passwd.to_str().expect("passwd path"), "alice")
+             .expect("find alice entry");
+         assert_eq!(entry.home, "/home/alice");
++        assert_eq!(entry.uid, 1000);
++        assert_eq!(entry.gid, 1000);
++        assert_eq!(entry.shell, "/bin/bash");
+ 
+         let _ = fs::remove_dir_all(tmp_dir);
+     }
+diff --git a/src/pr-cli/src/shared.rs b/src/pr-cli/src/shared.rs
+index 5424865..a201a31 100644
+--- a/src/pr-cli/src/shared.rs
++++ b/src/pr-cli/src/shared.rs
+@@ -441,6 +441,21 @@ pub fn build_proot_args(
+     isolated: bool,
+     no_link2symlink: bool,
+     custom_bind: &[String],
++) -> Vec<String> {
++    build_proot_args_for_identity(rootfs, isolated, no_link2symlink, custom_bind, 0, 0, "/")
++}
++
++/// Build a login invocation with the account's guest identity and home directory.
++/// PRoot still runs under the Android app UID; this only selects the guest-side
++/// identity emulated by fake_id0.
++pub fn build_proot_args_for_identity(
++    rootfs: &str,
++    isolated: bool,
++    no_link2symlink: bool,
++    custom_bind: &[String],
++    uid: u32,
++    gid: u32,
++    cwd: &str,
+ ) -> Vec<String> {
+     use std::os::unix::fs::PermissionsExt;
+     use std::path::Path;
+@@ -557,10 +572,10 @@ pub fn build_proot_args(
+ 
+     args.push("--kill-on-exit".to_string());
+ 
+-    args.push("--change-id=0:0".to_string());
++    args.push(format!("--change-id={}:{}", uid, gid));
+ 
+     args.push(format!("--rootfs={}", rootfs));
+-    args.push("--cwd=/".to_string());
++    args.push(format!("--cwd={}", cwd));
+ 
+     args
+ }
+@@ -904,6 +919,30 @@ mod tests {
+         std::env::remove_var("PROOT_L2S_DIR");
+     }
+ 
++    #[test]
++    fn login_proot_args_use_the_passwd_identity_and_home_directory() {
++        let _guard = env_lock().lock().expect("lock env");
++        let base = unique_temp_dir("pr-cli-login-identity");
++        let rootfs = base.join("rootfs");
++        fs::create_dir_all(rootfs.join(".l2s")).expect("create .l2s");
++
++        let args = build_proot_args_for_identity(
++            rootfs.to_str().expect("rootfs path"),
++            true,
++            false,
++            &[],
++            1000,
++            1000,
++            "/home/regueiro",
++        );
++
++        assert!(args.contains(&String::from("--change-id=1000:1000")));
++        assert!(args.contains(&String::from("--cwd=/home/regueiro")));
++        assert!(!args.contains(&String::from("--change-id=0:0")));
++        let _ = fs::remove_dir_all(base);
++        std::env::remove_var("PROOT_L2S_DIR");
++    }
++
+     #[test]
+     fn a_shallow_app_prefix_skips_the_app_binds_instead_of_panicking() {
+         let _guard = env_lock().lock().expect("lock env");
+diff --git a/src/proot/src/GNUmakefile b/src/proot/src/GNUmakefile
+index fe32fc1..e3e7811 100644
+--- a/src/proot/src/GNUmakefile
++++ b/src/proot/src/GNUmakefile
+@@ -13,6 +13,9 @@ LD       = $(CC)
+ STRIP    ?= $(CROSS_COMPILE)strip
+ OBJCOPY  ?= $(CROSS_COMPILE)objcopy
+ OBJDUMP  ?= $(CROSS_COMPILE)objdump
++# Preserve guest UID/GID and setuid semantics in app-private storage using
++# PRoot's per-path .proot-meta-file records.
++CPPFLAGS += -DUSERLAND -DTRITONTERM_USERLAND_METADATA_MODE=1
+ 
+ CPPFLAGS += -D_FILE_OFFSET_BITS=64 -D_GNU_SOURCE -I. -I$(VPATH)
+ CFLAGS   += -Wall -Wextra -O2
+diff --git a/src/proot/src/extension/fake_id0/exec.c b/src/proot/src/extension/fake_id0/exec.c
+index e3534f4..da95203 100644
+--- a/src/proot/src/extension/fake_id0/exec.c
++++ b/src/proot/src/extension/fake_id0/exec.c
+@@ -45,15 +45,16 @@ int handle_exec_enter_end(Tracee *tracee, Reg filename_sysarg, Config *config)
+ 	/* If the setuid or setgid bits are on, change config accordingly. */
+ 	read_meta_file(meta_path, &mode, &uid, &gid, config);
+ 	if ((mode & S_ISUID) != 0) {
+-		config->ruid = 0;
+-		config->euid = 0;
+-		config->suid = 0;
++		/* TRITONTERM_ARCH_USERLAND_SETUID_V1: emulate the recorded file owner. */
++		config->euid = uid;
++		config->suid = uid;
++		config->fsuid = uid;
+ 	}
+ 
+ 	if ((mode & S_ISGID) != 0) {
+-		config->rgid = 0;
+-		config->egid = 0;
+-		config->sgid = 0;
++		config->egid = gid;
++		config->sgid = gid;
++		config->fsgid = gid;
+ 	}
+ 
+ 	/** TODO Add logic to determine interpreter being used, and check
+diff --git a/src/proot/src/extension/fake_id0/stat.c b/src/proot/src/extension/fake_id0/stat.c
+index a4409ed..4d23c25 100644
+--- a/src/proot/src/extension/fake_id0/stat.c
++++ b/src/proot/src/extension/fake_id0/stat.c
+@@ -122,7 +122,10 @@ int handle_stat_exit_end(Tracee *tracee, Config *config, word_t sysnum) {
+ 			 *  file and add them to the mode found in the meta_file.
+ 			 */
+ 			read_data(tracee, &my_stat, peek_reg(tracee, ORIGINAL, sysarg), sizeof(struct stat));
+-			my_stat.st_mode = (mode | ((my_stat.st_mode & S_IFMT) | (my_stat.st_mode & 07000)));
++			/* Android app-private inodes cannot retain guest setuid bits. The
++			 * archive mode in the metadata sidecar is authoritative for all
++			 * permission bits; preserve only the host inode's file type. */
++			my_stat.st_mode = (mode | (my_stat.st_mode & S_IFMT));
+ 			my_stat.st_uid = uid;
+ 			my_stat.st_gid = gid;
+ 			write_data(tracee, peek_reg(tracee, ORIGINAL, sysarg), &my_stat, sizeof(struct stat));
+@@ -159,8 +162,28 @@ int handle_stat_exit_end(Tracee *tracee, Config *config, word_t sysnum) {
+ 
+ int fake_id0_handle_statx_syscall(Tracee *tracee, Config *config, uintptr_t statx_state_raw) {
+ 	(void) tracee;
+-	// TODO: USERLAND
+ 	struct statx_syscall_state *state = (struct statx_syscall_state *) statx_state_raw;
++#ifdef USERLAND
++	char meta_path[PATH_MAX];
++	mode_t mode;
++	uid_t owner;
++	gid_t group;
++
++	/* statx is the path used by newer libc and sudo builds. Keep it in step
++	 * with fstat/newfstatat when Android host inodes cannot represent guest
++	 * ownership or setuid bits. */
++	if (get_meta_path(state->host_path, meta_path) == 0 &&
++	    path_exists(meta_path) == 0) {
++		/* TRITONTERM_ARCH_USERLAND_STATX_V1 */
++		read_meta_file(meta_path, &mode, &owner, &group, config);
++		state->statx_buf.stx_mode = (mode & 07777) |
++			(state->statx_buf.stx_mode & S_IFMT);
++		state->statx_buf.stx_uid = owner;
++		state->statx_buf.stx_gid = group;
++		state->updated_stats = true;
++		return 0;
++	}
++#endif
+ 	if (state->statx_buf.stx_mask & STATX_UID) {
+ 		uid_t uid = fake_owner_uid(config, state->statx_buf.stx_uid);
+ 		if (uid != state->statx_buf.stx_uid) {

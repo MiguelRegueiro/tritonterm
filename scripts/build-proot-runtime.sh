@@ -4,48 +4,120 @@ set -euo pipefail
 PROJECT_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 PR_SOURCE="${PROJECT_ROOT}/third_party/oonid-pr"
 KEYRING_SOURCE="${PROJECT_ROOT}/third_party/archlinuxarm-keyring"
-EXPECTED_PR_COMMIT="7029b1fe8fa84d64339cabe38f9c5be2ea2ae7ac"
+EXPECTED_PR_COMMIT="31afc11ca3e675fa8bbbe530979afc8c467218dc"
 EXPECTED_KEYRING_COMMIT="91e6b11698f8df66042d56aaa56fbe9c9263847d"
 EXPECTED_RUST="1.98.0"
 JNI_DIR="${PROJECT_ROOT}/app/src/main/jniLibs/arm64-v8a"
 
-git -C "${PROJECT_ROOT}" submodule update --init third_party/oonid-pr third_party/archlinuxarm-keyring
-test "$(git -C "${PR_SOURCE}" rev-parse HEAD)" = "${EXPECTED_PR_COMMIT}" || {
-    echo "PRoot source is not at the pinned commit ${EXPECTED_PR_COMMIT}" >&2
-    exit 1
-}
-test "$(git -C "${KEYRING_SOURCE}" rev-parse HEAD)" = "${EXPECTED_KEYRING_COMMIT}" || {
-    echo "Arch Linux ARM keyring source is not at the pinned commit ${EXPECTED_KEYRING_COMMIT}" >&2
-    exit 1
-}
+if [[ -f "${PR_SOURCE}/TRITONTERM_SOURCE_COMMIT" && -f "${KEYRING_SOURCE}/TRITONTERM_SOURCE_COMMIT" ]]; then
+    # Public corresponding-source archives carry the exact source trees and commit
+    # markers, but intentionally omit private development-repository Git metadata.
+    test "$(<"${PR_SOURCE}/TRITONTERM_SOURCE_COMMIT")" = "${EXPECTED_PR_COMMIT}" || {
+        echo "PRoot source snapshot does not match ${EXPECTED_PR_COMMIT}" >&2
+        exit 1
+    }
+    test "$(<"${KEYRING_SOURCE}/TRITONTERM_SOURCE_COMMIT")" = "${EXPECTED_KEYRING_COMMIT}" || {
+        echo "Arch Linux ARM keyring snapshot does not match ${EXPECTED_KEYRING_COMMIT}" >&2
+        exit 1
+    }
+else
+    git -C "${PROJECT_ROOT}" submodule update --init third_party/oonid-pr third_party/archlinuxarm-keyring
+    test "$(git -C "${PR_SOURCE}" rev-parse HEAD)" = "${EXPECTED_PR_COMMIT}" || {
+        echo "PRoot source is not at the pinned commit ${EXPECTED_PR_COMMIT}" >&2
+        exit 1
+    }
+    test "$(git -C "${KEYRING_SOURCE}" rev-parse HEAD)" = "${EXPECTED_KEYRING_COMMIT}" || {
+        echo "Arch Linux ARM keyring source is not at the pinned commit ${EXPECTED_KEYRING_COMMIT}" >&2
+        exit 1
+    }
+fi
 
 EXTRACTION_PATCH="${PROJECT_ROOT}/scripts/patches/pr-cli-install-progress.patch"
-if git -C "${PR_SOURCE}" apply --check "${EXTRACTION_PATCH}" 2>/dev/null; then
-    git -C "${PR_SOURCE}" apply "${EXTRACTION_PATCH}"
-elif ! grep -qF 'write_extraction_progress' "${PR_SOURCE}/src/pr-cli/src/install.rs"; then
-    echo "Could not apply TritonTerm's pinned pr-cli extraction patch." >&2
-    exit 1
-fi
-
 DIAGNOSTICS_PATCH="${PROJECT_ROOT}/scripts/patches/pr-cli-diagnostics.patch"
-if git -C "${PR_SOURCE}" apply --check "${DIAGNOSTICS_PATCH}" 2>/dev/null; then
-    git -C "${PR_SOURCE}" apply "${DIAGNOSTICS_PATCH}"
-elif ! grep -qF 'archive_cache_resolution' "${PR_SOURCE}/src/pr-cli/src/install.rs"; then
-    echo "Could not apply TritonTerm's pinned pr-cli diagnostics patch." >&2
-    exit 1
-fi
-
 PRESERVE_PATCH="${PROJECT_ROOT}/scripts/patches/pr-cli-preserve-failures.patch"
-if git -C "${PR_SOURCE}" apply --check "${PRESERVE_PATCH}" 2>/dev/null; then
-    git -C "${PR_SOURCE}" apply "${PRESERVE_PATCH}"
-elif ! grep -qF 'failed_rootfs_preservation' "${PR_SOURCE}/src/pr-cli/src/install.rs"; then
-    echo "Could not apply TritonTerm's failed-install preservation patch." >&2
-    exit 1
-fi
+USERLAND_PATCH="${PROJECT_ROOT}/scripts/patches/proot-userland-metadata.patch"
+ARCH_USERLAND_PATCH="${PROJECT_ROOT}/scripts/patches/tritonterm-arch-userland.patch"
+apply_runtime_patch() {
+    local patch_file="$1"
+    local marker="$2"
+    local marker_file="${3:-src/pr-cli/src/install.rs}"
+    if [[ -d "${PR_SOURCE}/.git" ]] || git -C "${PR_SOURCE}" rev-parse --git-dir >/dev/null 2>&1; then
+        if git -C "${PR_SOURCE}" apply --check "${patch_file}" 2>/dev/null; then
+            git -C "${PR_SOURCE}" apply "${patch_file}"
+        elif ! grep -qF "${marker}" "${PR_SOURCE}/${marker_file}"; then
+            echo "Could not apply TritonTerm's pinned PRoot patch: ${patch_file}" >&2
+            return 1
+        fi
+    else
+        # Public corresponding-source archives intentionally omit Git metadata.
+        # GNU patch applies the same reviewed patch without requiring a checkout.
+        if (cd "${PR_SOURCE}" && patch --dry-run -p1 < "${patch_file}" >/dev/null); then
+            (cd "${PR_SOURCE}" && patch -p1 < "${patch_file}" >/dev/null)
+        elif ! grep -qF "${marker}" "${PR_SOURCE}/${marker_file}"; then
+            echo "Could not apply TritonTerm's pinned PRoot patch: ${patch_file}" >&2
+            return 1
+        fi
+    fi
+}
 
-# Upstream's .gitmodules includes SSH URLs. Rewrite only those URLs for this fetch.
-git -c url.https://github.com/.insteadOf=git@github.com: \
-    -C "${PR_SOURCE}" submodule update --init vendor/samba
+apply_runtime_patch "${EXTRACTION_PATCH}" 'write_extraction_progress'
+apply_runtime_patch "${DIAGNOSTICS_PATCH}" 'archive_cache_resolution'
+apply_runtime_patch "${PRESERVE_PATCH}" 'failed_rootfs_preservation'
+apply_runtime_patch "${USERLAND_PATCH}" 'TRITONTERM_USERLAND_METADATA_MODE' 'src/proot/src/GNUmakefile'
+apply_arch_userland_patch() {
+    local -a markers=(
+        'src/pr-cli/src/install.rs:TRITONTERM_ARCH_USERLAND_EXTRACTION_V1'
+        'src/pr-cli/src/login.rs:TRITONTERM_ARCH_USERLAND_LOGIN_V1'
+        'src/pr-cli/src/shared.rs:build_proot_args_for_identity'
+        'src/proot/src/extension/fake_id0/exec.c:TRITONTERM_ARCH_USERLAND_SETUID_V1'
+        'src/proot/src/extension/fake_id0/stat.c:TRITONTERM_ARCH_USERLAND_STATX_V1'
+    )
+    if [[ -d "${PR_SOURCE}/.git" ]] || git -C "${PR_SOURCE}" rev-parse --git-dir >/dev/null 2>&1; then
+        if git -C "${PR_SOURCE}" apply --check "${ARCH_USERLAND_PATCH}" 2>/dev/null; then
+            git -C "${PR_SOURCE}" apply "${ARCH_USERLAND_PATCH}"
+        else
+            local item file marker
+            for item in "${markers[@]}"; do
+                file="${item%%:*}"
+                marker="${item#*:}"
+                grep -qF "${marker}" "${PR_SOURCE}/${file}" || {
+                    echo "PRoot has a partial or incompatible Arch USERLAND patch: ${file} lacks ${marker}" >&2
+                    return 1
+                }
+            done
+        fi
+    else
+        if (cd "${PR_SOURCE}" && patch --dry-run -p1 < "${ARCH_USERLAND_PATCH}" >/dev/null 2>&1); then
+            (cd "${PR_SOURCE}" && patch -p1 < "${ARCH_USERLAND_PATCH}" >/dev/null)
+        else
+            local item file marker
+            for item in "${markers[@]}"; do
+                file="${item%%:*}"
+                marker="${item#*:}"
+                grep -qF "${marker}" "${PR_SOURCE}/${file}" || {
+                    echo "PRoot source snapshot has a partial or incompatible Arch USERLAND patch: ${file} lacks ${marker}" >&2
+                    return 1
+                }
+            done
+        fi
+    fi
+}
+apply_arch_userland_patch
+
+if [[ -f "${PR_SOURCE}/vendor/samba/TRITONTERM_TALLOC_COMMIT" ]]; then
+    test "$(<"${PR_SOURCE}/vendor/samba/TRITONTERM_TALLOC_COMMIT")" = "2f8dfde1210395175e726455bdb63a7b97245a72" || {
+        echo "Bundled talloc source does not match the pinned Samba commit." >&2
+        exit 1
+    }
+    test -f "${PR_SOURCE}/vendor/samba/lib/talloc/talloc.h" || {
+        echo "Bundled talloc source is incomplete." >&2
+        exit 1
+    }
+else
+    # Upstream's .gitmodules includes SSH URLs. Rewrite only those URLs for this fetch.
+    git -c url.https://github.com/.insteadOf=git@github.com: \
+        -C "${PR_SOURCE}" submodule update --init vendor/samba
+fi
 
 if ! command -v rustup >/dev/null 2>&1; then
     echo "Install rustup first; TritonTerm pins Rust ${EXPECTED_RUST}." >&2

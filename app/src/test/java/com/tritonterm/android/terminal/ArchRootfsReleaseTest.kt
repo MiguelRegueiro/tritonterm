@@ -55,6 +55,30 @@ class ArchRootfsReleaseTest {
     }
 
     @Test
+    fun signedAssetNameIsValidatedIndependentlyOfHashedCacheFilename() {
+        val version = ArchRootfsRelease.pinnedVersion()
+        val publicAssetName = ArchRootfsRelease.archiveName(version)
+        val cacheName = ArchLinuxArmBootstrap.archiveName(
+            "https://example.org/releases/$publicAssetName"
+        )
+        val manifest = ArchRootfsRelease.Manifest(
+            version = version,
+            archive = publicAssetName,
+            size = 1,
+            sha256 = "a".repeat(64),
+            baseArchiveSha256 = "b".repeat(64)
+        )
+
+        assertTrue(ArchLinuxArmBootstrap.isExpectedSignedArchiveName(manifest))
+        assertFalse(publicAssetName == cacheName)
+        assertFalse(
+            ArchLinuxArmBootstrap.isExpectedSignedArchiveName(
+                manifest.copy(archive = cacheName)
+            )
+        )
+    }
+
+    @Test
     fun ed25519SignatureCoversTheExactManifestBytes() {
         val key = Ed25519PrivateKeyParameters(ByteArray(32) { it.toByte() }, 0)
         val publicKey = key.generatePublicKey()
