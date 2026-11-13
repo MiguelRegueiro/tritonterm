@@ -606,8 +606,8 @@ internal object RuntimeDiagnosticsProbes {
             "APP_HOME" to File(context.filesDir, "home").absolutePath,
             "APP_PACKAGE" to context.packageName,
             "HOME" to File(context.filesDir, "home").absolutePath,
-            "TMPDIR" to File(context.cacheDir, "proot").absolutePath,
-            "PROOT_TMP_DIR" to File(context.cacheDir, "proot").absolutePath,
+            "TMPDIR" to ProotTempDirectory.forApp(context).absolutePath,
+            "PROOT_TMP_DIR" to ProotTempDirectory.forApp(context).absolutePath,
             "PROOT_NO_SECCOMP" to "1",
             "PROOT_CRASH_DIAGNOSTICS" to "1",
             "PROOT_CRASH_DIAGNOSTICS_FILE" to guestPath,
@@ -676,8 +676,8 @@ internal object RuntimeDiagnosticsProbes {
             "APP_HOME" to File(context.filesDir, "home").absolutePath,
             "APP_PACKAGE" to context.packageName,
             "HOME" to File(context.filesDir, "home").absolutePath,
-            "TMPDIR" to File(context.cacheDir, "proot").absolutePath,
-            "PROOT_TMP_DIR" to File(context.cacheDir, "proot").absolutePath,
+            "TMPDIR" to ProotTempDirectory.forApp(context).absolutePath,
+            "PROOT_TMP_DIR" to ProotTempDirectory.forApp(context).absolutePath,
             "PROOT_NO_SECCOMP" to "1",
             "PROOT_CRASH_DIAGNOSTICS" to "1",
             "PROOT_CRASH_DIAGNOSTICS_FILE" to crashLog.absolutePath,
@@ -1003,6 +1003,7 @@ internal object RuntimeDiagnosticsProbes {
         var exitCode: Int? = null
         var error: String? = null
         try {
+            env["PROOT_TMP_DIR"]?.let { ProotTempDirectory.ensure(File(it)) }
             val started = ProcessBuilder(command).redirectErrorStream(true).apply {
                 environment().putAll(env)
             }.start()

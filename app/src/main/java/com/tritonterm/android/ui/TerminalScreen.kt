@@ -701,6 +701,51 @@ internal fun TerminalScreen() {
                     crashRecords = TerminalDiagnostics.guestCrashRecords(context)
                 }
             },
+            onRunPermissionProbe = {
+                smokeRunning = true
+                smokeResult = "Checking Android file modes, PRoot guest access, and execution…"
+                setupScope.launch {
+                    val result = runCatching {
+                        withContext(Dispatchers.IO) { ArchLinuxArmInstaller.runPermissionModelProbe(context) }
+                    }
+                    smokeRunning = false
+                    diagnosticEvents = runCatching { TerminalDiagnostics.recentEvents(context) }.getOrDefault(emptyList())
+                    smokeResult = result.fold(
+                        onSuccess = { "Permission probe completed. Review the newest proot_permission_probe events below." },
+                        onFailure = { "Permission probe failed: ${it.message ?: it.javaClass.simpleName}" }
+                    )
+                }
+            },
+            onRunPackageManagerProbe = {
+                smokeRunning = true
+                smokeResult = "Checking the selected fakeroot, library access, keyring files, and DNS…"
+                setupScope.launch {
+                    val result = runCatching {
+                        withContext(Dispatchers.IO) { ArchLinuxArmInstaller.runPackageManagerProbe(context) }
+                    }
+                    smokeRunning = false
+                    diagnosticEvents = runCatching { TerminalDiagnostics.recentEvents(context) }.getOrDefault(emptyList())
+                    smokeResult = result.fold(
+                        onSuccess = { "Package manager probe completed. Review the newest package_manager_probe event." },
+                        onFailure = { "Package manager probe failed: ${it.message ?: it.javaClass.simpleName}" }
+                    )
+                }
+            },
+            onRepairPacmanKeyring = {
+                smokeRunning = true
+                smokeResult = "Rebuilding pacman's device-local key trust from the bundled official Arch Linux ARM keyring…"
+                setupScope.launch {
+                    val result = runCatching {
+                        withContext(Dispatchers.IO) { ArchLinuxArmInstaller.repairPacmanKeyring(context) }
+                    }
+                    smokeRunning = false
+                    diagnosticEvents = runCatching { TerminalDiagnostics.recentEvents(context) }.getOrDefault(emptyList())
+                    smokeResult = result.fold(
+                        onSuccess = { "Official Arch Linux ARM signing key trust was populated and verified. Signature checking remains enabled." },
+                        onFailure = { "Pacman keyring repair failed: ${it.message ?: it.javaClass.simpleName}" }
+                    )
+                }
+            },
             onCopyLatest = {
                 val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
                 runCatching { TerminalDiagnostics.recentEventsText(context) }.onSuccess {

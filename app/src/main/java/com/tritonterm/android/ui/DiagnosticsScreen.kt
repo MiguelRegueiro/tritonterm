@@ -63,6 +63,9 @@ internal fun DiagnosticsScreen(
     onDismiss: () -> Unit,
     onTestSegv: () -> Unit,
     onRunProbes: () -> Unit,
+    onRunPermissionProbe: () -> Unit,
+    onRunPackageManagerProbe: () -> Unit,
+    onRepairPacmanKeyring: () -> Unit,
     onCopyLatest: () -> Unit,
     onCopyCrashes: () -> Unit,
     onShare: () -> Unit,
@@ -174,6 +177,15 @@ internal fun DiagnosticsScreen(
                                         Text(if (busy) "Testing…" else "Test SIGSEGV")
                                     }
                                     OutlinedButton(enabled = !busy, onClick = onRunProbes) { Text("Run probes") }
+                                }
+                                OutlinedButton(enabled = !busy, onClick = onRunPermissionProbe) {
+                                    Text("Check executable access")
+                                }
+                                OutlinedButton(enabled = !busy, onClick = onRunPackageManagerProbe) {
+                                    Text("Check package manager")
+                                }
+                                OutlinedButton(enabled = !busy, onClick = onRepairPacmanKeyring) {
+                                    Text("Repair pacman signing keys")
                                 }
                                 if (testResult != "Not run") {
                                     Text(testResult, style = MaterialTheme.typography.bodySmall)

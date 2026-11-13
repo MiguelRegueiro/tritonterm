@@ -38,12 +38,17 @@ check_equals cwd "$HOME" "$PWD"
 check_equals shell /usr/bin/fish "$SHELL"
 check_executable fish /usr/bin/fish
 check_executable id /usr/bin/id
+check_executable mkdir /usr/bin/mkdir
+check_executable uname /usr/bin/uname
 check_executable sudo /usr/bin/sudo
 check_executable system_fakeroot /usr/bin/fakeroot
 check_executable pacman /usr/bin/pacman
 check_executable paru /usr/bin/paru
 check_executable rustup /usr/bin/rustup
+check_executable starship /usr/bin/starship
 check_command_resolution id
+check_command_resolution mkdir
+check_command_resolution uname
 check_command_resolution sudo
 check_command_resolution fakeroot
 check_command_resolution fish
@@ -62,6 +67,14 @@ if set -q TRITONTERM_FISH_CONFIG_LOADED
     echo CHECK_OK fish_system_config
 else
     echo CHECK_FAILED fish_system_config not_loaded
+    set failures (math $failures + 1)
+end
+
+set greeting_output (fish_greeting)
+if test -z "$greeting_output"
+    echo CHECK_OK fish_greeting_suppressed
+else
+    echo "CHECK_FAILED fish_greeting_suppressed output=$greeting_output"
     set failures (math $failures + 1)
 end
 

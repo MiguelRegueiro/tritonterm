@@ -24,6 +24,89 @@ class ArchDeveloperEnvironmentTest {
     }
 
     @Test
+    fun generatedPermissionProbeParsesWithFishAndUsesSiblingMetadataTree() {
+        val script = ProotPermissionProbe.fishAccessScript()
+        val process = ProcessBuilder("fish", "--no-execute", "-c", script)
+            .redirectErrorStream(true)
+            .start()
+        val output = process.inputStream.bufferedReader().use { it.readText() }
+        assertEquals("Fish rejected the generated permission probe:\n$output\n$script", 0, process.waitFor())
+
+        val root = File("/data/user/0/com.example/files/usr/var/lib/pr/installed-rootfs/archlinuxarm")
+        assertEquals(
+            File(root.absolutePath + ".tritonterm-metadata/usr/bin/.proot-meta-file.id"),
+            ProotPermissionProbe.sidecarPath(root, "usr/bin/id")
+        )
+        assertEquals(
+            File(root.absolutePath + ".tritonterm-metadata/.proot-meta-file.root"),
+            ProotPermissionProbe.sidecarPath(root, "")
+        )
+    }
+
+    @Test
+    fun packageManagerProbeParsesInFishAndComparesBothFakerootInstallations() {
+        val script = ProotPermissionProbe.packageManagerScript()
+        val process = ProcessBuilder("fish", "--no-execute", "-c", script)
+            .redirectErrorStream(true)
+            .start()
+        val output = process.inputStream.bufferedReader().use { it.readText() }
+        assertEquals("Fish rejected the generated package probe:\n$output\n$script", 0, process.waitFor())
+        assertTrue(script.contains("command -s fakeroot"))
+        assertTrue(script.contains("/opt/tritonterm/fakeroot-tcp/2.1.4/bin/fakeroot -- /usr/bin/id -u"))
+        assertTrue(script.contains("/usr/bin/fakeroot -- /usr/bin/id -u"))
+        assertTrue(script.contains("/opt/tritonterm/fakeroot-tcp/2.1.4/lib/libfakeroot.so"))
+        assertTrue(script.contains("stat -L -c 'PACKAGE_PROBE_STAT=%A %a %u:%g %n'"))
+        assertTrue(script.contains("PACKAGE_PROBE_NOT_EXECUTABLE"))
+        assertTrue(script.contains("mirror.archlinuxarm.org"))
+        assertTrue(script.contains("aur.archlinux.org"))
+        assertFalse(script.contains("LD_LIBRARY_PATH="))
+        listOf("bin/faked", "lib/libfakeroot.so", "lib/libfakeroot-0.so").forEach { path ->
+            assertTrue("The host snapshot must include $path", ProotPermissionProbe.targets.contains("opt/tritonterm/fakeroot-tcp/2.1.4/$path"))
+        }
+    }
+
+    @Test
+    fun keyringRepairUsesOnlyBundledOfficialTrustAndKeepsSignatureChecksEnabled() {
+        val script = ProotPermissionProbe.pacmanKeyringRepairScript()
+        val process = ProcessBuilder("bash", "-n", "-c", script)
+            .redirectErrorStream(true)
+            .start()
+        val output = process.inputStream.bufferedReader().use { it.readText() }
+        assertEquals("Bash rejected the keyring repair script:\n$output\n$script", 0, process.waitFor())
+        assertTrue(script.contains("pacman-key --init"))
+        assertTrue(script.contains("pacman-key --populate archlinuxarm"))
+        assertTrue(script.contains("68B3537F39A313B3E574D06777193F152BDBE6A6"))
+        assertTrue(script.contains("/usr/share/pacman/keyrings/archlinuxarm-trusted"))
+        assertTrue(script.contains("db.lck"))
+        assertFalse(script.contains("SigLevel = Never"))
+        assertFalse(script.contains("TrustAll"))
+        assertFalse(script.contains("--refresh-keys"))
+    }
+
+    @Test
+    fun permissionSyscallProbeParsesAndCoversBothAarch64AccessSyscalls() {
+        val script = File("src/main/assets/proot-permission-syscall-probe.pl")
+        assertTrue("The compact guest syscall probe must be packaged", script.isFile)
+        val process = ProcessBuilder("perl", "-c", script.absolutePath)
+            .redirectErrorStream(true)
+            .start()
+        val output = process.inputStream.bufferedReader().use { it.readText() }
+        assertEquals("Perl rejected the guest syscall probe:\n$output", 0, process.waitFor())
+        val source = script.readText()
+        assertTrue(source.contains("48, -100"))
+        assertTrue(source.contains("439, -100"))
+        assertTrue(source.contains("AT_EACCESS"))
+        assertTrue(source.contains("errno=%d"))
+        val installer = File("src/main/java/com/tritonterm/android/terminal/ArchLinuxArmInstaller.kt").readText()
+        listOf(
+            "/usr/bin/id",
+            "/opt/tritonterm/fakeroot-tcp/2.1.4/bin/faked",
+            "/opt/tritonterm/fakeroot-tcp/2.1.4/lib/libfakeroot.so",
+            "/opt/tritonterm/fakeroot-tcp/2.1.4/lib/libfakeroot-0.so"
+        ).forEach { path -> assertTrue("Permission syscall probe must cover $path", installer.contains("\"$path\"")) }
+    }
+
+    @Test
     fun readinessRequiresTheInstalledDefaultToolchainAndUserConfiguration() {
         val root = Files.createTempDirectory("arch-dev-ready").toFile()
         try {
@@ -116,6 +199,61 @@ class ArchDeveloperEnvironmentTest {
     }
 
     @Test
+    fun everyAndroidProotEntryPointSelfHealsTheAppTempDirectory() {
+        val installer = File("src/main/java/com/tritonterm/android/terminal/ArchLinuxArmInstaller.kt").readText()
+        val terminal = File("src/main/java/com/tritonterm/android/terminal/TerminalSessionController.kt").readText()
+        val diagnostics = File("src/main/java/com/tritonterm/android/terminal/TerminalDiagnostics.kt").readText()
+
+        assertTrue(installer.contains("ProotTempDirectory.forApp(context)"))
+        assertTrue(terminal.contains("ProotTempDirectory.forApp(context)"))
+        assertTrue(diagnostics.contains("env[\"PROOT_TMP_DIR\"]?.let { ProotTempDirectory.ensure(File(it)) }"))
+        assertTrue(diagnostics.contains("ProotTempDirectory.forApp(context)"))
+        assertFalse(installer.contains("File(context.cacheDir, \"proot\")"))
+        assertFalse(terminal.contains("File(context.cacheDir, \"proot\")"))
+    }
+
+    @Test
+    fun installedRootfsRetryRunsChecksWithoutReenteringDownloadOrExtraction() {
+        val installer = File("src/main/java/com/tritonterm/android/terminal/ArchLinuxArmInstaller.kt").readText()
+        val installedBranch = installer.substringAfter("if (ArchLinuxArmBootstrap.isInstalled(appContext)) {")
+            .substringBefore("\n        }\n        return runSingleFlight")
+        assertTrue(installedBranch.contains("runSingleFlight(appContext, \"setup\")"))
+        assertTrue(installedBranch.contains("verifyDeveloperImage(app)"))
+        assertTrue(installedBranch.contains("requireTcpFakeroot(featureWarnings)"))
+        assertTrue(installedBranch.contains("initializePacmanKeys(app)"))
+        assertTrue(installedBranch.contains("signing keys could not be initialized and verified"))
+        assertTrue(installedBranch.contains("rootfs_reused"))
+        assertFalse(installedBranch.contains("ArchLinuxArmBootstrap.prepare"))
+        assertFalse(installedBranch.contains("install\", ArchLinuxArmBootstrap.DISTRO_ALIAS"))
+        assertEquals(
+            "Fresh install and reuse paths must both gate readiness on TCP fakeroot verification",
+            2,
+            Regex("requireTcpFakeroot\\(featureWarnings\\)").findAll(installer).count()
+        )
+    }
+
+    @Test
+    fun freshSetupAutomaticallyInitializesKeyringAndRequiresTcpFakerootBeforeReady() {
+        val installer = File("src/main/java/com/tritonterm/android/terminal/ArchLinuxArmInstaller.kt").readText()
+        val freshBranch = installer.substringAfter("return runSingleFlight(appContext, \"setup\") { app ->")
+            .substringBefore("\n        }\n    }")
+        val keyring = freshBranch.indexOf("initializePacmanKeys(app)")
+        val fakeroot = freshBranch.indexOf("requireTcpFakeroot(featureWarnings)")
+        assertTrue("fresh setup must automatically initialize and verify the official keyring", keyring >= 0)
+        assertTrue("fresh setup must verify TCP fakeroot", fakeroot > keyring)
+        assertTrue(
+            "fresh setup cannot report ready before required checks",
+            freshBranch.indexOf("\"setup\", \"completed\"") > fakeroot
+        )
+
+        val builder = File("../scripts/build-arch-dev-rootfs.sh").readText()
+        assertTrue(builder.contains("--acls \\\n    --use-compress-program='gzip -1'"))
+        assertFalse("the Android Rust tar extractor cannot decode GNU sparse entries", builder.contains("--acls --sparse"))
+        val workflow = File("../.github/workflows/build-arch-dev-rootfs.yml").readText()
+        assertTrue(workflow.contains("extract_arch_fakeroot_payload -- --ignored --nocapture"))
+    }
+
+    @Test
     fun installerPinsUpstreamInputsAndUsesRestrictivePackageAuthorization() {
         val script = File("../scripts/arch-image/setup-arch-developer.sh").readText()
         val paruBuild = File("../scripts/arch-image/paru-bootstrap.PKGBUILD").readText()
@@ -139,8 +277,13 @@ class ArchDeveloperEnvironmentTest {
         assertTrue(installer.contains("arch-guest-identity-smoke.fish"))
         assertTrue(smoke.contains("check_equals username triton \"\$USER\""))
         assertTrue(smoke.contains("check_executable id /usr/bin/id"))
+        assertTrue(smoke.contains("check_executable mkdir /usr/bin/mkdir"))
+        assertTrue(smoke.contains("check_executable uname /usr/bin/uname"))
         assertTrue(smoke.contains("check_executable sudo /usr/bin/sudo"))
+        assertTrue(smoke.contains("check_executable starship /usr/bin/starship"))
         assertTrue(smoke.contains("check_command_resolution id"))
+        assertTrue(smoke.contains("check_command_resolution mkdir"))
+        assertTrue(smoke.contains("check_command_resolution uname"))
         assertTrue(smoke.contains("check_command_resolution sudo"))
         assertTrue(smoke.contains("check_command_resolution fakeroot"))
         assertTrue(smoke.contains("CHECK_INFO PATH=${'$'}PATH"))
@@ -155,6 +298,7 @@ class ArchDeveloperEnvironmentTest {
         assertTrue(smoke.contains("CHECK_OK sudo_unrestricted_denied"))
         assertTrue(smoke.contains("CHECK_FAILED fish_abbreviation"))
         assertTrue(smoke.contains("CHECK_FAILED fish_starship_prompt"))
+        assertTrue(smoke.contains("CHECK_OK fish_greeting_suppressed"))
         assertFalse(installer.contains("personalize-arch-account.sh"))
         assertFalse(installer.contains("setup-arch-developer.sh"))
         assertFalse(installer.contains("pacman -Syy"))
