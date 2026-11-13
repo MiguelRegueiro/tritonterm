@@ -4,21 +4,23 @@ TritonTerm's first release is designed around one complete AArch64 rootfs image.
 
 ## Image account and first setup
 
-The image contains an uncredentialed template account named `dev` with UID and primary GID 1000. First setup asks for the desired Linux username, prefilled with `dev`. Names must match the Linux login-name character and length rules, cannot be reserved, and cannot collide with an account already in the image.
+The image contains one uncredentialed account named `triton`, with UID and primary GID 1000, home `/home/triton`, and Fish as its login shell. The account is fixed in the image; setup does not ask for a name or perform a first-boot rename. The app opens a shell once the signed image, account, home, and Fish executable are present. Developer-tool checks are recorded individually and never make an otherwise usable terminal inaccessible.
 
-Before the first shell, TritonTerm runs the image's account personalization script as root inside PRoot. It persists the requested name before changing the account, then idempotently renames the login and private group, moves `/home/dev` to `/home/<name>`, preserves numeric UID/GID and the home contents, confirms Fish and wheel membership, and writes the selected-user marker last. An interrupted operation resumes the same requested rename; it does not create another account or recursively chown the home. TritonTerm reads the persisted marker on later starts and launches that user. Rustup, Cargo, Fish, Starship, and Paru configuration use the home directory or `$HOME`, so they move with the user.
+The image has no shared password or generated SSH identity. The root and `triton` account password fields are locked and the builder rejects any remaining active password hash. The image also excludes the build host's generated pacman private key: first install initializes and populates a device-local pacman keyring before use. Sudo policy grants `triton` only the pacman command needed for `makepkg -si` and Paru install flows; it does not use `NOPASSWD: ALL`.
 
-The image has no shared password or generated SSH identity. The root and template account password fields are locked and the builder rejects any remaining active password hash. The image also excludes the build host's generated pacman private key: first install initializes and populates a device-local pacman keyring before use. Sudo policy grants wheel members only the pacman command needed for `makepkg -si` and Paru install flows; it does not use `NOPASSWD: ALL`.
+Android app-private files cannot carry Arch's numeric owners and setuid bits on host inodes. The extractor stores those attributes in a parallel `${rootfs}.tritonterm-metadata` host tree, outside the guest rootfs. USERLAND PRoot maps guest paths to these records for stat, permission, chown, and setuid behavior. Pacman never sees metadata filenames while enumerating `/var/lib/pacman/local`, and the metadata tree is not exposed as a guest path.
+
+The failed `.2` phone attempt used an older image whose passwd database still defined `dev`; inspection of that archive found the three executables, but not the fixed `triton` account or current Fish configuration. The new image sets PATH, `SYSTEMD_OFFLINE`, greeting suppression, Starship, and the `up` abbreviation from `/etc/fish/conf.d/20-tritonterm.fish`. CI runs the packaged Fish smoke through the same `pr-cli login --user triton ... fish -l -i -c` invocation used by the installer, and reports absolute executable presence separately from PATH resolution. The exact Fish smoke asset is syntax-checked before APK builds; optional runtime check failures are logged individually and do not block shell startup.
 
 ## Why TCP fakeroot is in the image
 
 The packaged Arch `/usr/bin/fakeroot` uses System V IPC, which returned `Function not implemented` on the tested Android PRoot device. Upstream fakeroot supports TCP IPC; upstream 2.1.4 configured with `--with-ipc=tcp` passed direct, makepkg, and Paru device smoke tests.
 
-The matching `fakeroot` wrapper, `faked` daemon, and `libfakeroot` shared library are installed together under `/opt/tritonterm/fakeroot-tcp/2.1.4/`. A user PATH shim selects that wrapper for ordinary `makepkg` and Paru. Pacman's `/usr/bin/fakeroot` remains owned by its normal package and is not overwritten. The source archive is verified against SHA-256 `0822bd5a9f0cf19d2ba0546b88b0432d4d3d9917db62c57b74044ccadba06e49`; the source is under GPL-3.0-or-later and is retained in the image for corresponding-source obligations.
+The matching `fakeroot` wrapper, `faked` daemon, and `libfakeroot` shared library are installed together under `/opt/tritonterm/fakeroot-tcp/2.1.4/`. The global Fish PATH selects that wrapper for ordinary `makepkg` and Paru. Pacman's `/usr/bin/fakeroot` remains owned by its normal package and is not overwritten. The source archive is verified against SHA-256 `0822bd5a9f0cf19d2ba0546b88b0432d4d3d9917db62c57b74044ccadba06e49`; the source is under GPL-3.0-or-later and is retained in the image for corresponding-source obligations.
 
 Paru 2.2.0 is built from its upstream source archive with SHA-256 `213d55a67605ff69faefa523917fee7168ea5bf143be8cef800fb48c9759f348`, then installed as a normal pacman-owned `/usr/bin/paru` package. Its standard makepkg path inherits the user's fakeroot shim. The image does not automatically build arbitrary AUR packages; users remain in control of reviewing and running AUR recipes.
 
-Rustup is Arch Linux ARM's `rustup` package, not the standalone `rust` or `cargo` packages. The stable AArch64 GNU toolchain is initialized for the template user before the image is made. The image build verifies `rustup show`, rustc/cargo versions, a real `cargo build`, and execution of the result in a login shell.
+Rustup is Arch Linux ARM's `rustup` package, not the standalone `rust` or `cargo` packages. The stable AArch64 GNU toolchain is initialized for `triton` before the image is made. The image build verifies `rustup show`, rustc/cargo versions, a real `cargo build`, and execution of the result in a Fish login shell.
 
 ## Build and artifact authentication
 
@@ -30,13 +32,13 @@ The Android build pins an exact rootfs version, release tag, and HTTPS release a
 
 For a signed Android release, `scripts/build-signed-pinned-apk.sh` requires a protected Android keystore and explicit monotonic version code/name plus the same rootfs pin. Keystore values are read from environment variables and are never passed as Gradle command-line properties. It runs `assembleRelease`, verifies the APK signature with Android `apksigner`, checks packaged native libraries, and writes a versioned file under `dist/`. Keep the Android keystore separate from the rootfs Ed25519 signing key; configure either as CI secrets only after reviewing custody and recovery. The current build pipeline has no repository secrets configured and performs no release publication.
 
-The recipe is repeatable and records exact inputs and outputs. Arch Linux ARM is rolling, so rebuilding at a later date may resolve newer repository packages and a newer Rust stable toolchain; it is not claimed to be byte-for-byte reproducible. `benchmark-<version>.txt`, `packages-<version>.txt`, `package-ownership-<version>.txt`, and `toolchain-<version>.txt` record what a particular signed build actually contains.
+The recipe is repeatable and records exact inputs and outputs. Arch Linux ARM is rolling, so rebuilding at a later date may resolve newer repository packages and a newer Rust stable toolchain; it is not claimed to be byte-for-byte reproducible. `benchmark-<version>.txt`, `packages-<version>.txt`, `package-ownership-<version>.txt`, and contract logs record what a particular signed build actually contains. The native workflow builds PRoot and pr-cli from their pinned source and exercises the app's login arguments and guest environment with Android-style external ownership records.
 
 ## Installation progress and measurement
 
-The setup screen reports transferred bytes, percentage, measured rate, phase, and elapsed time. Verification and account personalization show status without invented percentages. Extraction uses pr-cli's archive-consumption counters; when those counters are unavailable it uses a slow, subtle indeterminate segment and respects Android's animator setting. The build report measures the native CI extraction time as a comparison point. Actual Android download and PRoot extraction time require a device run of a published, pinned artifact and will be recorded separately; CI timings are not presented as phone benchmarks.
+The setup screen reports transferred bytes, percentage, measured rate, phase, and elapsed time. Verification shows status without invented percentages. Extraction uses pr-cli's archive-consumption counters; when those counters are unavailable it uses a slow, subtle indeterminate segment and respects Android's animator setting. The build report measures the native CI extraction time as a comparison point. Actual Android download and PRoot extraction time require a device run of a published, pinned artifact and will be recorded separately; CI timings are not presented as phone benchmarks.
 
-The prior base-only archive was 829,367,415 bytes (about 790.8 MiB) on the user's phone. The first complete-image compressed size is not known until the native workflow runs. The build report compares it directly with the base archive and records both compressed and expanded sizes, rather than assuming a target size.
+The prior base-only archive was 829,367,415 bytes (about 790.8 MiB). The older `.2` complete image was 909,815,353 bytes (about 867.8 MiB), 9.7% larger; its native report measured 20 seconds for extraction and 271 seconds for image construction. That artifact used the obsolete `dev` account and is not the new candidate. The next signed image gets its own timings; CI measurements are not Android phone benchmarks.
 
 ## Review and release steps
 
@@ -44,7 +46,7 @@ The prior base-only archive was 829,367,415 bytes (about 790.8 MiB) on the user'
 2. After repository details and publication are approved, configure the two signing secrets and run the workflow with a new immutable image version.
 3. Inspect the downloaded review artifact and all benchmark, package inventory, ownership, and toolchain reports. Verify the signature and archive hash independently.
 4. Publish the signed rootfs assets and manifest under the matching release tag; then build the APK with matching Gradle pins.
-5. Verify the APK only downloads that release and test the fresh-install personalization and smoke checks on the phone.
+5. Verify the APK only downloads that release and test the fresh-install `triton` account and runtime smoke checks on the phone.
 
 No release asset is currently published. A local debug APK built without release properties deliberately keeps Install disabled and reports that it has no pinned signed image; do not use it for another reinstall.
 
@@ -57,5 +59,8 @@ The image builder runs the existing acceptance checks before packaging:
 - Paru builds and installs an isolated local smoke package through normal makepkg;
 - Rustup has default stable, a dependency-free Cargo project compiles, and its binary runs;
 - Fish loads Starship and the regular login-shell PATH works.
+- The exact packaged Fish smoke runs under the `triton` login environment and fails native image construction if any required feature check reports a failure.
+- Native PRoot and pr-cli built from pinned source run that smoke using the app's `login archlinuxarm --user triton /usr/bin/fish -l -i -c ...` command and Android-style external ownership records.
+- Restricted sudo actually executes `sudo -n /usr/bin/pacman -Dk`; `sudo -n /usr/bin/id` must remain denied.
 
 The user's earlier device results also confirmed TCP fakeroot with normal makepkg and Paru, installed Elio through `paru -S elio`, and launched Elio interactively. Those results validate the compatibility approach, not yet this prebuilt image pipeline. A full fresh-image phone validation remains mandatory before calling the default experience complete.

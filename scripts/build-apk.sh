@@ -31,6 +31,14 @@ if [[ ! -d "$sdk_root/platforms/android-36" ]]; then
     exit 1
 fi
 
+if ! command -v fish >/dev/null 2>&1; then
+    echo "Fish is required to syntax-check the packaged Arch guest smoke script." >&2
+    exit 1
+fi
+for fish_script in "$project_root"/app/src/main/assets/*.fish; do
+    fish --no-execute "$fish_script"
+done
+
 if [[ ! -x "$gradle_bin" ]]; then
     mkdir -p "$project_root/.tools"
     archive="$(mktemp "${TMPDIR:-/tmp}/tritonterm-gradle.XXXXXX.zip")"
@@ -58,7 +66,7 @@ fi
 if [[ -n "${TRITONTERM_ANDROID_VERSION_CODE:-}" ]]; then
     gradle_properties+=("-Ptritonterm.androidVersionCode=${TRITONTERM_ANDROID_VERSION_CODE}")
 fi
-"$gradle_bin" --no-daemon "${gradle_properties[@]}" :app:assembleDebug
+"$gradle_bin" --no-daemon "${gradle_properties[@]}" :app:testDebugUnitTest :app:assembleDebug
 
 apk="$project_root/app/build/outputs/apk/debug/app-debug.apk"
 dist_apk="$project_root/dist/tritonterm-debug.apk"

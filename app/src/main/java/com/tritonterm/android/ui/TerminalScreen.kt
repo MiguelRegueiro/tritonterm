@@ -71,7 +71,6 @@ import com.tritonterm.android.terminal.TerminalSessionHost
 import com.tritonterm.android.terminal.TerminalForegroundService
 import com.tritonterm.android.terminal.PacmanRecoveryState
 import com.tritonterm.android.terminal.ArchLinuxArmInstaller
-import com.tritonterm.android.terminal.ArchDeveloperSetupLog
 import com.tritonterm.android.terminal.ArchLinuxArmBootstrap
 import com.tritonterm.android.terminal.ArchRootfsRelease
 import com.tritonterm.android.terminal.TerminalDiagnostics
@@ -81,7 +80,7 @@ import com.tritonterm.android.terminal.RuntimeDiagnosticsProbes
 import com.tritonterm.android.terminal.TerminalSetupProgress
 import com.tritonterm.android.terminal.TerminalSetupProgressFile
 import com.tritonterm.android.terminal.TerminalSetupStage
-import com.tritonterm.android.terminal.ArchLoginName
+import com.tritonterm.android.terminal.ArchGuestUser
 import com.tritonterm.android.terminal.TerminalCallbacks
 import com.tritonterm.android.terminal.TerminalClipboardAction
 import com.tritonterm.android.terminal.TerminalClipboardSupport
@@ -106,33 +105,18 @@ internal fun TerminalScreen() {
         mutableStateOf(terminalController.isReady(context))
     }
     var setupError by remember(context) { mutableStateOf<String?>(null) }
-    var setupFailureDetails by remember(context) { mutableStateOf(ArchLinuxArmInstaller.state.value.failureDetails) }
-    var showSetupLog by remember(context) { mutableStateOf(false) }
-    var setupLogText by remember(context) { mutableStateOf("") }
+    var showFeatureWarnings by remember(context) { mutableStateOf(false) }
     var setupWarning by remember(context) { mutableStateOf<String?>(null) }
     var setupProgress by remember(context) {
         mutableStateOf(TerminalSetupProgress(TerminalSetupStage.IDLE))
     }
     var stageElapsedSeconds by remember(context) { mutableLongStateOf(0L) }
-    var archUsername by remember(context) {
-        mutableStateOf(
-            ArchLoginName.fromRootfs(ArchLinuxArmBootstrap.rootfs(context))
-                ?: ArchLoginName.pendingUsername(ArchLinuxArmBootstrap.rootfs(context))
-                ?: context.getSharedPreferences("arch_setup", Context.MODE_PRIVATE).getString("username", "dev")
-                ?: "dev"
-        )
-    }
     var session by remember(terminalController) { mutableStateOf<TerminalSession?>(null) }
     var terminalProcessFinished by remember(terminalController) { mutableStateOf(false) }
     val setupScope = androidx.compose.runtime.rememberCoroutineScope()
 
     LaunchedEffect(terminalController) {
         if (terminalController.isReady(context)) {
-            if (!ArchLinuxArmInstaller.repositoryRefreshComplete(context)) {
-                setupReady = false
-                ArchLinuxArmInstaller.ensureRepositoryDatabases(context)
-                return@LaunchedEffect
-            }
             session = terminalController.start()
             setupReady = true
             return@LaunchedEffect
@@ -143,7 +127,6 @@ internal fun TerminalScreen() {
     LaunchedEffect(installState) {
         setupProgress = installState.progress
         setupError = installState.error
-        setupFailureDetails = installState.failureDetails
         if (installState.ready && !installState.running && session == null) {
             try {
                 session = terminalController.start()
@@ -153,16 +136,6 @@ internal fun TerminalScreen() {
                 setupError = failure.message ?: "Arch is installed, but its interactive shell could not start."
                 TerminalDiagnostics.record(context, "shell_startup", "failed", mapOf("error" to setupError))
             }
-        }
-    }
-
-    LaunchedEffect(context, setupReady, reusableArchRootfs, installState.preflightPassed,
-        installState.preflightFailed, installState.running, installState.error) {
-        if (!setupReady && !reusableArchRootfs && !installState.preflightPassed &&
-            !installState.preflightFailed && !installState.running && installState.error == null
-        ) {
-            // Keep the harmless native check automatic and quiet. The install action stays explicit.
-            ArchLinuxArmInstaller.runPreflight(context)
         }
     }
 
@@ -408,6 +381,19 @@ internal fun TerminalScreen() {
 
         val currentSession = session
         if (currentSession != null && setupReady) {
+            if (installState.featureWarnings.isNotEmpty()) {
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 2.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        "Some image checks failed (${installState.featureWarnings.size}); terminal is available.",
+                        color = Color(0xFFFFCC80), fontSize = 11.sp, maxLines = 1
+                    )
+                    TextButton(onClick = { showFeatureWarnings = true }) { Text("Details") }
+                }
+            }
             Box(
                 modifier = Modifier.weight(1f).fillMaxWidth()
             ) {
@@ -517,32 +503,18 @@ internal fun TerminalScreen() {
                     verticalArrangement = Arrangement.spacedBy(14.dp)
                 ) {
                     Text(
-                        setupFailureDetails?.let { details ->
-                            buildString {
-                                append(
-                                    if (details.stage == "account_rename" || details.stage == "account_validation" ||
-                                        details.stage == "sudo_policy"
-                                    ) "Account personalization failed" else "Arch setup failed"
-                                )
-                                details.stage?.let { append(" at $it") }
-                                append(" (exit ${details.exitCode}).")
-                            }
-                        } ?: setupError ?: when (setupProgress.stage) {
+                        setupError ?: when (setupProgress.stage) {
                             TerminalSetupStage.IDLE -> if (reusableArchRootfs) {
-                                "An Arch installation is present. Continue setup to install TritonTerm's default developer tools."
-                            } else if (installState.preflightPassed) {
-                                "Arch Linux ARM is ready to install with Fish, Starship, Rustup, Paru, and TCP fakeroot."
-                            } else "Arch Linux ARM is not installed."
+                                "An Arch installation is present. Start the preconfigured Triton shell."
+                            } else {
+                                "Arch Linux ARM is ready to install with the Triton development environment."
+                            }
                             TerminalSetupStage.DOWNLOADING -> "Downloading Arch Linux ARM…"
                             TerminalSetupStage.VERIFYING -> "Checking the downloaded Arch Linux ARM archive…"
                             TerminalSetupStage.CLEANING -> "Checking interrupted-install state without removing files…"
                             TerminalSetupStage.INSTALLING -> "Unpacking Arch Linux ARM…"
-                            TerminalSetupStage.PREPARING -> if (setupProgress.stepCompleted >= 11) {
-                                "Personalizing the selected Linux user…"
-                            } else if (setupProgress.stepCompleted >= 9) {
-                                "Installing Rustup, Fish, Starship, Paru, and TCP fakeroot…"
-                            } else "Preparing the Arch userland for TritonTerm…"
-                            TerminalSetupStage.DEVELOPER_TOOLS -> "Installing Rustup, Fish, Starship, Paru, and TCP fakeroot…"
+                            TerminalSetupStage.PREPARING -> "Preparing the Arch rootfs…"
+                            TerminalSetupStage.DEVELOPER_TOOLS -> "Checking the prebuilt development environment…"
                             TerminalSetupStage.INITIALIZING -> "Initializing Arch package keys…"
                             TerminalSetupStage.READY -> "Starting shell…"
                             TerminalSetupStage.FAILED -> "Setup failed."
@@ -551,22 +523,6 @@ internal fun TerminalScreen() {
                         textAlign = TextAlign.Center,
                         fontSize = 14.sp
                     )
-                    setupFailureDetails?.let { details ->
-                        Column(
-                            modifier = Modifier.fillMaxWidth(),
-                            verticalArrangement = Arrangement.spacedBy(4.dp)
-                        ) {
-                            details.command?.let { command ->
-                                Text("Command: $command", color = Color(0xFFBDBDBD), fontSize = 11.sp, maxLines = 2)
-                            }
-                            details.message?.takeIf { it.isNotBlank() }?.let { message ->
-                                Text(message, color = Color(0xFFFFCC80), fontSize = 11.sp, maxLines = 3)
-                            }
-                            details.stderr.takeLast(3).takeIf { it.isNotEmpty() }?.let { lines ->
-                                Text(lines.joinToString("\n"), color = Color(0xFFFFAB91), fontSize = 10.sp, maxLines = 4)
-                            }
-                        }
-                    }
                     setupWarning?.let {
                         Text(it, color = Color(0xFFFFCC80), textAlign = TextAlign.Center, fontSize = 12.sp)
                     }
@@ -579,27 +535,7 @@ internal fun TerminalScreen() {
                         )
                     }
                     if (!setupReady && setupProgress.stage != TerminalSetupStage.READY) {
-                        val passwd = java.io.File(ArchLinuxArmBootstrap.rootfs(context), "etc/passwd")
-                        val group = java.io.File(ArchLinuxArmBootstrap.rootfs(context), "etc/group")
-                        val root = ArchLinuxArmBootstrap.rootfs(context)
-                        val usernameError = ArchLoginName.validate(
-                            archUsername,
-                            passwd.takeIf { it.isFile }?.readText().orEmpty(),
-                            ArchLoginName.isPersonalizationPending(root, archUsername) || ArchLoginName.fromRootfs(root) == archUsername,
-                            group.takeIf { it.isFile }?.readText().orEmpty()
-                        )
-                        OutlinedTextField(
-                            value = archUsername,
-                            onValueChange = { archUsername = it.take(32) },
-                            enabled = !installState.running && !reusableArchRootfs,
-                            modifier = Modifier.fillMaxWidth(),
-                            singleLine = true,
-                            label = { Text("Linux username") },
-                            supportingText = {
-                                Text(usernameError ?: "Your login name and home directory; default: dev")
-                            },
-                            isError = usernameError != null
-                        )
+                        Text("Linux account · ${ArchGuestUser.NAME}", color = Color(0xFFBDBDBD), fontSize = 13.sp)
                     }
                     if (installState.running) {
                         Text(
@@ -673,25 +609,9 @@ internal fun TerminalScreen() {
                         )
                     } else if (!setupReady) {
                         Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                            if (installState.preflightFailed) {
-                                TextButton(
-                                    enabled = !installState.running,
-                                    onClick = { ArchLinuxArmInstaller.runPreflight(context) }
-                                ) { Text("Retry check") }
-                            }
-                            val passwd = java.io.File(ArchLinuxArmBootstrap.rootfs(context), "etc/passwd")
-                            val group = java.io.File(ArchLinuxArmBootstrap.rootfs(context), "etc/group")
-                            val usernameError = ArchLoginName.validate(
-                                archUsername,
-                                passwd.takeIf { it.isFile }?.readText().orEmpty(),
-                                ArchLoginName.isPersonalizationPending(ArchLinuxArmBootstrap.rootfs(context), archUsername) ||
-                                    ArchLoginName.fromRootfs(ArchLinuxArmBootstrap.rootfs(context)) == archUsername,
-                                group.takeIf { it.isFile }?.readText().orEmpty()
-                            )
                             Button(
-                                enabled = !installState.running && usernameError == null && ArchRootfsRelease.isConfigured() &&
-                                    (reusableArchRootfs || installState.preflightPassed) && !installState.preflightFailed,
-                                onClick = { ArchLinuxArmInstaller.start(context, archUsername) }
+                                enabled = !installState.running && ArchRootfsRelease.isConfigured(),
+                                onClick = { ArchLinuxArmInstaller.start(context) }
                             ) { Text(if (installState.error != null) "Retry setup" else if (reusableArchRootfs) "Continue setup" else "Install Arch") }
                         }
                         if (setupError != null) {
@@ -701,27 +621,6 @@ internal fun TerminalScreen() {
                                 textAlign = TextAlign.Center,
                                 fontSize = 12.sp
                             )
-                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                TextButton(onClick = {
-                                    setupLogText = ArchDeveloperSetupLog.read(context)
-                                    showSetupLog = true
-                                }) { Text("View setup log") }
-                                TextButton(onClick = {
-                                    runCatching {
-                                        val file = TerminalDiagnostics.createShareableSetupLogFile(context)
-                                        val uri = FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
-                                        val intent = Intent(Intent.ACTION_SEND).apply {
-                                            type = "text/plain"
-                                            putExtra(Intent.EXTRA_STREAM, uri)
-                                            clipData = ClipData.newUri(context.contentResolver, "Arch setup log", uri)
-                                            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                                        }
-                                        context.startActivity(Intent.createChooser(intent, "Share Arch setup log"))
-                                    }.onFailure { failure ->
-                                        Toast.makeText(context, "Could not share setup log: ${failure.message}", Toast.LENGTH_LONG).show()
-                                    }
-                                }) { Text("Share setup log") }
-                            }
                         }
                     }
                 }
@@ -849,30 +748,21 @@ internal fun TerminalScreen() {
             onExport = { if (!exportRunning) exportDiagnostics.launch("tritonterm-diagnostics.jsonl") }
         )
     }
-    if (showSetupLog) {
+    if (showFeatureWarnings) {
         AlertDialog(
-            onDismissRequest = { showSetupLog = false },
-            title = { Text("Arch setup log") },
+            onDismissRequest = { showFeatureWarnings = false },
+            title = { Text("Image checks") },
             text = {
                 SelectionContainer {
                     Text(
-                        setupLogText,
+                        installState.featureWarnings.joinToString("\n"),
                         modifier = Modifier.fillMaxWidth().heightIn(max = 440.dp).verticalScroll(rememberScrollState()),
                         fontFamily = FontFamily.Monospace,
-                        fontSize = 11.sp
+                        fontSize = 12.sp
                     )
                 }
             },
-            confirmButton = {
-                TextButton(onClick = {
-                    val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                    clipboard.setPrimaryClip(ClipData.newPlainText("Arch setup log", setupLogText))
-                    Toast.makeText(context, "Setup log copied", Toast.LENGTH_SHORT).show()
-                }) { Text("Copy") }
-            },
-            dismissButton = {
-                TextButton(onClick = { showSetupLog = false }) { Text("Close") }
-            }
+            confirmButton = { TextButton(onClick = { showFeatureWarnings = false }) { Text("Close") } }
         )
     }
 }

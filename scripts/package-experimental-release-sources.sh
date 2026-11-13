@@ -159,7 +159,7 @@ packages (`base`,
 programs. The exact fakeroot source tarball used to build TCP fakeroot 2.1.4 is
 included in this source archive; the setup recipe pins its SHA-256 and uses
 `--with-ipc=tcp`. Paru's pinned bootstrap PKGBUILD and source checksum are in
-`app/src/main/assets/paru-bootstrap.PKGBUILD`.
+`scripts/arch-image/paru-bootstrap.PKGBUILD`.
 
 The release mirrors the exact recipe files so the source URL and patch lists remain
 available if a current package page changes. TritonTerm does not modify these
@@ -168,7 +168,7 @@ including custom and LicenseRef notices, are shipped without alteration in the
 separate license bundle.
 
 The image also includes the Rust crate source cache under
-`/home/dev/.cargo/registry/src/`; this is the exact source cache for the preloaded
+`/home/triton/.cargo/registry/src/`; this is the exact source cache for the preloaded
 Rust development environment. Its crate license files, together with Rustup's
 toolchain and documentation license notices, are included in the license bundle.
 
@@ -257,10 +257,10 @@ mkdir -p "$work/licenses"
 # the full 2.9 GiB rootfs to prepare the standalone notice asset.
 tar --wildcards --wildcards-match-slash -xzf "$archive" -C "$work/licenses" \
     ./usr/share/licenses \
-    './home/dev/.cargo/registry/src/*/*/LICENSE*' \
-    './home/dev/.cargo/registry/src/*/*/COPYING*' \
-    './home/dev/.cargo/registry/src/*/*/NOTICE*' \
-    './home/dev/.rustup/toolchains/*/share/doc/rust/**/LICENSE*'
+    './home/triton/.cargo/registry/src/*/*/LICENSE*' \
+    './home/triton/.cargo/registry/src/*/*/COPYING*' \
+    './home/triton/.cargo/registry/src/*/*/NOTICE*' \
+    './home/triton/.rustup/toolchains/*/share/doc/rust/**/LICENSE*'
 fakeroot_name='fakeroot_2.1.4.orig.tar.xz'
 tar -xOzf "$archive" "./var/cache/tritonterm/fakeroot-tcp/2.1.4/$fakeroot_name" \
     > "$source_tree/$fakeroot_name"
@@ -275,7 +275,7 @@ tar -xOzf "$output_dir/tritonterm-android-pr-source-${version}.tar.gz" \
     source/SOURCE-AVAILABILITY.md > "$output_dir/SOURCE-AVAILABILITY-${version}.md"
 tar --sort=name --mtime='UTC 2026-11-12' --owner=0 --group=0 --numeric-owner \
     -czf "$output_dir/tritonterm-rootfs-licenses-${version}.tar.gz" \
-    -C "$work/licenses" ./usr/share/licenses ./home/dev/.cargo ./home/dev/.rustup
+    -C "$work/licenses" ./usr/share/licenses ./home/triton/.cargo ./home/triton/.rustup
 install -m 0644 "$license_csv" "$output_dir/package-licenses-${version}.csv"
 
 sha256sum \

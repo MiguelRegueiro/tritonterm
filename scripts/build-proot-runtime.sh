@@ -32,77 +32,7 @@ else
     }
 fi
 
-EXTRACTION_PATCH="${PROJECT_ROOT}/scripts/patches/pr-cli-install-progress.patch"
-DIAGNOSTICS_PATCH="${PROJECT_ROOT}/scripts/patches/pr-cli-diagnostics.patch"
-PRESERVE_PATCH="${PROJECT_ROOT}/scripts/patches/pr-cli-preserve-failures.patch"
-USERLAND_PATCH="${PROJECT_ROOT}/scripts/patches/proot-userland-metadata.patch"
-ARCH_USERLAND_PATCH="${PROJECT_ROOT}/scripts/patches/tritonterm-arch-userland.patch"
-apply_runtime_patch() {
-    local patch_file="$1"
-    local marker="$2"
-    local marker_file="${3:-src/pr-cli/src/install.rs}"
-    if [[ -d "${PR_SOURCE}/.git" ]] || git -C "${PR_SOURCE}" rev-parse --git-dir >/dev/null 2>&1; then
-        if git -C "${PR_SOURCE}" apply --check "${patch_file}" 2>/dev/null; then
-            git -C "${PR_SOURCE}" apply "${patch_file}"
-        elif ! grep -qF "${marker}" "${PR_SOURCE}/${marker_file}"; then
-            echo "Could not apply TritonTerm's pinned PRoot patch: ${patch_file}" >&2
-            return 1
-        fi
-    else
-        # Public corresponding-source archives intentionally omit Git metadata.
-        # GNU patch applies the same reviewed patch without requiring a checkout.
-        if (cd "${PR_SOURCE}" && patch --dry-run -p1 < "${patch_file}" >/dev/null); then
-            (cd "${PR_SOURCE}" && patch -p1 < "${patch_file}" >/dev/null)
-        elif ! grep -qF "${marker}" "${PR_SOURCE}/${marker_file}"; then
-            echo "Could not apply TritonTerm's pinned PRoot patch: ${patch_file}" >&2
-            return 1
-        fi
-    fi
-}
-
-apply_runtime_patch "${EXTRACTION_PATCH}" 'write_extraction_progress'
-apply_runtime_patch "${DIAGNOSTICS_PATCH}" 'archive_cache_resolution'
-apply_runtime_patch "${PRESERVE_PATCH}" 'failed_rootfs_preservation'
-apply_runtime_patch "${USERLAND_PATCH}" 'TRITONTERM_USERLAND_METADATA_MODE' 'src/proot/src/GNUmakefile'
-apply_arch_userland_patch() {
-    local -a markers=(
-        'src/pr-cli/src/install.rs:TRITONTERM_ARCH_USERLAND_EXTRACTION_V1'
-        'src/pr-cli/src/login.rs:TRITONTERM_ARCH_USERLAND_LOGIN_V1'
-        'src/pr-cli/src/shared.rs:build_proot_args_for_identity'
-        'src/proot/src/extension/fake_id0/exec.c:TRITONTERM_ARCH_USERLAND_SETUID_V1'
-        'src/proot/src/extension/fake_id0/stat.c:TRITONTERM_ARCH_USERLAND_STATX_V1'
-    )
-    if [[ -d "${PR_SOURCE}/.git" ]] || git -C "${PR_SOURCE}" rev-parse --git-dir >/dev/null 2>&1; then
-        if git -C "${PR_SOURCE}" apply --check "${ARCH_USERLAND_PATCH}" 2>/dev/null; then
-            git -C "${PR_SOURCE}" apply "${ARCH_USERLAND_PATCH}"
-        else
-            local item file marker
-            for item in "${markers[@]}"; do
-                file="${item%%:*}"
-                marker="${item#*:}"
-                grep -qF "${marker}" "${PR_SOURCE}/${file}" || {
-                    echo "PRoot has a partial or incompatible Arch USERLAND patch: ${file} lacks ${marker}" >&2
-                    return 1
-                }
-            done
-        fi
-    else
-        if (cd "${PR_SOURCE}" && patch --dry-run -p1 < "${ARCH_USERLAND_PATCH}" >/dev/null 2>&1); then
-            (cd "${PR_SOURCE}" && patch -p1 < "${ARCH_USERLAND_PATCH}" >/dev/null)
-        else
-            local item file marker
-            for item in "${markers[@]}"; do
-                file="${item%%:*}"
-                marker="${item#*:}"
-                grep -qF "${marker}" "${PR_SOURCE}/${file}" || {
-                    echo "PRoot source snapshot has a partial or incompatible Arch USERLAND patch: ${file} lacks ${marker}" >&2
-                    return 1
-                }
-            done
-        fi
-    fi
-}
-apply_arch_userland_patch
+"${PROJECT_ROOT}/scripts/prepare-proot-source.sh"
 
 if [[ -f "${PR_SOURCE}/vendor/samba/TRITONTERM_TALLOC_COMMIT" ]]; then
     test "$(<"${PR_SOURCE}/vendor/samba/TRITONTERM_TALLOC_COMMIT")" = "2f8dfde1210395175e726455bdb63a7b97245a72" || {

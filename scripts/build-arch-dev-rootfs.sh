@@ -185,10 +185,12 @@ chroot_guest /bin/bash -lc 'pacman-key --init && pacman-key --populate archlinux
 stage='developer_environment_provisioning'
 stage_started="$(date +%s)"
 install -d -m 0700 "$ROOTFS/root/.tritonterm-setup"
-install -m 0755 app/src/main/assets/setup-arch-developer.sh "$ROOTFS/root/.tritonterm-setup/setup-arch-developer.sh"
-install -m 0644 app/src/main/assets/starship.toml "$ROOTFS/root/.tritonterm-setup/starship.toml"
-install -m 0644 app/src/main/assets/tritonterm-fish-config.fish "$ROOTFS/root/.tritonterm-setup/tritonterm-fish-config.fish"
-install -m 0644 app/src/main/assets/paru-bootstrap.PKGBUILD "$ROOTFS/root/.tritonterm-setup/paru-bootstrap.PKGBUILD"
+install -m 0755 scripts/arch-image/setup-arch-developer.sh "$ROOTFS/root/.tritonterm-setup/setup-arch-developer.sh"
+install -m 0644 scripts/arch-image/starship.toml "$ROOTFS/root/.tritonterm-setup/starship.toml"
+install -m 0644 app/src/main/assets/tritonterm-fish-system-config.fish "$ROOTFS/root/.tritonterm-setup/tritonterm-fish-system-config.fish"
+install -m 0644 scripts/arch-image/paru-bootstrap.PKGBUILD "$ROOTFS/root/.tritonterm-setup/paru-bootstrap.PKGBUILD"
+install -d -m 0755 "$ROOTFS/etc/tritonterm"
+install -m 0644 app/src/main/assets/arch-guest-identity-smoke.fish "$ROOTFS/etc/tritonterm/guest-smoke.fish"
 stage='guest_dns_preflight'
 resolved_mirror="$(chroot_guest /usr/bin/getent ahostsv4 mirror.archlinuxarm.org | awk 'NR == 1 { print $1 }')"
 [[ -n "$resolved_mirror" ]] || fail 7 'the guest could not resolve mirror.archlinuxarm.org before pacman provisioning'
@@ -196,6 +198,10 @@ report_line "guest_mirror_ipv4=$resolved_mirror"
 stage='developer_environment_provisioning'
 chroot_guest /bin/bash -lc 'bash /root/.tritonterm-setup/setup-arch-developer.sh' 2>&1 | tee "$BUILD_LOG"
 report_line "developer_provisioning_seconds=$(( $(date +%s) - stage_started ))"
+
+stage='fresh_install_pacman_database_integrity'
+chroot_guest /usr/bin/pacman -Dk
+printf 'TRITONTERM_FRESH_INSTALL_PACMAN_DATABASE_PASSED\n' | tee -a "$report"
 
 stage='prune_boot_only_packages'
 installed_packages="$(chroot_guest /usr/bin/pacman -Qq)"
@@ -207,9 +213,8 @@ chroot_guest /usr/bin/pacman -Dk
 remaining_boot_packages="$(chroot_guest /usr/bin/pacman -Qq | awk '$0 == "linux-aarch64" || $0 == "linux-firmware" || ($0 ~ /^linux-firmware-/ && $0 != "linux-firmware-tools") || $0 == "mkinitcpio" || $0 == "mkinitcpio-busybox"')"
 [[ -z "$remaining_boot_packages" ]] || fail 4 "boot-only packages remain installed: $remaining_boot_packages"
 
-stage='image_personalization_contract'
-install -d -m 0755 "$ROOTFS/etc/tritonterm" "$ROOTFS/usr/lib/tritonterm"
-install -m 0755 app/src/main/assets/personalize-arch-account.sh "$ROOTFS/usr/lib/tritonterm/personalize-account.sh"
+stage='image_identity_contract'
+install -d -m 0755 "$ROOTFS/etc/tritonterm"
 printf '%s\n' "$VERSION" > "$ROOTFS/etc/tritonterm/rootfs-release"
 chmod 0644 "$ROOTFS/etc/tritonterm/rootfs-release"
 printf '%s\n' 'v1' > "$ROOTFS/etc/tritonterm/proot-userland-metadata-v1"
@@ -218,59 +223,50 @@ touch "$ROOTFS/root/.tritonterm-userland-profile-v1"
 chroot_guest /usr/bin/pacman -Qo /usr/bin/fakeroot /usr/bin/rustup /usr/bin/paru > "$OUTPUT_DIR/package-ownership-${VERSION}.txt"
 chroot_guest /usr/bin/pacman -Q > "$OUTPUT_DIR/packages-${VERSION}.txt"
 report_line "installed_package_count=$(wc -l < "$OUTPUT_DIR/packages-${VERSION}.txt" | tr -d ' ')"
-run_image_contract rustup_show /usr/bin/su -l dev -s /usr/bin/fish -c 'rustup show'
-run_image_contract rustc_version /usr/bin/su -l dev -s /usr/bin/fish -c 'rustc --version'
-run_image_contract cargo_version /usr/bin/su -l dev -s /usr/bin/fish -c 'cargo --version'
-run_image_contract starship_login_prompt /usr/bin/su -l dev -s /usr/bin/fish -c 'fish -ic "starship prompt"'
-run_image_contract identity /usr/bin/su -l dev -s /usr/bin/fish -c \
-    'test (id -u) = 1000; and test (id -g) = 1000; and test "$HOME" = /home/dev; and test "$PWD" = "$HOME"; and test "$SHELL" = /usr/bin/fish'
-run_image_contract fakeroot_identity /usr/bin/su -l dev -s /usr/bin/fish -c 'test (fakeroot -- /usr/bin/id -u) = 0'
-run_image_contract sudo_pacman_allowed /usr/bin/su -l dev -s /usr/bin/fish -c 'sudo -n /usr/bin/pacman -Q pacman'
-run_image_contract sudo_unrestricted_root_denied /usr/bin/su -l dev -s /usr/bin/fish -c 'not sudo -n /usr/bin/id -u >/dev/null 2>&1'
-run_image_contract fish_abbreviation /usr/bin/su -l dev -s /usr/bin/fish -c 'fish -ic "abbr -q up"'
-run_image_contract fish_starship_prompt_function /usr/bin/su -l dev -s /usr/bin/fish -c 'fish -ic "functions fish_prompt | string match -q \"*starship*\""'
+run_image_contract fixed_account /bin/bash -lc '[[ "$(getent passwd triton | cut -d: -f3-4)" == "1000:1000" && "$(getent passwd triton | cut -d: -f6-7)" == "/home/triton:/usr/bin/fish" && "$(getent group 1000 | cut -d: -f1)" == triton && "$(stat -c %u:%g /home/triton)" == "1000:1000" && -z "$(getent passwd alarm || true)" ]]
+! grep -qE "usermod[[:space:]]+--login|groupmod[[:space:]]+--new-name" /root/.tritonterm-setup/setup-arch-developer.sh'
+run_image_contract rustup_show /usr/bin/su -l triton -s /usr/bin/fish -c 'rustup show'
+run_image_contract rustc_version /usr/bin/su -l triton -s /usr/bin/fish -c 'rustc --version'
+run_image_contract cargo_version /usr/bin/su -l triton -s /usr/bin/fish -c 'cargo --version'
+run_image_contract starship_login_prompt /usr/bin/su -l triton -s /usr/bin/fish -c 'fish -ic "starship prompt"'
+run_image_contract identity /usr/bin/su -l triton -s /usr/bin/fish -c \
+    'test (id -u) = 1000; and test (id -g) = 1000; and test "$USER" = triton; and test "$HOME" = /home/triton; and test "$PWD" = "$HOME"; and test "$SHELL" = /usr/bin/fish; and test -x (command -s id); and test -x (command -s sudo); and test -x (command -s fakeroot); and set -q TRITONTERM_FISH_CONFIG_LOADED'
+stage='packaged_fish_smoke'
+fish_smoke_output="$OUTPUT_DIR/contract-${VERSION}-packaged_fish_smoke.txt"
+chroot_guest /usr/bin/su -l triton -s /usr/bin/fish -c \
+    '/usr/bin/fish -l -i -c "source /etc/tritonterm/guest-smoke.fish"' > "$fish_smoke_output" 2>&1 || {
+    cat "$fish_smoke_output" >&2
+    fail 4 'the packaged Fish smoke script did not complete under the triton login environment'
+}
+cat "$fish_smoke_output"
+if grep -q '^CHECK_FAILED ' "$fish_smoke_output" || ! grep -q '^TRITONTERM_GUEST_CHECKS_COMPLETED failures=0$' "$fish_smoke_output"; then
+    fail 4 "the packaged Fish login smoke reported failed features; output: $fish_smoke_output"
+fi
+run_image_contract fakeroot_identity /usr/bin/su -l triton -s /usr/bin/fish -c 'test (fakeroot -- /usr/bin/id -u) = 0'
+run_image_contract sudo_pacman_allowed /usr/bin/su -l triton -s /usr/bin/fish -c 'sudo -n /usr/bin/pacman -Q pacman'
+run_image_contract sudo_pacman_database_check /usr/bin/su -l triton -s /usr/bin/fish -c 'sudo -n /usr/bin/pacman -Dk'
+run_image_contract sudo_unrestricted_root_denied /usr/bin/su -l triton -s /usr/bin/fish -c 'not sudo -n /usr/bin/id -u >/dev/null 2>&1'
+run_image_contract fish_abbreviation /usr/bin/su -l triton -s /usr/bin/fish -c 'fish -ic "abbr -q up"'
+run_image_contract fish_starship_prompt_function /usr/bin/su -l triton -s /usr/bin/fish -c 'fish -ic "functions fish_prompt | string match -q \"*starship*\""'
 printf 'TRITONTERM_NATIVE_ARM64_USERLAND_SMOKE_PASSED\n' | tee -a "$report"
 cp "$ROOTFS/var/cache/tritonterm/developer-setup.log" "$OUTPUT_DIR/build-log-${VERSION}.txt"
 
-stage='account_personalization_smoke'
-chroot_guest /usr/lib/tritonterm/personalize-account.sh tritonterm-review
-chroot_guest /bin/bash -lc '
-    entry="$(getent passwd tritonterm-review)"
-    [[ -n "$entry" ]]
-    IFS=: read -r name _ uid gid _ home shell <<< "$entry"
-    [[ "$name" == tritonterm-review && "$uid" == 1000 && "$gid" == 1000 &&
-       "$home" == /home/tritonterm-review && "$shell" == /usr/bin/fish ]]
-    [[ "$(getent group 1000 | cut -d: -f1)" == tritonterm-review ]]
-    id -nG tritonterm-review | tr " " "\n" | grep -qx wheel
-    [[ -d /home/tritonterm-review/.rustup/toolchains/stable-aarch64-unknown-linux-gnu ]]
-    [[ -d /home/tritonterm-review/.cargo ]]
-    [[ "$(cat /etc/tritonterm/selected-user)" == tritonterm-review ]]
-'
-chroot_guest /usr/bin/su -l tritonterm-review -s /usr/bin/fish -c \
-    'contains -- "$HOME/.local/bin" $PATH; and not contains -- /home/dev/.local/bin $PATH'
-chroot_guest /usr/bin/su -l tritonterm-review -s /usr/bin/fish -c \
-    'sudo -n /usr/bin/pacman -Q pacman >/dev/null; and not sudo -n /usr/bin/id -u >/dev/null 2>&1'
-if grep -Fq '/home/dev/.local/bin' "$ROOTFS/home/tritonterm-review/.config/fish/fish_variables"; then
-    fail 4 'renamed account Fish universal variables retain the template home path'
-fi
-printf 'TRITONTERM_ACCOUNT_PERSONALIZATION_SMOKE_PASSED\n' | tee -a "$report"
-chroot_guest /usr/bin/usermod --login dev tritonterm-review
-chroot_guest /usr/bin/groupmod --new-name dev tritonterm-review
-chroot_guest /usr/bin/usermod --home /home/dev --move-home dev
-rm -f "$ROOTFS/etc/tritonterm/selected-user" "$ROOTFS/etc/tritonterm/account-selection"
-printf '%s\n' 'dev ALL=(root) NOPASSWD: /usr/bin/pacman' > "$ROOTFS/etc/sudoers.d/10-tritonterm-pacman"
-chmod 0440 "$ROOTFS/etc/sudoers.d/10-tritonterm-pacman"
-chroot_guest /usr/bin/visudo -cf /etc/sudoers
-chroot_guest /bin/bash -lc '[[ "$(getent passwd dev | cut -d: -f3-4)" == "1000:1000" && "$(getent passwd dev | cut -d: -f6-7)" == "/home/dev:/usr/bin/fish" ]]'
+stage='repeated_pacman_database_integrity'
+chroot_guest /usr/bin/pacman -Dk
+printf 'TRITONTERM_REPEATED_PACMAN_DATABASE_PASSED\n' | tee -a "$report"
+
+stage='native_pr_cli_login_integration'
+./scripts/test-native-pr-cli-login.sh "$ROOTFS" "$OUTPUT_DIR"
+printf 'TRITONTERM_NATIVE_PR_CLI_LOGIN_PASSED\n' | tee -a "$report"
 
 # The setup log above is a CI build artifact, not device history. Keep it in
 # OUTPUT_DIR for review, but never bake it into the distributable rootfs where
-# the first account-personalization attempt would append to stale CI output.
+# a later image build could append to stale CI output.
 rm -f "$ROOTFS/var/cache/tritonterm/developer-setup.log"
 
 stage='remove_machine_specific_state'
 chroot_guest /usr/bin/usermod --password '!' root
-chroot_guest /usr/bin/usermod --password '!' dev
+chroot_guest /usr/bin/usermod --password '!' triton
 # pacman-key starts a persistent gpg-agent inside the chroot. Stop it before
 # unmounting so its chroot root cannot keep the temporary rootfs busy.
 chroot_guest /usr/bin/gpgconf --homedir /etc/pacman.d/gnupg --kill all
@@ -278,24 +274,23 @@ active_password_hashes="$(awk -F: '$2 !~ /^(!|\*)/ { print $1 }' "$ROOTFS/etc/sh
 [[ -z "$active_password_hashes" ]] || fail 4 "image contains accounts with active password hashes: $active_password_hashes"
 # Account-management tools retain previous databases in *- files. The base
 # Arch Linux ARM image's UID-1000 account can have a usable password hash in
-# shadow-, even after the live account is locked and renamed to dev. Never ship
-# these snapshots: first-boot personalization must not leave a recoverable
-# shared template credential in the image.
+# shadow-, even after the live account is locked. Never ship
+# these snapshots so the image cannot retain a recoverable template credential.
 rm -f "$ROOTFS/etc/passwd-" "$ROOTFS/etc/group-" "$ROOTFS/etc/shadow-" "$ROOTFS/etc/gshadow-"
 unmount_guest_filesystems
 rm -f "$ROOTFS/etc/resolv.conf"
 if [[ "$rootfs_resolv_existed" == true ]]; then
     cp -a "$ROOTFS_RESOLV_BACKUP" "$ROOTFS/etc/resolv.conf"
 fi
-rm -f "$ROOTFS/etc/machine-id" "$ROOTFS/var/lib/dbus/machine-id" "$ROOTFS/root/.bash_history" "$ROOTFS/home/dev/.bash_history"
+rm -f "$ROOTFS/etc/machine-id" "$ROOTFS/var/lib/dbus/machine-id" "$ROOTFS/root/.bash_history" "$ROOTFS/home/triton/.bash_history"
 rm -f "$ROOTFS"/etc/ssh/ssh_host_* 2>/dev/null || true
-rm -rf "$ROOTFS/root/.ssh" "$ROOTFS/home/dev/.ssh"
-rm -rf "$ROOTFS/root/.gnupg" "$ROOTFS/home/dev/.gnupg"
+rm -rf "$ROOTFS/root/.ssh" "$ROOTFS/home/triton/.ssh"
+rm -rf "$ROOTFS/root/.gnupg" "$ROOTFS/home/triton/.gnupg"
 # pacman-key --init creates a local secret key. Never ship the builder's identity;
 # first installation initializes and populates a device-local keyring instead.
 rm -rf "$ROOTFS/etc/pacman.d/gnupg"
 rm -f "$ROOTFS/root/.tritonterm-pacman-keyring-ready"
-rm -rf "$ROOTFS/home/dev/rustup-smoke" "$ROOTFS/home/dev/.cache/tritonterm/paru-2.2.0"
+rm -rf "$ROOTFS/home/triton/rustup-smoke" "$ROOTFS/home/triton/.cache/tritonterm/paru-2.2.0"
 find "$ROOTFS/var/cache/pacman/pkg" -mindepth 1 -maxdepth 1 -type f -delete 2>/dev/null || true
 
 stage='rootfs_archive_creation'
@@ -352,7 +347,7 @@ mkdir -p "$verify_dir"
 tar --numeric-owner --xattrs --acls -xzf "$OUTPUT_ARCHIVE" -C "$verify_dir"
 [[ -s "$verify_dir/etc/os-release" && -d "$verify_dir/var/lib/pacman/local" &&
    -x "$verify_dir/usr/bin/fish" && -x "$verify_dir/usr/bin/paru" &&
-   -x "$verify_dir/usr/bin/rustup" && -d "$verify_dir/home/dev/.rustup/toolchains" &&
+   -x "$verify_dir/usr/bin/rustup" && -d "$verify_dir/home/triton/.rustup/toolchains" &&
    ! -e "$verify_dir/var/cache/tritonterm/developer-setup.log" ]] ||
     fail 6 're-extracted image did not pass required filesystem checks'
 [[ ! -e "$verify_dir/etc/pacman.d/gnupg" && ! -e "$verify_dir/root/.tritonterm-pacman-keyring-ready" ]] ||
