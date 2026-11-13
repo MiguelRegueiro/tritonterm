@@ -519,7 +519,11 @@ internal fun TerminalScreen() {
                     Text(
                         setupFailureDetails?.let { details ->
                             buildString {
-                                append("Developer setup failed")
+                                append(
+                                    if (details.stage == "account_rename" || details.stage == "account_validation" ||
+                                        details.stage == "sudo_policy"
+                                    ) "Account personalization failed" else "Arch setup failed"
+                                )
                                 details.stage?.let { append(" at $it") }
                                 append(" (exit ${details.exitCode}).")
                             }
@@ -533,7 +537,9 @@ internal fun TerminalScreen() {
                             TerminalSetupStage.VERIFYING -> "Checking the downloaded Arch Linux ARM archive…"
                             TerminalSetupStage.CLEANING -> "Checking interrupted-install state without removing files…"
                             TerminalSetupStage.INSTALLING -> "Unpacking Arch Linux ARM…"
-                            TerminalSetupStage.PREPARING -> if (setupProgress.stepCompleted >= 9) {
+                            TerminalSetupStage.PREPARING -> if (setupProgress.stepCompleted >= 11) {
+                                "Personalizing the selected Linux user…"
+                            } else if (setupProgress.stepCompleted >= 9) {
                                 "Installing Rustup, Fish, Starship, Paru, and TCP fakeroot…"
                             } else "Preparing the Arch userland for TritonTerm…"
                             TerminalSetupStage.DEVELOPER_TOOLS -> "Installing Rustup, Fish, Starship, Paru, and TCP fakeroot…"

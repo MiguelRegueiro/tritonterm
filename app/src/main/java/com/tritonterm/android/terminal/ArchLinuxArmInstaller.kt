@@ -65,7 +65,11 @@ internal object ArchDeveloperSetupLog {
     }
 
     fun parse(text: String, fallbackExitCode: Int): SetupFailureDetails {
-        val lines = text.lineSequence().toList()
+        val allLines = text.lineSequence().toList()
+        // The rootfs may retain prior failed attempts. A current attempt marker
+        // scopes failure details to the latest run while preserving history.
+        val attemptStart = allLines.indexOfLast { it.startsWith("[Arch setup] ATTEMPT_STARTED ") }
+        val lines = if (attemptStart >= 0) allLines.drop(attemptStart) else allLines
         val failureLine = lines.lastOrNull { failure.matches(it) }
         val match = failureLine?.let(failure::matchEntire)
         val errorCommand = lines.asReversed().firstNotNullOfOrNullCompat { command.matchEntire(it)?.groupValues?.get(1) }

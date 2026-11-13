@@ -263,6 +263,11 @@ chmod 0440 "$ROOTFS/etc/sudoers.d/10-tritonterm-pacman"
 chroot_guest /usr/bin/visudo -cf /etc/sudoers
 chroot_guest /bin/bash -lc '[[ "$(getent passwd dev | cut -d: -f3-4)" == "1000:1000" && "$(getent passwd dev | cut -d: -f6-7)" == "/home/dev:/usr/bin/fish" ]]'
 
+# The setup log above is a CI build artifact, not device history. Keep it in
+# OUTPUT_DIR for review, but never bake it into the distributable rootfs where
+# the first account-personalization attempt would append to stale CI output.
+rm -f "$ROOTFS/var/cache/tritonterm/developer-setup.log"
+
 stage='remove_machine_specific_state'
 chroot_guest /usr/bin/usermod --password '!' root
 chroot_guest /usr/bin/usermod --password '!' dev
@@ -347,7 +352,8 @@ mkdir -p "$verify_dir"
 tar --numeric-owner --xattrs --acls -xzf "$OUTPUT_ARCHIVE" -C "$verify_dir"
 [[ -s "$verify_dir/etc/os-release" && -d "$verify_dir/var/lib/pacman/local" &&
    -x "$verify_dir/usr/bin/fish" && -x "$verify_dir/usr/bin/paru" &&
-   -x "$verify_dir/usr/bin/rustup" && -d "$verify_dir/home/dev/.rustup/toolchains" ]] ||
+   -x "$verify_dir/usr/bin/rustup" && -d "$verify_dir/home/dev/.rustup/toolchains" &&
+   ! -e "$verify_dir/var/cache/tritonterm/developer-setup.log" ]] ||
     fail 6 're-extracted image did not pass required filesystem checks'
 [[ ! -e "$verify_dir/etc/pacman.d/gnupg" && ! -e "$verify_dir/root/.tritonterm-pacman-keyring-ready" ]] ||
     fail 6 're-extracted image contains the build host pacman keyring'
