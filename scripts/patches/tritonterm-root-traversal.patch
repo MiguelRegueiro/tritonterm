@@ -1,0 +1,108 @@
+diff --git a/src/pr-cli/src/install.rs b/src/pr-cli/src/install.rs
+index 0000000..0000000 100644
+--- a/src/pr-cli/src/install.rs
++++ b/src/pr-cli/src/install.rs
+@@ -925,7 +925,7 @@ fn write_userland_root_metadata(root: &Path, mode: u32, uid: u64, gid: u64) -> Result<(), String> {
+     write_userland_metadata_at(
+         &userland_metadata_root(root).join(".proot-meta-file.root"),
+-        mode,
++        mode | 0o005,
+         uid,
+         gid,
+         "/",
+     )
+@@ -932,6 +932,33 @@ fn write_userland_root_metadata(root: &Path, mode: u32, uid: u64, gid: u64) -> Result<(), String> {
+ }
+ 
++/// TRITONTERM_ARCH_ROOT_TRAVERSAL_V1: keep `/` searchable for the configured
++/// unprivileged account. Some base rootfs archives ship the root directory as
++/// 0750 root:root, making every otherwise-public absolute path inaccessible.
++/// This changes only guest metadata for `/`, not Android host permissions.
++pub(crate) fn ensure_userland_root_traversable(root: &Path, guest_uid: u32) -> Result<(), String> {
++    if guest_uid == 0 {
++        return Ok(());
++    }
++    let metadata_path = userland_metadata_root(root).join(".proot-meta-file.root");
++    let contents = fs::read_to_string(&metadata_path).map_err(|e| {
++        format!("read guest root ownership metadata {}: {}", metadata_path.display(), e)
++    })?;
++    let mut fields = contents.split_whitespace();
++    let mode_text = fields.next().ok_or_else(|| "guest root metadata has no mode".to_string())?;
++    let uid_text = fields.next().ok_or_else(|| "guest root metadata has no uid".to_string())?;
++    let gid_text = fields.next().ok_or_else(|| "guest root metadata has no gid".to_string())?;
++    let mode = u32::from_str_radix(mode_text, 8)
++        .map_err(|e| format!("invalid guest root mode '{}': {}", mode_text, e))?;
++    let owner = uid_text.parse::<u64>().map_err(|e| format!("invalid guest root uid: {}", e))?;
++    let group = gid_text.parse::<u64>().map_err(|e| format!("invalid guest root gid: {}", e))?;
++    let traversable_mode = mode | 0o005;
++    if traversable_mode != mode {
++        write_userland_metadata_at(&metadata_path, traversable_mode, owner, group, "/")?;
++    }
++    Ok(())
++}
++
+ /// Store archive ownership and mode outside host inode metadata. Android app
+ /// storage cannot chown files to guest UID 0 and clears setuid bits, while the
+ /// PRoot USERLAND fake_id0 extension reads this per-path record to enforce the
+ /// guest's real Unix ownership, permissions, and setuid behavior.
+diff --git a/src/pr-cli/src/login.rs b/src/pr-cli/src/login.rs
+index 0000000..0000000 100644
+--- a/src/pr-cli/src/login.rs
++++ b/src/pr-cli/src/login.rs
+@@ -233,13 +233,18 @@ pub fn command_login(
+ 
+     update_etc_environment(&rootfs);
+ 
+-    let (guest_uid, guest_gid, guest_cwd) = if uses_userland_account_metadata(&rootfs) {
++    let userland_account = uses_userland_account_metadata(&rootfs);
++    let (guest_uid, guest_gid, guest_cwd) = if userland_account {
+         (entry.uid, entry.gid, entry.home.as_str())
+     } else {
+         (0, 0, "/")
+     };
++    if userland_account {
++        // TRITONTERM_ARCH_ROOT_TRAVERSAL_LOGIN_V1 repairs existing rootfs metadata.
++        crate::install::ensure_userland_root_traversable(Path::new(&rootfs), guest_uid)?;
++    }
+     let args = build_proot_args_for_identity(
+         &rootfs,
+         isolated,
+         no_link2symlink,
+         custom_bind,
+diff --git a/src/pr-cli/src/install.rs b/src/pr-cli/src/install.rs
+index 0000000..0000000 100644
+--- a/src/pr-cli/src/install.rs
++++ b/src/pr-cli/src/install.rs
+@@ -2104,6 +2104,6 @@ mod tests {
+             &archive,
+             &[
+-                RawEntry::Dir("top/"),
++                RawEntry::DirMode("top/", 0o750),
+                 RawEntry::Dir("top/etc/"),
+                 RawEntry::File("top/etc/sudo.conf", b"policy", 0o644),
+                 RawEntry::Dir("top/var/"),
+@@ -2211,6 +2211,24 @@ mod tests {
+         let _ = fs::remove_dir_all(&tmp);
+     }
+ 
++    #[test]
++    fn existing_userland_root_metadata_becomes_searchable_for_unprivileged_login() {
++        let root = unique_temp_dir("pr-cli-userland-root-traversal");
++        let metadata = userland_metadata_root(&root).join(".proot-meta-file.root");
++        fs::create_dir_all(metadata.parent().unwrap()).expect("create metadata directory");
++        fs::write(&metadata, "750\n0\n0\n").expect("write old root metadata");
++
++        ensure_userland_root_traversable(&root, 1000).expect("repair root traversal metadata");
++        assert_eq!(fs::read_to_string(&metadata).unwrap(), "755\n0\n0\n");
++        ensure_userland_root_traversable(&root, 1000).expect("repair is idempotent");
++        assert_eq!(fs::read_to_string(&metadata).unwrap(), "755\n0\n0\n");
++
++        fs::write(&metadata, "750\n0\n0\n").expect("restore root-only permissions");
++        ensure_userland_root_traversable(&root, 0).expect("root login does not rewrite mode");
++        assert_eq!(fs::read_to_string(&metadata).unwrap(), "750\n0\n0\n");
++        let _ = fs::remove_dir_all(&root);
++    }
++
+     #[test]
+     fn extract_tarball_rejects_an_entry_that_climbs_out_of_the_rootfs() {
+         let tmp = unique_temp_dir("pr-cli-extract-dotdot");

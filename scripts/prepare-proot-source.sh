@@ -87,4 +87,23 @@ else
         }
     done
 fi
+root_traversal_patch="$PROJECT_ROOT/scripts/patches/tritonterm-root-traversal.patch"
+if git -C "$PR_SOURCE" rev-parse --git-dir >/dev/null 2>&1; then
+    if git -C "$PR_SOURCE" apply --check "$root_traversal_patch" 2>/dev/null; then
+        git -C "$PR_SOURCE" apply "$root_traversal_patch"
+    elif ! grep -qF 'TRITONTERM_ARCH_ROOT_TRAVERSAL_V1' "$PR_SOURCE/src/pr-cli/src/install.rs" \
+        || ! grep -qF 'TRITONTERM_ARCH_ROOT_TRAVERSAL_LOGIN_V1' "$PR_SOURCE/src/pr-cli/src/login.rs"; then
+        echo "Cannot apply pinned TritonTerm patch: $root_traversal_patch" >&2
+        exit 1
+    fi
+elif (cd "$PR_SOURCE" && patch --dry-run -p1 < "$root_traversal_patch" >/dev/null 2>&1); then
+    (cd "$PR_SOURCE" && patch -p1 < "$root_traversal_patch" >/dev/null)
+elif ! grep -qF 'TRITONTERM_ARCH_ROOT_TRAVERSAL_V1' "$PR_SOURCE/src/pr-cli/src/install.rs" \
+    || ! grep -qF 'TRITONTERM_ARCH_ROOT_TRAVERSAL_LOGIN_V1' "$PR_SOURCE/src/pr-cli/src/login.rs"; then
+    echo "Cannot apply pinned TritonTerm patch to source snapshot: $root_traversal_patch" >&2
+    exit 1
+fi
+archive_test_patch="$PROJECT_ROOT/scripts/patches/pr-cli-rootfs-archive-test.patch"
+apply_patch_or_check_marker "$archive_test_patch" \
+    'extract_arch_fakeroot_payload' 'src/pr-cli/src/install.rs'
 printf 'TRITONTERM_PINNED_PROOT_PATCHES_READY %s\n' "$EXPECTED_PR_COMMIT"
