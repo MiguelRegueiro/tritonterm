@@ -13,7 +13,7 @@ readonly FAKEROOT_PARENT='/opt/tritonterm/fakeroot-tcp'
 readonly FAKEROOT_PREFIX="${FAKEROOT_PARENT}/${FAKEROOT_VERSION}"
 readonly FAKEROOT_CURRENT="${FAKEROOT_PARENT}/current"
 readonly ASSET_DIR='/root/.tritonterm-setup'
-readonly DEV_USER='dev'
+readonly TRITON_USER='triton'
 readonly READY_MARKER='/root/.tritonterm-developer-environment-ready'
 readonly RUN_LOG='/var/cache/tritonterm/developer-setup.log'
 readonly PACMAN_LOCK='/var/lib/pacman/db.lck'
@@ -139,57 +139,45 @@ if [[ -n "$standalone_rust_packages" ]]; then
 fi
 
 stage='development_user'
-if ! getent passwd "$DEV_USER" >/dev/null; then
-    uid_1000_entry="$(getent passwd 1000 || true)"
-    gid_1000_entry="$(getent group 1000 || true)"
-    if [[ -z "$uid_1000_entry" && -z "$gid_1000_entry" ]]; then
-        say 'Creating the unprivileged template account.'
-        useradd --create-home --uid 1000 --user-group --groups wheel --shell /usr/bin/fish "$DEV_USER"
-    else
-        # The official Arch Linux ARM base image reserves UID/GID 1000 for
-        # its default `alarm` login. Reuse that known template identity on this
-        # fresh image, preserving its numeric ownership and home contents.
-        IFS=: read -r uid_1000_name _ uid_1000_value uid_1000_gid _ uid_1000_home uid_1000_shell <<< "$uid_1000_entry"
-        IFS=: read -r gid_1000_name _ gid_1000_value gid_1000_members <<< "$gid_1000_entry"
-        if [[ "$uid_1000_name" != alarm || "$uid_1000_value" != 1000 || "$uid_1000_gid" != 1000 ||
-              "$uid_1000_home" != /home/alarm || "$uid_1000_shell" != /bin/bash ||
-              "$gid_1000_name" != alarm || "$gid_1000_value" != 1000 ]]; then
-            die 24 "UID/GID 1000 is occupied by an unexpected base-image identity (user=${uid_1000_name:-none}, group=${gid_1000_name:-none}); refusing to repurpose it"
-        fi
-        getent passwd "$DEV_USER" >/dev/null && die 24 'the template login name dev already exists with an unexpected UID'
-        getent group "$DEV_USER" >/dev/null && die 24 'the template group name dev already exists with an unexpected GID'
-        if [[ -e /home/dev ]]; then
-            die 24 'cannot rename the base alarm account because /home/dev already exists'
-        fi
-        say 'Renaming the verified Arch Linux ARM alarm template account to dev while preserving UID/GID 1000 and its home files.'
-        usermod --login "$DEV_USER" alarm
-        groupmod --new-name "$DEV_USER" alarm
-        usermod --home /home/dev --move-home "$DEV_USER"
+if ! getent passwd "$TRITON_USER" >/dev/null; then
+    # This is a fresh image build. Drop the upstream `alarm` convenience
+    # account and create TritonTerm's account as an independent image record;
+    # runtime setup never renames or personalizes accounts.
+    if getent passwd alarm >/dev/null; then
+        [[ "$(id -u alarm)" == 1000 && "$(id -g alarm)" == 1000 && "$(getent passwd alarm | cut -d: -f6)" == /home/alarm ]] ||
+            die 24 'the base alarm account does not match the expected UID/GID 1000 template; refusing to alter it'
+        [[ ! -e /home/triton ]] || die 24 'cannot create triton because /home/triton already exists'
+        say 'Removing the base image alarm account before creating triton directly.'
+        userdel --remove alarm
+        getent group alarm >/dev/null && groupdel alarm
     fi
+    [[ -z "$(getent passwd 1000 || true)" && -z "$(getent group 1000 || true)" ]] ||
+        die 24 'UID/GID 1000 remains occupied; refusing to repurpose an unexpected account or group'
+    getent passwd "$TRITON_USER" >/dev/null && die 24 'the triton account already exists with an unexpected UID'
+    getent group "$TRITON_USER" >/dev/null && die 24 'the triton group already exists with an unexpected GID'
+    say 'Creating the unprivileged triton account directly with UID/GID 1000.'
+    useradd --create-home --uid 1000 --user-group --groups wheel --shell /usr/bin/fish "$TRITON_USER"
 fi
-IFS=: read -r _ _ dev_uid dev_gid _ dev_home _ < <(getent passwd "$DEV_USER")
-[[ "${dev_uid:-}" == 1000 && "${dev_gid:-}" == 1000 && -n "${dev_home:-}" && "$dev_home" == /home/dev ]] ||
-    die 24 'template dev must own UID/GID 1000 and /home/dev'
-dev_group="$(id -gn "$DEV_USER")"
-install -d -o "$DEV_USER" -g "$dev_group" -m 0750 "$dev_home"
-install -d -o "$DEV_USER" -g "$dev_group" -m 0750 \
-    "$dev_home/.local" "$dev_home/.local/bin" \
-    "$dev_home/.config" "$dev_home/.config/fish/conf.d" \
-    "$dev_home/.config/paru" "$dev_home/.config/pacman" \
-    "$dev_home/.cache/fish" "$dev_home/.cache/tritonterm" "$dev_home/.cargo" "$dev_home/.rustup"
-# The Arch Linux ARM base login already owns UID 1000, but its inherited dot
-# directories may have restrictive modes or unexpected group ownership. Make
-# the preserved template home writable by its renamed owner before starting
-# Fish or rustup; this changes no file's numeric UID.
-chown -R "$DEV_USER:$dev_group" "$dev_home"
-chmod u+rwx "$dev_home" "$dev_home/.config" "$dev_home/.config/fish" \
-    "$dev_home/.cache" "$dev_home/.cache/fish"
-usermod --shell /usr/bin/fish "$DEV_USER"
-usermod --append --groups wheel "$DEV_USER"
+IFS=: read -r _ _ triton_uid triton_gid _ triton_home _ < <(getent passwd "$TRITON_USER")
+[[ "${triton_uid:-}" == 1000 && "${triton_gid:-}" == 1000 && -n "${triton_home:-}" && "$triton_home" == /home/triton ]] ||
+    die 24 'template triton must own UID/GID 1000 and /home/triton'
+triton_group="$(id -gn "$TRITON_USER")"
+install -d -o "$TRITON_USER" -g "$triton_group" -m 0750 "$triton_home"
+install -d -o "$TRITON_USER" -g "$triton_group" -m 0750 \
+    "$triton_home/.local" "$triton_home/.local/bin" \
+    "$triton_home/.config" "$triton_home/.config/fish" \
+    "$triton_home/.config/paru" "$triton_home/.config/pacman" \
+    "$triton_home/.cache/fish" "$triton_home/.cache/tritonterm" "$triton_home/.cargo" "$triton_home/.rustup"
+# Normalize the fresh account's home ownership before starting Fish or rustup.
+chown -R "$TRITON_USER:$triton_group" "$triton_home"
+chmod u+rwx "$triton_home" "$triton_home/.config" "$triton_home/.config/fish" \
+    "$triton_home/.cache" "$triton_home/.cache/fish"
+usermod --shell /usr/bin/fish "$TRITON_USER"
+usermod --append --groups wheel "$TRITON_USER"
 
 stage='restricted_package_authorization'
 sudoers='/etc/sudoers.d/10-tritonterm-pacman'
-sudoers_line="${DEV_USER} ALL=(root) NOPASSWD: /usr/bin/pacman"
+sudoers_line="${TRITON_USER} ALL=(root) NOPASSWD: /usr/bin/pacman"
 install -d -m 0750 /etc/sudoers.d
 printf '%s\n' "$sudoers_line" > "${sudoers}.tritonterm-new"
 chmod 0440 "${sudoers}.tritonterm-new"
@@ -215,15 +203,11 @@ esac
 export SYSTEMD_OFFLINE=1
 PROFILE
 chmod 0644 /etc/profile.d/tritonterm-devtools.sh
-cat > "$dev_home/.config/fish/conf.d/20-tritonterm-path.fish" <<'FISH_PATH'
-fish_add_path --path --prepend "/opt/tritonterm/fakeroot-tcp/2.1.4/bin" "$HOME/.cargo/bin" "$HOME/.local/bin"
-set -gx SYSTEMD_OFFLINE 1
-FISH_PATH
-install -o "$DEV_USER" -g "$dev_group" -m 0644 \
-    "${ASSET_DIR}/tritonterm-fish-config.fish" "$dev_home/.config/fish/config.fish"
-install -o "$DEV_USER" -g "$dev_group" -m 0644 \
-    "${ASSET_DIR}/starship.toml" "$dev_home/.config/starship.toml"
-cat > "$dev_home/.config/pacman/makepkg.conf" <<'MAKEPKG_CONF'
+install -d -m 0755 /etc/fish/conf.d
+install -m 0644 "${ASSET_DIR}/tritonterm-fish-system-config.fish" /etc/fish/conf.d/20-tritonterm.fish
+install -o "$TRITON_USER" -g "$triton_group" -m 0644 \
+    "${ASSET_DIR}/starship.toml" "$triton_home/.config/starship.toml"
+cat > "$triton_home/.config/pacman/makepkg.conf" <<'MAKEPKG_CONF'
 # TritonTerm: use PRoot-compatible, pacman-only authorization for package installs.
 PACMAN_AUTH=(/usr/bin/sudo -n)
 # Keep TCP fakeroot's loopback protocol available to packaging subprocesses.
@@ -233,24 +217,23 @@ PACMAN_AUTH=(/usr/bin/sudo -n)
 PKGEXT='.pkg.tar.zst'
 COMPRESSZST=(zstd -c -z -q -)
 MAKEPKG_CONF
-cat > "$dev_home/.config/paru/paru.conf" <<'PARU_CONF'
+cat > "$triton_home/.config/paru/paru.conf" <<'PARU_CONF'
 [bin]
 Makepkg = /usr/bin/makepkg
 Pacman = /usr/bin/pacman
 Sudo = /usr/bin/sudo
 PARU_CONF
-chmod 0644 "$dev_home/.config/fish/conf.d/20-tritonterm-path.fish" \
-    "$dev_home/.config/pacman/makepkg.conf" "$dev_home/.config/paru/paru.conf"
+chmod 0644 "$triton_home/.config/pacman/makepkg.conf" "$triton_home/.config/paru/paru.conf"
 
-run_dev_fish() { su -l "$DEV_USER" -s /usr/bin/fish -c "$1"; }
+run_triton_fish() { su -l "$TRITON_USER" -s /usr/bin/fish -c "$1"; }
 
 stage='rustup_stable_toolchain'
-say 'Installing the official stable AArch64 GNU toolchain as dev with Arch rustup.'
-run_dev_fish 'rustup default stable'
-run_dev_fish 'rustup show'
-run_dev_fish 'rustup show active-toolchain | string match -q "stable-aarch64-unknown-linux-gnu*"'
-run_dev_fish 'rustc --version'
-run_dev_fish 'cargo --version'
+say 'Installing the official stable AArch64 GNU toolchain as triton with Arch rustup.'
+run_triton_fish 'rustup default stable'
+run_triton_fish 'rustup show'
+run_triton_fish 'rustup show active-toolchain | string match -q "stable-aarch64-unknown-linux-gnu*"'
+run_triton_fish 'rustc --version'
+run_triton_fish 'cargo --version'
 
 stage='tcp_fakeroot_source'
 if [[ ! -f "$FAKEROOT_ARCHIVE" ]] ||
@@ -312,32 +295,32 @@ if [[ ! -x "${FAKEROOT_PREFIX}/bin/fakeroot" || ! -x "${FAKEROOT_PREFIX}/bin/fak
 fi
 if [[ -L "$FAKEROOT_CURRENT" ]]; then rm "$FAKEROOT_CURRENT"; fi
 ln -s "$FAKEROOT_VERSION" "$FAKEROOT_CURRENT"
-rm -f "$dev_home/.local/bin/fakeroot"
-fake_uid="$(run_dev_fish 'fakeroot -- /usr/bin/id -u')"
-fake_gid="$(run_dev_fish 'fakeroot -- /usr/bin/id -g')"
+rm -f "$triton_home/.local/bin/fakeroot"
+fake_uid="$(run_triton_fish 'fakeroot -- /usr/bin/id -u')"
+fake_gid="$(run_triton_fish 'fakeroot -- /usr/bin/id -g')"
 [[ "$fake_uid" == 0 && "$fake_gid" == 0 ]] ||
     die 31 "TCP fakeroot identity smoke failed (reported uid=${fake_uid:-empty}, gid=${fake_gid:-empty})"
 say 'TCP fakeroot identity smoke passed: fake uid=0 gid=0.'
 fake_file="/tmp/tritonterm-fakeroot-file-smoke-$$"
-fake_owner="$(run_dev_fish "fakeroot -- /bin/sh -c 'touch \"$fake_file\"; chown 0:0 \"$fake_file\"; /usr/bin/stat -c %u:%g \"$fake_file\"'")"
+fake_owner="$(run_triton_fish "fakeroot -- /bin/sh -c 'touch \"$fake_file\"; chown 0:0 \"$fake_file\"; /usr/bin/stat -c %u:%g \"$fake_file\"'")"
 [[ "$fake_owner" == 0:0 ]] ||
     die 31 "TCP fakeroot file metadata smoke failed (reported owner=${fake_owner:-empty})"
 rm -f "$fake_file"
 say 'TCP fakeroot file metadata smoke passed: fake owner=0:0.'
 
 stage='makepkg_archive_smoke'
-say 'Running normal makepkg as dev; the CI chroot is on a nosuid mount, so pacman installation is verified separately as root.'
+say 'Running normal makepkg as triton; the CI chroot is on a nosuid mount, so pacman installation is verified separately as root.'
 smoke="/tmp/tritonterm-package-smoke-$$"
-install -d -o "$DEV_USER" -g "$dev_group" -m 0750 "$smoke" "$smoke/pkgdest"
+install -d -o "$TRITON_USER" -g "$triton_group" -m 0750 "$smoke" "$smoke/pkgdest"
 makepkg_connect_trace="$smoke/makepkg-connect.trace"
-selected_fakeroot="$(run_dev_fish 'command -v fakeroot')"
+selected_fakeroot="$(run_triton_fish 'command -v fakeroot')"
 say "makepkg PATH selects ${selected_fakeroot}."
 archive_probe="$smoke/archive-probe"
 fake_archive="$smoke/fakeroot-archive-smoke.tar.zst"
-install -d -o "$DEV_USER" -g "$dev_group" -m 0750 "$archive_probe"
+install -d -o "$TRITON_USER" -g "$triton_group" -m 0750 "$archive_probe"
 printf 'TritonTerm fakeroot archive probe\n' > "$archive_probe/payload"
-chown -R "$DEV_USER:$dev_group" "$archive_probe"
-run_dev_fish "fakeroot -- /bin/sh -c 'chown -R 0:0 \"$archive_probe\" && /usr/bin/bsdtar --numeric-owner --zstd -cpf \"$fake_archive\" -C \"$archive_probe\" .'"
+chown -R "$TRITON_USER:$triton_group" "$archive_probe"
+run_triton_fish "fakeroot -- /bin/sh -c 'chown -R 0:0 \"$archive_probe\" && /usr/bin/bsdtar --numeric-owner --zstd -cpf \"$fake_archive\" -C \"$archive_probe\" .'"
 bsdtar --numeric-owner -tvf "$fake_archive" | awk '
     { print > "/dev/stderr" }
     $NF ~ /(^|\/)payload$/ && (($2 == "0" && $3 == "0") ||
@@ -346,12 +329,12 @@ bsdtar --numeric-owner -tvf "$fake_archive" | awk '
     END { exit !found }
 ' || die 32 'TCP fakeroot bsdtar archive probe did not record root:root ownership'
 say 'TCP fakeroot zstd-compressed bsdtar archive probe passed: root:root ownership preserved.'
-nested_fakeroot_version="$(run_dev_fish 'fakeroot -- /bin/sh -c "fakeroot -v"')"
+nested_fakeroot_version="$(run_triton_fish 'fakeroot -- /bin/sh -c "fakeroot -v"')"
 say "Nested TCP fakeroot version query passed: ${nested_fakeroot_version}"
-run_dev_fish 'fakeroot -- /usr/bin/pacman -Qi pacman >/dev/null'
+run_triton_fish 'fakeroot -- /usr/bin/pacman -Qi pacman >/dev/null'
 say 'TCP fakeroot package metadata query passed.'
 zstd_trace="$smoke/zstd-fakeroot.trace"
-if ! run_dev_fish \
+if ! run_triton_fish \
     "strace -f -e trace=process,network -o '$zstd_trace' fakeroot -- /bin/sh -c 'set -o pipefail; printf smoke | /usr/bin/zstd -c -z -q - >/dev/null'"; then
     say "The zstd subprocess failed inside TCP fakeroot; process/network trace follows. Full trace: ${zstd_trace}"
     if [[ -f "$zstd_trace" ]]; then
@@ -374,9 +357,9 @@ package() {
     chmod 4755 "$pkgdir/usr/share/tritonterm-default-smoke/installed"
 }
 SMOKE_PKGBUILD
-chown "$DEV_USER:$dev_group" "$smoke/PKGBUILD"
+chown "$TRITON_USER:$triton_group" "$smoke/PKGBUILD"
 makepkg_result=0
-run_dev_fish \
+run_triton_fish \
     "cd '$smoke' && env PKGDEST='$smoke/pkgdest' strace -f -e trace=process,network -o '$makepkg_connect_trace' makepkg --noconfirm --syncdeps --force" || makepkg_result=$?
 if (( makepkg_result != 0 )); then
     say "makepkg failed with exit ${makepkg_result}; fakeroot process and network lifecycle follows. Full trace: ${makepkg_connect_trace}"
@@ -397,18 +380,18 @@ bsdtar -tvf "$archive" | awk '
     }
     END { exit !found }
 ' || die 33 'makepkg archive did not preserve root:root ownership and mode 4755'
-run_dev_fish "sudo -n /usr/bin/pacman -U --noconfirm '$archive'"
+run_triton_fish "sudo -n /usr/bin/pacman -U --noconfirm '$archive'"
 test -f /usr/share/tritonterm-default-smoke/installed
-run_dev_fish 'sudo -n /usr/bin/pacman -Rns --noconfirm tritonterm-default-smoke'
+run_triton_fish 'sudo -n /usr/bin/pacman -Rns --noconfirm tritonterm-default-smoke'
 rm -rf "$smoke"
 
 stage='paru_source_build'
-say 'Building Paru from its pinned upstream v2.2.0 source as dev.'
-paru_build="$dev_home/.cache/tritonterm/paru-2.2.0"
-install -d -o "$DEV_USER" -g "$dev_group" -m 0750 "$paru_build"
-install -o "$DEV_USER" -g "$dev_group" -m 0644 \
+say 'Building Paru from its pinned upstream v2.2.0 source as triton.'
+paru_build="$triton_home/.cache/tritonterm/paru-2.2.0"
+install -d -o "$TRITON_USER" -g "$triton_group" -m 0750 "$paru_build"
+install -o "$TRITON_USER" -g "$triton_group" -m 0644 \
     "${ASSET_DIR}/paru-bootstrap.PKGBUILD" "$paru_build/PKGBUILD"
-run_dev_fish "cd '$paru_build' && makepkg --noconfirm --syncdeps --force"
+run_triton_fish "cd '$paru_build' && makepkg --noconfirm --syncdeps --force"
 paru_package="$(find "$paru_build" -maxdepth 1 -type f -name 'paru-2.2.0-*.pkg.tar.*' -print -quit)"
 [[ -n "$paru_package" ]] || die 34 'the pinned Paru PKGBUILD produced no package archive'
 require_pacman_transaction 'install Paru package' pacman -U --noconfirm "$paru_package"
@@ -416,9 +399,9 @@ pacman -Qo /usr/bin/paru
 
 stage='paru_install_smoke'
 say 'Verifying the normal paru command with a local, trusted smoke PKGBUILD.'
-run_dev_fish 'paru --version'
+run_triton_fish 'paru --version'
 paru_smoke="/tmp/tritonterm-paru-smoke-$$"
-install -d -o "$DEV_USER" -g "$dev_group" -m 0750 "$paru_smoke" "$paru_smoke/pkgdest"
+install -d -o "$TRITON_USER" -g "$triton_group" -m 0750 "$paru_smoke" "$paru_smoke/pkgdest"
 cat > "$paru_smoke/PKGBUILD" <<'PARU_SMOKE_PKGBUILD'
 pkgname=tritonterm-paru-default-smoke
 pkgver=1
@@ -432,8 +415,8 @@ package() {
     chmod 4755 "$pkgdir/usr/share/tritonterm-paru-default-smoke/installed"
 }
 PARU_SMOKE_PKGBUILD
-chown "$DEV_USER:$dev_group" "$paru_smoke/PKGBUILD"
-run_dev_fish "cd '$paru_smoke' && env PKGDEST='$paru_smoke/pkgdest' paru --noconfirm --skipreview -B ."
+chown "$TRITON_USER:$triton_group" "$paru_smoke/PKGBUILD"
+run_triton_fish "cd '$paru_smoke' && env PKGDEST='$paru_smoke/pkgdest' paru --noconfirm --skipreview -B ."
 paru_archive="$(find "$paru_smoke/pkgdest" -maxdepth 1 -type f -name '*.pkg.tar.*' -print -quit)"
 [[ -n "$paru_archive" ]] || die 35 'Paru did not produce a package archive in the fresh PKGDEST'
 bsdtar -tvf "$paru_archive" | awk '
@@ -452,8 +435,8 @@ rm -rf "$paru_smoke"
 
 stage='rust_compilation_smoke'
 say 'Compiling and executing a dependency-free Rust program from fresh login shells.'
-rust_smoke="$dev_home/rustup-smoke"
-install -d -o "$DEV_USER" -g "$dev_group" -m 0750 "$rust_smoke/src"
+rust_smoke="$triton_home/rustup-smoke"
+install -d -o "$TRITON_USER" -g "$triton_group" -m 0750 "$rust_smoke/src"
 cat > "$rust_smoke/Cargo.toml" <<'CARGO_TOML'
 [package]
 name = "tritonterm-rustup-smoke"
@@ -463,26 +446,26 @@ CARGO_TOML
 cat > "$rust_smoke/src/main.rs" <<'RUST_MAIN'
 fn main() { println!("TRITONTERM_RUSTUP_STABLE_BUILD_OK"); }
 RUST_MAIN
-chown -R "$DEV_USER:$dev_group" "$rust_smoke"
-run_dev_fish "cd '$rust_smoke' && cargo build --offline && ./target/debug/tritonterm-rustup-smoke"
-run_dev_fish 'rustup show'
-run_dev_fish 'rustc --version'
-run_dev_fish 'cargo --version'
-run_dev_fish 'fish -ic "functions fish_prompt | string match -q \"*starship*\""'
-run_dev_fish 'env STARSHIP_CONFIG="$HOME/.config/starship.toml" starship prompt >/dev/null'
-run_dev_fish 'bash -lc "rustup show active-toolchain && rustc --version && cargo --version"'
+chown -R "$TRITON_USER:$triton_group" "$rust_smoke"
+run_triton_fish "cd '$rust_smoke' && cargo build --offline && ./target/debug/tritonterm-rustup-smoke"
+run_triton_fish 'rustup show'
+run_triton_fish 'rustc --version'
+run_triton_fish 'cargo --version'
+run_triton_fish 'fish -ic "functions fish_prompt | string match -q \"*starship*\""'
+run_triton_fish 'env STARSHIP_CONFIG="$HOME/.config/starship.toml" starship prompt >/dev/null'
+run_triton_fish 'bash -lc "rustup show active-toolchain && rustc --version && cargo --version"'
 
 stage='final_validation'
 pacman -Dk
 pacman -Qo /usr/bin/fakeroot
 pacman -Qo /usr/bin/rustup
 pacman -Qo /usr/bin/paru
-[[ "$(getent passwd "$DEV_USER" | cut -d: -f7)" == /usr/bin/fish ]]
+[[ "$(getent passwd "$TRITON_USER" | cut -d: -f7)" == /usr/bin/fish ]]
 [[ "$(readlink "$FAKEROOT_CURRENT")" == "$FAKEROOT_VERSION" ]]
-run_dev_fish "string match -q '${FAKEROOT_PREFIX}/bin/fakeroot' (command -v fakeroot)"
-run_dev_fish "test -r '${FAKEROOT_PREFIX}/lib/libfakeroot.so'"
-run_dev_fish 'sudo -n /usr/bin/pacman -Q pacman >/dev/null'
-[[ -x "$dev_home/.rustup/toolchains/stable-aarch64-unknown-linux-gnu/bin/rustc" ]]
+run_triton_fish "string match -q '${FAKEROOT_PREFIX}/bin/fakeroot' (command -v fakeroot)"
+run_triton_fish "test -r '${FAKEROOT_PREFIX}/lib/libfakeroot.so'"
+run_triton_fish 'sudo -n /usr/bin/pacman -Q pacman >/dev/null'
+[[ -x "$triton_home/.rustup/toolchains/stable-aarch64-unknown-linux-gnu/bin/rustc" ]]
 [[ -x /usr/bin/paru && -x /usr/bin/fish && -x /usr/bin/starship ]]
 printf '%s\n' "$VERSION" > "$READY_MARKER"
 say 'Fresh Arch developer environment passed pacman, TCP fakeroot, makepkg, Paru, Fish/Starship, and Rustup checks.'

@@ -10,7 +10,6 @@ import android.system.OsConstants
 import org.json.JSONObject
 import java.io.File
 import java.io.ByteArrayOutputStream
-import java.io.FileInputStream
 import java.io.FileOutputStream
 import java.io.InputStream
 import java.io.OutputStream
@@ -440,26 +439,6 @@ internal object TerminalDiagnostics {
             stream.fd.sync()
         }
         check(output.isFile && output.length() > 0L) { "Shareable diagnostics file was not written." }
-        return output
-    }
-
-    fun createShareableSetupLogFile(context: Context): File {
-        val source = ArchDeveloperSetupLog.file(context)
-        check(java.nio.file.Files.isRegularFile(source.toPath(), java.nio.file.LinkOption.NOFOLLOW_LINKS)) {
-            "The Arch developer setup log is not available yet."
-        }
-        check(source.length() in 1L..(64L * 1024 * 1024)) { "The Arch setup log is empty or unexpectedly large." }
-        val directory = File(context.cacheDir, "diagnostics").apply { check(isDirectory || mkdirs()) }
-        val output = File(directory, "tritonterm-arch-setup.log")
-        FileInputStream(source).use { input ->
-            FileOutputStream(output).use { stream ->
-                input.copyTo(stream)
-                stream.fd.sync()
-            }
-        }
-        check(output.isFile && output.length() == source.length() && output.length() > 0L) {
-            "The complete setup log could not be prepared for sharing."
-        }
         return output
     }
 

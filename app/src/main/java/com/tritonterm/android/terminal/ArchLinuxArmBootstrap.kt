@@ -35,7 +35,7 @@ internal object ArchLinuxArmBootstrap {
         val root = rootfs(context)
         return ArchRootfsReadiness.isPrepared(root, installingMarker(context)) &&
             ArchRootfsRelease.isPreparedImage(root) &&
-            ArchDeveloperEnvironment.isReady(root)
+            ArchGuestUser.hasUsableShell(root)
     }
 
     /** A completed extraction can be resumed through pacman preparation after an app/process interruption. */
@@ -345,7 +345,7 @@ internal object ArchRootfsReadiness {
         isExtracted(root, installingMarker) && File(root, PROFILE_MARKER).isFile
 }
 
-/** Readiness is committed only after the complete default developer toolchain passes smoke checks. */
+/** Prebuilt-image feature inventory. Failures are reported but do not gate shell startup. */
 internal object ArchDeveloperEnvironment {
     const val VERSION = "5"
     const val SOURCE_SHA256 = "0822bd5a9f0cf19d2ba0546b88b0432d4d3d9917db62c57b74044ccadba06e49"
@@ -354,64 +354,76 @@ internal object ArchDeveloperEnvironment {
     const val READY_MARKER = "root/.tritonterm-developer-environment-ready"
     const val FAKEROOT_PREFIX = "opt/tritonterm/fakeroot-tcp"
 
-    fun isReady(root: File): Boolean {
+    fun isReady(root: File): Boolean = missingRequirements(root).isEmpty()
+
+    fun missingRequirements(root: File): List<String> {
+        val missing = mutableListOf<String>()
         val marker = File(root, READY_MARKER)
         val prefix = File(root, "$FAKEROOT_PREFIX/$FAKEROOT_VERSION")
-        val passwd = File(root, "etc/passwd")
-        val selectedUser = ArchLoginName.fromRootfs(root) ?: return false
-        val devHome = runCatching {
-            passwd.useLines { lines ->
-                lines.mapNotNull { line ->
+        val passwdEntry = runCatching {
+            File(root, "etc/passwd").useLines { lines ->
+                lines.firstNotNullOfOrNull { line ->
                     val fields = line.split(':')
-                    fields.takeIf { it.size >= 7 && it[0] == selectedUser && it[2] == "1000" && it[3] == "1000" && it[6] == "/usr/bin/fish" }?.get(5)
-                }.firstOrNull()
+                    fields.takeIf { it.size >= 7 && it[0] == ArchGuestUser.NAME }
+                }
             }
         }.getOrNull()
+        val passwdValid = passwdEntry != null && passwdEntry[2] == ArchGuestUser.UID.toString() &&
+            passwdEntry[3] == ArchGuestUser.GID.toString() && passwdEntry[5] == ArchGuestUser.HOME &&
+            passwdEntry[6] == "/usr/bin/fish"
+        if (!passwdValid) missing += "account triton must be UID/GID 1000, home /home/triton, shell /usr/bin/fish"
+        val homeFile = File(root, ArchGuestUser.HOME.removePrefix("/"))
         val sudoers = File(root, "etc/sudoers.d/10-tritonterm-pacman")
-        val home = devHome?.trimStart('/') ?: return false
-        val homeFile = File(root, home)
         val makepkgConfig = File(homeFile, ".config/pacman/makepkg.conf")
         val paruConfig = File(homeFile, ".config/paru/paru.conf")
-        return marker.isFile && runCatching { marker.readText().trim() == VERSION }.getOrDefault(false) &&
-            File(prefix, "bin/fakeroot").canExecute() && File(prefix, "bin/faked").canExecute() &&
-            File(prefix, "lib/libfakeroot-0.so").isFile &&
-            File(prefix, "lib/libfakeroot.so").isFile &&
-            File(root, "$FAKEROOT_PREFIX/current").let { it.isSymbolicLinkTo(FAKEROOT_VERSION) } &&
-            File(root, "etc/profile.d/tritonterm-devtools.sh").let { profile ->
-                profile.isFile && runCatching {
-                    profile.readText().contains("/opt/tritonterm/fakeroot-tcp/$FAKEROOT_VERSION/bin") &&
-                        profile.readText().contains("export SYSTEMD_OFFLINE=1")
-                }.getOrDefault(false)
-            } &&
-            File(homeFile, ".config/fish/conf.d/20-tritonterm-path.fish").let { fishEnv ->
-                fishEnv.isFile && runCatching {
-                    fishEnv.readText().contains("/opt/tritonterm/fakeroot-tcp/$FAKEROOT_VERSION/bin") &&
-                        fishEnv.readText().contains("set -gx SYSTEMD_OFFLINE 1")
-                }.getOrDefault(false)
-            } &&
-            listOf("makepkg", "sudo", "rustup", "rustc", "cargo", "fish", "starship", "paru", "fakeroot")
-                .all { File(root, "usr/bin/$it").canExecute() } &&
-            File(homeFile, ".rustup/toolchains/stable-aarch64-unknown-linux-gnu/bin/rustc").canExecute() &&
-            File(homeFile, ".config/starship.toml").isFile &&
-            File(homeFile, ".config/fish/config.fish").let { fishConfig ->
-                fishConfig.isFile && runCatching {
-                    val config = fishConfig.readText()
-                    config.contains("function fish_greeting") && config.contains("abbr --add up 'paru -Syu'") &&
-                        config.contains("starship init fish | source")
-                }.getOrDefault(false)
-            } &&
-            makepkgConfig.isFile && runCatching { makepkgConfig.readText().contains("PACMAN_AUTH=(/usr/bin/sudo -n)") }.getOrDefault(false) &&
-            paruConfig.isFile && runCatching { paruConfig.readText().contains("Sudo = /usr/bin/sudo") }.getOrDefault(false) &&
-            sudoers.isFile && runCatching { sudoers.readText().lines().contains("$selectedUser ALL=(root) NOPASSWD: /usr/bin/pacman") }.getOrDefault(false) &&
-            File(root, "etc/group").let { groups ->
-                groups.isFile && runCatching {
-                    groups.readLines().any { line ->
-                        val fields = line.split(':')
-                        fields.size >= 4 && fields[0] == "wheel" && selectedUser in fields[3].split(',')
-                    }
-                }.getOrDefault(false)
-            }
+        val markerValid = marker.isFile && runCatching { marker.readText().trim() == VERSION }.getOrDefault(false)
+        if (!markerValid) {
+            missing += "developer readiness marker v$VERSION"
+        }
+        val requiredFiles = listOf(
+            "etc/passwd", "etc/group", "etc/sudoers.d/10-tritonterm-pacman",
+            "usr/bin/id", "usr/bin/pacman", "usr/bin/makepkg", "usr/bin/sudo", "usr/bin/rustup",
+            "usr/bin/rustc", "usr/bin/cargo", "usr/bin/fish", "usr/bin/starship", "usr/bin/paru",
+            "usr/bin/fakeroot", "opt/tritonterm/fakeroot-tcp/$FAKEROOT_VERSION/bin/fakeroot",
+            "opt/tritonterm/fakeroot-tcp/$FAKEROOT_VERSION/bin/faked",
+            "opt/tritonterm/fakeroot-tcp/$FAKEROOT_VERSION/lib/libfakeroot-0.so",
+            "opt/tritonterm/fakeroot-tcp/$FAKEROOT_VERSION/lib/libfakeroot.so",
+            "home/triton/.rustup/toolchains/stable-aarch64-unknown-linux-gnu/bin/rustc",
+            "home/triton/.config/starship.toml", "etc/fish/conf.d/20-tritonterm.fish",
+            "home/triton/.config/pacman/makepkg.conf", "home/triton/.config/paru/paru.conf",
+            "etc/profile.d/tritonterm-devtools.sh"
+        )
+        requiredFiles.forEach { relative ->
+            val file = File(root, relative)
+            if (!file.exists() || (relative.contains("/bin/") && !file.canExecute())) missing += "/$relative"
+        }
+        if (!File(root, "$FAKEROOT_PREFIX/current").isSymbolicLinkTo(FAKEROOT_VERSION)) {
+            missing += "TCP fakeroot current symlink"
+        }
+        val profile = File(root, "etc/profile.d/tritonterm-devtools.sh")
+        if (!profile.readIfPresent().contains("/opt/tritonterm/fakeroot-tcp/$FAKEROOT_VERSION/bin") ||
+            !profile.readIfPresent().contains("export SYSTEMD_OFFLINE=1")) missing += "persistent PATH profile"
+        val fishConfig = File(root, "etc/fish/conf.d/20-tritonterm.fish").readIfPresent()
+        if (!fishConfig.contains("/usr/bin") ||
+            !fishConfig.contains("/opt/tritonterm/fakeroot-tcp/$FAKEROOT_VERSION/bin") ||
+            !fishConfig.contains("set -gx SYSTEMD_OFFLINE 1") ||
+            !fishConfig.contains("function fish_greeting") ||
+            !fishConfig.contains("abbr --add up 'paru -Syu'") ||
+            !fishConfig.contains("starship init fish | source")) missing += "system-wide Fish PATH, greeting, abbreviation, or Starship configuration"
+        if (!makepkgConfig.readIfPresent().contains("PACMAN_AUTH=(/usr/bin/sudo -n)")) missing += "makepkg pacman authorization configuration"
+        if (!paruConfig.readIfPresent().contains("Sudo = /usr/bin/sudo")) missing += "Paru sudo configuration"
+        if (!sudoers.readIfPresent().lines().contains("${ArchGuestUser.NAME} ALL=(root) NOPASSWD: /usr/bin/pacman")) {
+            missing += "restricted pacman sudo policy"
+        }
+        val groups = File(root, "etc/group").readIfPresent().lineSequence().any { line ->
+            val fields = line.split(':')
+            fields.size >= 4 && fields[0] == "wheel" && ArchGuestUser.NAME in fields[3].split(',')
+        }
+        if (!groups) missing += "triton wheel group membership"
+        return missing.distinct()
     }
+
+    private fun File.readIfPresent(): String = runCatching { readText() }.getOrDefault("")
 
     private fun File.isSymbolicLinkTo(target: String): Boolean =
         runCatching { java.nio.file.Files.readSymbolicLink(toPath()).toString() == target }.getOrDefault(false)

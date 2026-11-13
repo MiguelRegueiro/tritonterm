@@ -186,14 +186,6 @@ internal object PacmanRecoveryState {
     fun shouldWarn(state: LockState, noProcessDurationMs: Long): Boolean =
         state == LockState.POSSIBLY_STALE && noProcessDurationMs >= STALE_LOCK_WARNING_DELAY_MS
 
-    fun hasLegacySetupEvidence(root: File): Boolean {
-        val log = File(root, "var/cache/tritonterm/developer-setup.log")
-        if (!java.nio.file.Files.isRegularFile(log.toPath(), java.nio.file.LinkOption.NOFOLLOW_LINKS)) return false
-        return runCatching {
-            log.useLines { lines -> lines.any { it.contains("Synchronizing and updating the fresh Arch rootfs before installing development packages.") } }
-        }.getOrDefault(false)
-    }
-
     fun hasDatabaseLock(context: Context): Boolean = state(context) != LockState.CLEAR
 
     private fun hasPacmanProcess(): Boolean {
@@ -268,46 +260,25 @@ internal object TerminalSetupProgressFile {
     }.getOrNull()
 }
 
-internal object ArchLoginName {
-    private val syntax = Regex("^[a-z_][a-z0-9_-]{0,31}$")
-    private val reserved = setOf("root", "daemon", "bin", "sys", "sync", "games", "man", "lp", "mail", "news", "uucp", "proxy", "www-data", "backup", "list", "irc", "nobody", "systemd-network", "systemd-resolve")
+internal object ArchGuestUser {
+    const val NAME = "triton"
+    const val UID = 1000
+    const val GID = 1000
+    const val HOME = "/home/triton"
 
-    fun validate(
-        candidate: String,
-        passwdText: String,
-        allowPendingRename: Boolean = false,
-        groupText: String = ""
-    ): String? {
-        if (!syntax.matches(candidate)) return "Use 1–32 lowercase letters, digits, underscores, or hyphens; the first character must be a letter or underscore."
-        if (candidate.endsWith("-") || candidate.endsWith(".")) return "The username cannot end with punctuation."
-        if (candidate in reserved) return "That username is reserved by the system."
-        val existing = passwdText.lineSequence().mapNotNull { line ->
-            line.substringBefore(':').takeIf { it.isNotEmpty() }
-        }.toSet()
-        if (candidate != "dev" && candidate in existing && !allowPendingRename) return "That username already exists in this Arch image."
-        if (candidate != "dev" && groupText.lineSequence().any { it.substringBefore(':') == candidate } && !allowPendingRename) {
-            return "That name is already used by a system group."
-        }
-        return null
-    }
-
-    fun isPersonalizationPending(root: File, candidate: String): Boolean {
-        return pendingUsername(root) == candidate
-    }
-
-    fun pendingUsername(root: File): String? {
-        val state = File(root, "etc/tritonterm/account-selection")
-        if (!state.isFile || java.nio.file.Files.isSymbolicLink(state.toPath())) return null
-        return runCatching {
-            state.readLines().firstOrNull { it.startsWith("username=") }
-                ?.substringAfter('=')?.takeIf { validate(it, "") == null }
-        }.getOrNull()
-    }
-
-    fun fromRootfs(root: File): String? {
-        val marker = File(root, "etc/tritonterm/selected-user")
-        if (!marker.isFile || java.nio.file.Files.isSymbolicLink(marker.toPath())) return null
-        return marker.readText().trim().takeIf { validate(it, "") == null }
+    /** Shell availability is independent of optional developer-tool checks. */
+    fun hasUsableShell(root: File): Boolean {
+        val account = runCatching {
+            File(root, "etc/passwd").useLines { lines ->
+                lines.firstNotNullOfOrNull { line ->
+                    val fields = line.split(':')
+                    fields.takeIf { it.size >= 7 && it[0] == NAME }
+                }
+            }
+        }.getOrNull() ?: return false
+        return account[2] == UID.toString() && account[3] == GID.toString() &&
+            account[5] == HOME && account[6] == "/usr/bin/fish" &&
+            File(root, "usr/bin/fish").canExecute() && File(root, HOME.removePrefix("/")).isDirectory
     }
 }
 
@@ -352,7 +323,8 @@ internal class ArchLinuxArmBackend : TerminalBackend {
     ) = ArchLinuxArmBootstrap.prepare(context, onProgress)
 
     override fun start(context: Context, client: TerminalSessionClient): TerminalSession {
-        // Also migrate pre-existing installations when the user next opens the shell.
+        // Keep the existing tested pacman/PRoot settings in place for fresh and
+        // previously prepared rootfs images; this does not run a package transaction.
         PacmanConfigCompatibility.migrate(context)
         val prefix = File(context.filesDir, "usr")
         val bin = File(prefix, "bin")
@@ -374,7 +346,7 @@ internal class ArchLinuxArmBackend : TerminalBackend {
         linkNativeExecutable(nativeLibs, "libproot.so", File(bin, "proot"))
         val cli = File(nativeLibs, "libpr-cli.so").absolutePath
         val guestRoot = ArchLinuxArmBootstrap.rootfs(context)
-        val loginUser = ArchLoginName.fromRootfs(guestRoot) ?: error("Arch developer username is not configured.")
+        val loginUser = ArchGuestUser.NAME
         val environment = arrayOf(
             "APP_PREFIX=${prefix.absolutePath}",
             "APP_HOME=${File(context.filesDir, "home").absolutePath}",
@@ -383,6 +355,10 @@ internal class ArchLinuxArmBackend : TerminalBackend {
             "TMPDIR=${cache.absolutePath}",
             "PROOT_TMP_DIR=${cache.absolutePath}",
             "PROOT_NO_SECCOMP=1",
+            // The pinned Arch PRoot build uses this flag to read archive UID/GID
+            // and mode records from the sibling metadata tree. Without it,
+            // guest commands such as id and setuid sudo see Android inode data.
+            "TRITONTERM_PROOT_USERLAND_METADATA=1",
             "PROOT_CRASH_DIAGNOSTICS=1",
             "PROOT_CRASH_DIAGNOSTICS_FILE=${TerminalDiagnostics.crashFile(context).absolutePath}",
             "TRITONTERM_DIAGNOSTICS_FILE=${TerminalDiagnostics.file(context).absolutePath}",

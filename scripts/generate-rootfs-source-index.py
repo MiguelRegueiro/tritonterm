@@ -161,7 +161,7 @@ def main():
             continue
         package_version = package_rows[0]["version"]
         if pkgbase == "paru":
-            recipe_file = "app/src/main/assets/paru-bootstrap.PKGBUILD"
+            recipe_file = "scripts/arch-image/paru-bootstrap.PKGBUILD"
             found[pkgbase] = {
                 "source_type": "AUR recipe bundled with TritonTerm source",
                 "commit": "AUR snapshot and upstream source are checksum-pinned in the bundled PKGBUILD",

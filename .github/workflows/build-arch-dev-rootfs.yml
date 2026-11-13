@@ -21,11 +21,34 @@ jobs:
     steps:
       - name: Check out build recipes
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          submodules: true
 
       - name: Install host image tools
         run: |
           sudo apt-get update
-          sudo apt-get install --yes curl gnupg libarchive-tools openssl
+          sudo apt-get install --yes build-essential curl gnupg libarchive-tools libtalloc-dev openssl pkg-config
+
+      - name: Prepare the pinned native PRoot test toolchain
+        run: |
+          if ! command -v rustup >/dev/null 2>&1; then
+            curl --fail --location --proto '=https' --tlsv1.2 https://sh.rustup.rs --output "$RUNNER_TEMP/rustup-init.sh"
+            sh "$RUNNER_TEMP/rustup-init.sh" -y --no-modify-path --default-toolchain none --profile minimal
+          fi
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+          "$HOME/.cargo/bin/rustup" toolchain install 1.98.0 --profile minimal --no-self-update
+
+      - name: Build native PRoot login test binaries
+        run: |
+          test "$(git -C third_party/oonid-pr rev-parse HEAD)" = 31afc11ca3e675fa8bbbe530979afc8c467218dc
+          ./scripts/prepare-proot-source.sh
+          "$HOME/.cargo/bin/cargo" +1.98.0 test --manifest-path third_party/oonid-pr/src/pr-cli/Cargo.toml --locked
+          make -C third_party/oonid-pr/src/proot/src -j2 proot loader/loader
+          "$HOME/.cargo/bin/cargo" +1.98.0 build --manifest-path third_party/oonid-pr/src/pr-cli/Cargo.toml --release --locked
+          install -d -m 0755 "$RUNNER_TEMP/tritonterm-native-pr-cli"
+          install -m 0755 third_party/oonid-pr/src/proot/src/proot "$RUNNER_TEMP/tritonterm-native-pr-cli/libproot.so"
+          install -m 0755 third_party/oonid-pr/src/proot/src/loader/loader "$RUNNER_TEMP/tritonterm-native-pr-cli/libproot-loader.so"
+          install -m 0755 third_party/oonid-pr/src/pr-cli/target/release/pr-cli "$RUNNER_TEMP/tritonterm-native-pr-cli/libpr-cli.so"
 
       - name: Prepare protected signing inputs
         env:
@@ -43,9 +66,10 @@ jobs:
           TRITONTERM_ROOTFS_SIGNING_KEY: ${{ runner.temp }}/rootfs-signing-key.pem
           TRITONTERM_ROOTFS_SIGNING_PASSPHRASE_FILE: ${{ runner.temp }}/rootfs-signing-passphrase
           TRITONTERM_ROOTFS_WORK_PARENT: ${{ runner.temp }}
+          TRITONTERM_NATIVE_PR_CLI_DIR: ${{ runner.temp }}/tritonterm-native-pr-cli
           ROOTFS_VERSION: ${{ inputs.rootfs_version }}
         run: |
-          sudo --preserve-env=TRITONTERM_ROOTFS_SIGNING_KEY,TRITONTERM_ROOTFS_SIGNING_PASSPHRASE_FILE,TRITONTERM_ROOTFS_WORK_PARENT \
+          sudo --preserve-env=TRITONTERM_ROOTFS_SIGNING_KEY,TRITONTERM_ROOTFS_SIGNING_PASSPHRASE_FILE,TRITONTERM_ROOTFS_WORK_PARENT,TRITONTERM_NATIVE_PR_CLI_DIR \
             ./scripts/build-arch-dev-rootfs.sh "$ROOTFS_VERSION" "$GITHUB_WORKSPACE/dist/arch-rootfs"
 
       - name: Upload review artifact (not a release)
