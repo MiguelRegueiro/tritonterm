@@ -3,7 +3,7 @@
 set -euo pipefail
 PROJECT_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 PR_SOURCE="${TRITONTERM_PR_SOURCE:-$PROJECT_ROOT/third_party/oonid-pr}"
-EXPECTED_PR_COMMIT='31afc11ca3e675fa8bbbe530979afc8c467218dc'
+EXPECTED_PR_COMMIT='7029b1fe8fa84d64339cabe38f9c5be2ea2ae7ac'
 
 if [[ -f "$PR_SOURCE/TRITONTERM_SOURCE_COMMIT" ]]; then
     [[ "$(<"$PR_SOURCE/TRITONTERM_SOURCE_COMMIT")" == "$EXPECTED_PR_COMMIT" ]] || {
@@ -44,6 +44,8 @@ apply_patch_or_check_marker "$PROJECT_ROOT/scripts/patches/pr-cli-diagnostics.pa
     'archive_cache_resolution' 'src/pr-cli/src/install.rs'
 apply_patch_or_check_marker "$PROJECT_ROOT/scripts/patches/pr-cli-preserve-failures.patch" \
     'failed_rootfs_preservation' 'src/pr-cli/src/install.rs'
+apply_patch_or_check_marker "$PROJECT_ROOT/scripts/patches/proot-crash-recorder.patch" \
+    'log_guest_segv' 'src/proot/src/tracee/event.c'
 apply_patch_or_check_marker "$PROJECT_ROOT/scripts/patches/proot-userland-metadata.patch" \
     'TRITONTERM_USERLAND_METADATA_MODE' 'src/proot/src/GNUmakefile'
 

@@ -5,8 +5,8 @@ TritonTerm bundles the following independent command-line programs from oonid/pr
 - libproot-loader.so — GPL-2.0-or-later
 
 Source project: https://github.com/oonid/pr
-Upstream base revision: 7029b1fe8fa84d64339cabe38f9c5be2ea2ae7ac
-TritonTerm source snapshot: 31afc11ca3e675fa8bbbe530979afc8c467218dc
+Upstream revision: 7029b1fe8fa84d64339cabe38f9c5be2ea2ae7ac
+TritonTerm changes: reproducible patches in scripts/patches/ of the corresponding source archive
 The exact source snapshot is included in the public tritonterm-android-pr-source release archive.
 Build steps and native binary SHA-256 hashes are in docs/native-runtime.md and
 docs/native-runtime.sha256. The combined experimental APK also includes Termux

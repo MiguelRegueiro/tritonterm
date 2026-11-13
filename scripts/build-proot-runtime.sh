@@ -4,7 +4,7 @@ set -euo pipefail
 PROJECT_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 PR_SOURCE="${PROJECT_ROOT}/third_party/oonid-pr"
 KEYRING_SOURCE="${PROJECT_ROOT}/third_party/archlinuxarm-keyring"
-EXPECTED_PR_COMMIT="31afc11ca3e675fa8bbbe530979afc8c467218dc"
+EXPECTED_PR_COMMIT="7029b1fe8fa84d64339cabe38f9c5be2ea2ae7ac"
 EXPECTED_KEYRING_COMMIT="91e6b11698f8df66042d56aaa56fbe9c9263847d"
 EXPECTED_RUST="1.98.0"
 JNI_DIR="${PROJECT_ROOT}/app/src/main/jniLibs/arm64-v8a"
