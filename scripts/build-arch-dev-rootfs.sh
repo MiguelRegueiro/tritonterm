@@ -33,7 +33,7 @@ trap cleanup_guest_mounts EXIT
 [[ "$VERSION" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$ ]] || fail 2 'usage: build-arch-dev-rootfs.sh VERSION OUTPUT_DIR'
 [[ -s "$ROOTFS_SIGNING_KEY" && -s "$ROOTFS_SIGNING_PASSPHRASE_FILE" ]] ||
     fail 2 'set TRITONTERM_ROOTFS_SIGNING_KEY and TRITONTERM_ROOTFS_SIGNING_PASSPHRASE_FILE to the release-signing inputs'
-for command in curl gpg gpgv bsdtar chroot mount mountpoint umount tar gzip sha256sum openssl; do
+for command in curl gpg gpgv bsdtar chroot mount mountpoint umount tar gzip sha256sum openssl python3; do
     command -v "$command" >/dev/null || fail 2 "required host command is missing: $command"
 done
 mkdir -p "$OUTPUT_DIR" "$WORK_PARENT"
@@ -306,6 +306,21 @@ report_line "rootfs_archive_sha256=$ARCHIVE_SHA256"
 report_line "rootfs_compression_seconds=$(( $(date +%s) - stage_started ))"
 report_line "base_archive_bytes=$BASE_SIZE"
 report_line "rootfs_vs_base_download_percent=$(( ARCHIVE_SIZE * 100 / BASE_SIZE ))"
+
+stage='package_license_inventory'
+python3 scripts/generate-rootfs-package-inventory.py \
+    "$OUTPUT_ARCHIVE" "$OUTPUT_DIR/package-licenses-${VERSION}.csv"
+
+stage='sudo_archive_metadata'
+tar --numeric-owner -tvf "$OUTPUT_ARCHIVE" ./etc/sudo.conf ./usr/bin/sudo \
+    > "$OUTPUT_DIR/sudo-metadata-${VERSION}.txt"
+awk '
+    $NF == "./etc/sudo.conf" { if ($1 != "-rw-r--r--" || $2 != "0/0") exit 1; conf=1 }
+    $NF == "./usr/bin/sudo" { if ($1 != "-rwsr-xr-x" || $2 != "0/0") exit 1; sudo=1 }
+    END { if (!conf || !sudo) exit 1 }
+' "$OUTPUT_DIR/sudo-metadata-${VERSION}.txt" ||
+    fail 6 'sudo archive metadata must retain root:root ownership, 0644 sudo.conf, and setuid-root 4755 sudo'
+report_line 'TRITONTERM_SUDO_ARCHIVE_METADATA_PASSED'
 
 stage='release_manifest_signing'
 cat > "$OUTPUT_MANIFEST" <<MANIFEST
