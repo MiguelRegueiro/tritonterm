@@ -190,7 +190,7 @@ patch using `scripts/build-apk.sh` with these values:
     TRITONTERM_ARCH_ROOTFS_VERSION=2026.11.13.1
     TRITONTERM_ARCH_ROOTFS_RELEASE_TAG=arch-rootfs-2026.11.13.1-exp.1
     TRITONTERM_ARCH_ROOTFS_RELEASE_BASE_URL=https://github.com/MiguelRegueiro/tritonterm-releases/releases/download/arch-rootfs-2026.11.13.1-exp.1
-    TRITONTERM_ANDROID_VERSION_CODE=3
+    TRITONTERM_ANDROID_VERSION_CODE=4
 
 The local patch is included so the published source corresponds to the reviewed
 APK even though the private development repository remains at the recorded base
@@ -205,12 +205,14 @@ license, MIT Kerberos's BSD-style license, leancrypto's GPL/BSD options, LMDB's
 OpenLDAP license, popt's MIT-style terms, sudo's ISC-style terms, Vim's license,
 public-domain tzdata and IANA protocol data, and SQLite's public-domain notice.
 GnuPG's Unicode data license and ICU's Unicode License V3 notices are also included.
-The release inventory and license tree preserve each package's declared notices;
-the package license expressions and source access are listed in the accompanying
-versioned CSV/index. Release review must inspect that generated inventory for the
-exact image rather than relying on a package count from an earlier rootfs build.
-No package with an identified non-free or proprietary license was found in the
-previously reviewed image; repeat that review for each new image before publication.
+For this exact image, the package inventory contains 193 installed records across
+170 package bases, with a package license expression and upstream URL for every
+record. The custom identifiers (`custom`, `custom:OpenLDAP`, `custom:flex`,
+`custom:none`, and `custom:vim`) were checked against their corresponding license
+texts in the accompanying license bundle. The full declared license expressions
+are preserved in the CSV; no package declares a proprietary or non-free license.
+The rootfs builder also checks that its signed archive retains root ownership and
+the setuid mode required by `/usr/bin/sudo`.
 
 The Android APK's embedded rootfs verification PEM is a public key only. No private
 rootfs signing key, passphrase, developer credential, or device-specific signing
