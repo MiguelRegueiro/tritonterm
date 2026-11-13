@@ -29,6 +29,8 @@ install -d -m 0755 "$STATE_DIR"
 install -d -m 0755 "$(dirname "$RUN_LOG")"
 exec 3>&2
 exec > >(tee -a "$RUN_LOG") 2> >(sed 's/^/[stderr] /' | tee -a "$RUN_LOG" >&3)
+printf '[Arch setup] ATTEMPT_STARTED phase=account_personalization username=%s started=%s\n' \
+    "$requested" "$(date -Is)"
 stage='account_rename'
 if [[ -f "$STATE_FILE" ]]; then
     recorded="$(sed -n 's/^username=//p' "$STATE_FILE" | head -n 1)"
