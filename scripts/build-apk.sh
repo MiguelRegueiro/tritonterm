@@ -55,6 +55,9 @@ fi
 if [[ -n "${TRITONTERM_ARCH_ROOTFS_RELEASE_BASE_URL:-}" ]]; then
     gradle_properties+=("-Ptritonterm.archRootfsReleaseBaseUrl=${TRITONTERM_ARCH_ROOTFS_RELEASE_BASE_URL}")
 fi
+if [[ -n "${TRITONTERM_ANDROID_VERSION_CODE:-}" ]]; then
+    gradle_properties+=("-Ptritonterm.androidVersionCode=${TRITONTERM_ANDROID_VERSION_CODE}")
+fi
 "$gradle_bin" --no-daemon "${gradle_properties[@]}" :app:assembleDebug
 
 apk="$project_root/app/build/outputs/apk/debug/app-debug.apk"
