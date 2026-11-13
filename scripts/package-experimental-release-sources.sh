@@ -202,14 +202,20 @@ Build steps, toolchain versions, binary hashes, and license details are in
 artifacts are unmodified Apache-2.0 binaries; their source projects and exact
 artifact hashes are documented there.
 
-The Android APK was built from the source commit and the included local changes
-patch using `scripts/build-signed-pinned-apk.sh` with these values:
+The experimental Android review APK was built from the source commit and the
+included local changes patch using `scripts/build-apk.sh` (debug variant) with
+these values:
 
     TRITONTERM_ARCH_ROOTFS_VERSION=@VERSION@
     TRITONTERM_ARCH_ROOTFS_RELEASE_TAG=@ROOTFS_RELEASE_TAG@
     TRITONTERM_ARCH_ROOTFS_RELEASE_BASE_URL=@ROOTFS_RELEASE_BASE_URL@
     TRITONTERM_ANDROID_VERSION_CODE=@ANDROID_VERSION_CODE@
     TRITONTERM_ANDROID_VERSION_NAME=@ANDROID_VERSION_NAME@
+
+This APK is signed with Android's standard debug certificate so it is installable
+for review and can be replaced by another APK signed with the same development
+key. It is not a production signing identity; future production APKs must use a
+separate protected release keystore.
 
 The local patch is included so the published source corresponds to the reviewed
 APK even though the private development repository remains at the recorded base
