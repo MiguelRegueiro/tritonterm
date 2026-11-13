@@ -108,8 +108,13 @@ jobs:
           install -D -m 0644 \
             third_party/oonid-pr/vendor/bionic/libc/kernel/uapi/linux/ashmem.h \
             "$RUNNER_TEMP/proot-host-uapi/linux/ashmem.h"
+          # Ubuntu's ARM64 host linker does not implement upstream's --rosegment
+          # flag. This host-only validation helper is not shipped; Android PRoot
+          # is built separately with the pinned NDK and upstream linker flags.
           CPATH="$RUNNER_TEMP/proot-host-uapi" \
-            make -C third_party/oonid-pr/src/proot/src -j2 HAS_LOADER_32BIT= proot loader/loader
+            make -C third_party/oonid-pr/src/proot/src -j2 HAS_LOADER_32BIT= \
+              LOADER_LDFLAGS="-static -nostdlib -Wl,-Ttext=0x2000000000,-z,noexecstack,-z,max-page-size=16384" \
+              proot loader/loader
           "$HOME/.cargo/bin/cargo" +1.98.0 build --manifest-path third_party/oonid-pr/src/pr-cli/Cargo.toml --release --locked
           install -d -m 0755 "$RUNNER_TEMP/tritonterm-native-pr-cli"
           install -m 0755 third_party/oonid-pr/src/proot/src/proot "$RUNNER_TEMP/tritonterm-native-pr-cli/libproot.so"
