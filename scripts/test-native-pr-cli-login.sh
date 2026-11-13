@@ -74,6 +74,15 @@ def write_record(relative, info):
     os.replace(temporary, destination)
 write_record(".", os.lstat(root))
 for directory, dirs, files in os.walk(root, topdown=True, followlinks=False):
+    if directory == root:
+        # The image builder has these live pseudo-filesystems mounted while
+        # this test runs. Preserve metadata for the mountpoints themselves,
+        # but do not walk transient host /proc entries or host /sys and /dev.
+        mounted_pseudo_filesystems = tuple(name for name in ("dev", "proc", "sys") if name in dirs)
+        for name in mounted_pseudo_filesystems:
+            path = os.path.join(directory, name)
+            write_record(os.path.relpath(path, root), os.lstat(path))
+        dirs[:] = [name for name in dirs if name not in mounted_pseudo_filesystems]
     for name in list(dirs) + list(files):
         path = os.path.join(directory, name)
         write_record(os.path.relpath(path, root), os.lstat(path))
