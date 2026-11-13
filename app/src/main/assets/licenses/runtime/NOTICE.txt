@@ -5,11 +5,14 @@ TritonTerm bundles the following independent command-line programs from oonid/pr
 - libproot-loader.so — GPL-2.0-or-later
 
 Source project: https://github.com/oonid/pr
-Source revision: 7029b1fe8fa84d64339cabe38f9c5be2ea2ae7ac
-The exact source is included as the third_party/oonid-pr Git submodule in TritonTerm.
+Upstream base revision: 7029b1fe8fa84d64339cabe38f9c5be2ea2ae7ac
+TritonTerm source snapshot: 31afc11ca3e675fa8bbbe530979afc8c467218dc
+The exact source snapshot is included in the public tritonterm-android-pr-source release archive.
 Build steps and native binary SHA-256 hashes are in docs/native-runtime.md and
-docs/native-runtime.sha256. The Android/Kotlin code in TritonTerm is separate and
-is not covered by those runtime licenses.
+docs/native-runtime.sha256. The combined experimental APK also includes Termux
+terminal-view; its source and applicable Termux license notices are documented in
+docs/native-runtime.md. The complete TritonTerm source is included in the public
+corresponding-source archive.
 
 `libtermux.so` is from Termux's `terminal-emulator` library (Apache-2.0), and
 `libandroidx.graphics.path.so` is from AndroidX Graphics Path (Apache-2.0).
@@ -17,6 +20,11 @@ The Apache-2.0 license text is included alongside this notice.
 
 The corresponding GPL-2.0-or-later, GPL-3.0-or-later, LGPL-3.0-or-later, and Apache-2.0
 license texts are included alongside this notice.
+
+The APK's Bouncy Castle OpenPGP verifier (bcpg-jdk18on and bcprov-jdk18on 1.80.2)
+is distributed under the Bouncy Castle License, included as
+Bouncy-Castle-License.txt. The OpenPGP library includes a modified BZIP2 component
+under Apache-2.0.
 
 The Arch Linux ARM root filesystem is fetched from an Arch Linux ARM mirror and its detached
 OpenPGP signature is checked against the pinned Arch Linux ARM Build System key before extraction.
