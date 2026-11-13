@@ -143,6 +143,17 @@ jobs:
           sudo --preserve-env=TRITONTERM_ROOTFS_SIGNING_KEY,TRITONTERM_ROOTFS_SIGNING_PASSPHRASE_FILE,TRITONTERM_ROOTFS_WORK_PARENT,TRITONTERM_NATIVE_PR_CLI_DIR \
             ./scripts/build-arch-dev-rootfs.sh "$ROOTFS_VERSION" "$GITHUB_WORKSPACE/dist/arch-rootfs"
 
+      - name: Verify the signed rootfs archive through the production Rust extractor
+        env:
+          ROOTFS_VERSION: ${{ inputs.rootfs_version }}
+        run: |
+          archive="$GITHUB_WORKSPACE/dist/arch-rootfs/tritonterm-archlinuxarm-aarch64-${ROOTFS_VERSION}.tar.gz"
+          test -s "$archive"
+          TRITONTERM_TEST_ROOTFS_ARCHIVE="$archive" \
+            "$HOME/.cargo/bin/cargo" +1.98.0 test \
+              --manifest-path third_party/oonid-pr/src/pr-cli/Cargo.toml --locked \
+              extract_arch_fakeroot_payload -- --ignored --nocapture
+
       - name: Upload review artifact (not a release)
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:

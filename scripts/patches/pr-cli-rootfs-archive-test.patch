@@ -1,0 +1,66 @@
+diff --git a/src/pr-cli/src/install.rs b/src/pr-cli/src/install.rs
+--- a/src/pr-cli/src/install.rs
++++ b/src/pr-cli/src/install.rs
+@@ -2140,2 +2140,62 @@
++    /// Run against the exact versioned Arch archive with
++    /// `TRITONTERM_TEST_ROOTFS_ARCHIVE=/path/to/rootfs.tar.gz cargo test --manifest-path third_party/oonid-pr/src/pr-cli/Cargo.toml extract_arch_fakeroot_payload -- --ignored --nocapture`.
++    /// This catches omissions in the real streaming extractor that small synthetic
++    /// archives cannot expose. The archive remains external so unit tests stay fast.
++    #[test]
++    #[ignore = "requires the versioned Arch rootfs archive via TRITONTERM_TEST_ROOTFS_ARCHIVE"]
++    fn extract_arch_fakeroot_payload() {
++        let archive = std::env::var("TRITONTERM_TEST_ROOTFS_ARCHIVE")
++            .expect("set TRITONTERM_TEST_ROOTFS_ARCHIVE to the pinned rootfs archive");
++        let tmp = unique_temp_dir("pr-cli-extract-arch-fakeroot");
++        fs::create_dir_all(&tmp).expect("mkdir tmp");
++        let rootfs = tmp.join("rootfs");
++
++        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
++            extract_tarball_with_userland_metadata(
++                &archive,
++                rootfs.to_str().unwrap(),
++                1,
++                &["dev"],
++                true,
++            )
++            .expect("extract pinned Arch rootfs");
++
++            let payloads = [
++                ("opt/tritonterm/fakeroot-tcp/2.1.4/bin/fakeroot", 0o755),
++                ("opt/tritonterm/fakeroot-tcp/2.1.4/bin/faked", 0o755),
++                ("opt/tritonterm/fakeroot-tcp/2.1.4/lib/libfakeroot-0.so", 0o755),
++            ];
++            for (relative, expected_mode) in payloads {
++                let path = rootfs.join(relative);
++                let metadata = fs::metadata(&path)
++                    .unwrap_or_else(|error| panic!("missing extracted {relative}: {error}"));
++                assert!(metadata.is_file(), "{relative} must be a regular file");
++                assert_ne!(metadata.len(), 0, "{relative} must not be empty");
++                assert_eq!(metadata.permissions().mode() & 0o777, expected_mode, "{relative}");
++                let sidecar = userland_metadata_root(&rootfs)
++                    .join(Path::new(relative).parent().unwrap())
++                    .join(format!(
++                        ".proot-meta-file.{}",
++                        Path::new(relative).file_name().unwrap().to_string_lossy()
++                    ));
++                let owner_mode = fs::read_to_string(&sidecar)
++                    .unwrap_or_else(|error| panic!("missing metadata for {relative}: {error}"));
++                assert_eq!(owner_mode, "755\n0\n0\n", "metadata for {relative}");
++            }
++            assert_eq!(
++                fs::read_link(rootfs.join("opt/tritonterm/fakeroot-tcp/2.1.4/lib/libfakeroot.so"))
++                    .expect("fakeroot linker symlink"),
++                Path::new("libfakeroot-0.so")
++            );
++        }));
++        let cleanup = fs::remove_dir_all(&tmp);
++        match result {
++            Ok(()) => cleanup.expect("remove extracted test rootfs"),
++            Err(failure) => {
++                cleanup.expect("remove extracted test rootfs after failure");
++                std::panic::resume_unwind(failure);
++            }
++        }
++    }
+ 
+     #[test]

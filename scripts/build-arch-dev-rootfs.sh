@@ -295,7 +295,11 @@ find "$ROOTFS/var/cache/pacman/pkg" -mindepth 1 -maxdepth 1 -type f -delete 2>/d
 
 stage='rootfs_archive_creation'
 stage_started="$(date +%s)"
-tar --numeric-owner --xattrs --xattrs-include='*' --acls --sparse \
+# Keep the archive dense: pr-cli's Rust tar reader does not reconstruct GNU
+# sparse PAX entries (it sees GNUSparseFile.* placeholder paths and the sparse
+# map payload). Gzip already compresses runs of zero bytes, so --sparse saves
+# little download space while making the signed image unusable in TritonTerm.
+tar --numeric-owner --xattrs --xattrs-include='*' --acls \
     --use-compress-program='gzip -1' -cf "$OUTPUT_ARCHIVE" -C "$ROOTFS" .
 ARCHIVE_SIZE="$(stat -c %s "$OUTPUT_ARCHIVE")"
 ARCHIVE_SHA256="$(sha256sum "$OUTPUT_ARCHIVE" | awk '{print $1}')"
