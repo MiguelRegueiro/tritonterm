@@ -79,6 +79,8 @@ jobs:
           git -c url.https://github.com/.insteadOf=git@github.com: \
             -C third_party/oonid-pr submodule update --init vendor/samba
           test "$(git -C third_party/oonid-pr/vendor/samba rev-parse HEAD)" = 2f8dfde1210395175e726455bdb63a7b97245a72
+          git -C third_party/oonid-pr submodule update --init vendor/bionic
+          test "$(git -C third_party/oonid-pr/vendor/bionic rev-parse HEAD)" = 731631f300090436d7f5df80d50b6275c8c60a93
 
       - name: Download embedded Android PRoot test binary
         uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0
