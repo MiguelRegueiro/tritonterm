@@ -15,6 +15,7 @@ trap on_error ERR
 [[ "$(uname -m)" == aarch64 ]] || fail 2 'this integration check requires native AArch64 execution'
 [[ "$(git -C "$PR_SOURCE" rev-parse HEAD)" == "$EXPECTED_PR_COMMIT" ]] || fail 2 'PRoot checkout is not at the pinned commit'
 for command in python3 timeout; do command -v "$command" >/dev/null || fail 2 "host command missing: $command"; done
+readonly TIMEOUT_BIN="$(command -v timeout)"
 if [[ -z "${TRITONTERM_NATIVE_PR_CLI_DIR:-}" ]]; then
     for command in make cargo rustup; do command -v "$command" >/dev/null || fail 2 "host command missing: $command"; done
 fi
@@ -93,13 +94,14 @@ export HOME="$work/home" TMPDIR="$work/cache/proot" PROOT_TMP_DIR="$work/cache/p
 export PROOT_NO_SECCOMP=1 TRITONTERM_PROOT_USERLAND_METADATA=1
 export TRITONTERM_DIAGNOSTICS_FILE="$OUTPUT/native-pr-cli-diagnostics.jsonl"
 export PROOT_CRASH_DIAGNOSTICS=1 PROOT_CRASH_DIAGNOSTICS_FILE="$OUTPUT/native-pr-cli-crash.log"
-export PATH="$PREFIX/bin:/system/bin:/system/xbin" TERM=xterm-256color LANG=en_US.UTF-8
+export TERM=xterm-256color LANG=en_US.UTF-8
 output="$OUTPUT/contract-native-pr-cli-login.txt"
 args=(login archlinuxarm --user triton /usr/bin/fish -l -i -c 'source /etc/tritonterm/guest-smoke.fish')
 printf 'Invocation: %q ' "$BIN/libpr-cli.so" "${args[@]}" > "$output"
 printf '\n' >> "$output"
 result=0
-timeout 180 "$BIN/libpr-cli.so" "${args[@]}" >> "$output" 2>&1 || result=$?
+PATH="$PREFIX/bin:/system/bin:/system/xbin" "$TIMEOUT_BIN" 180 \
+    "$BIN/libpr-cli.so" "${args[@]}" >> "$output" 2>&1 || result=$?
 cat "$output"
 (( result == 0 )) || fail "$result" "pr-cli login exited unsuccessfully; output: $output"
 ! grep -q '^CHECK_FAILED ' "$output" || fail 4 "guest feature checks failed; output: $output"
