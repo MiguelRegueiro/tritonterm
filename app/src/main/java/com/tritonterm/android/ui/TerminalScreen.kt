@@ -379,15 +379,17 @@ internal fun TerminalScreen() {
                 fontSize = 12.sp,
                 color = Color(0xFFD5D5D5)
             )
-            Text(
-                if (useSystemKeyboard) "Keys" else "IME",
-                modifier = Modifier
-                    .clickable(onClick = toggleKeyboard)
-                    .padding(horizontal = 12.dp, vertical = 8.dp),
-                fontSize = 12.sp,
-                color = Color(0xFFD5D5D5)
-            )
-            Spacer(Modifier.padding(end = 8.dp))
+            if (setupReady) {
+                Text(
+                    if (useSystemKeyboard) "Keys" else "IME",
+                    modifier = Modifier
+                        .clickable(onClick = toggleKeyboard)
+                        .padding(horizontal = 12.dp, vertical = 8.dp),
+                    fontSize = 12.sp,
+                    color = Color(0xFFD5D5D5)
+                )
+                Spacer(Modifier.padding(end = 8.dp))
+            }
             Text(
                 terminalController.runtimeLabel,
                 fontSize = 11.sp,
@@ -720,23 +722,25 @@ internal fun TerminalScreen() {
             }
         }
 
-        TerminalKeyboard(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 8.dp),
-            onZoom = zoomTerminal,
-            onCopy = {
-                if (!sessionClient.copySelection()) {
-                    Toast.makeText(context, "Select terminal text first", Toast.LENGTH_SHORT).show()
+        if (setupReady) {
+            TerminalKeyboard(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 8.dp),
+                onZoom = zoomTerminal,
+                onCopy = {
+                    if (!sessionClient.copySelection()) {
+                        Toast.makeText(context, "Select terminal text first", Toast.LENGTH_SHORT).show()
+                    }
+                },
+                onPaste = { sessionClient.pasteFromClipboard(session) },
+                compact = useSystemKeyboard,
+                onInput = { input ->
+                    val bytes = input.toByteArray(StandardCharsets.UTF_8)
+                    session?.write(bytes, 0, bytes.size)
                 }
-            },
-            onPaste = { sessionClient.pasteFromClipboard(session) },
-            compact = useSystemKeyboard,
-            onInput = { input ->
-                val bytes = input.toByteArray(StandardCharsets.UTF_8)
-                session?.write(bytes, 0, bytes.size)
-            }
-        )
+            )
+        }
     }
     if (showConfig) {
         TerminalConfigDialog(
