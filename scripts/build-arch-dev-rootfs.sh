@@ -106,6 +106,19 @@ chroot_guest() {
         "$@"
 }
 
+run_image_contract() {
+    local label="$1"
+    shift
+    local output="$OUTPUT_DIR/contract-${VERSION}-${label}.txt"
+    local result=0
+    chroot_guest "$@" > "$output" 2>&1 || result=$?
+    if (( result != 0 )); then
+        cat "$output" >&2
+        fail 4 "image contract '${label}' failed (exit ${result}); output: ${output}"
+    fi
+    cat "$output"
+}
+
 mount_guest_filesystems() {
     # libalpm's CheckSpace logic needs the chroot root to appear as a mount
     # point in /proc/self/mountinfo when it resolves the pacman cache's device.
@@ -205,10 +218,17 @@ touch "$ROOTFS/root/.tritonterm-userland-profile-v1"
 chroot_guest /usr/bin/pacman -Qo /usr/bin/fakeroot /usr/bin/rustup /usr/bin/paru > "$OUTPUT_DIR/package-ownership-${VERSION}.txt"
 chroot_guest /usr/bin/pacman -Q > "$OUTPUT_DIR/packages-${VERSION}.txt"
 report_line "installed_package_count=$(wc -l < "$OUTPUT_DIR/packages-${VERSION}.txt" | tr -d ' ')"
-chroot_guest /usr/bin/su -l dev -s /usr/bin/fish -c 'rustup show && rustc --version && cargo --version && fish -ic "starship prompt"' > "$OUTPUT_DIR/toolchain-${VERSION}.txt"
-chroot_guest /usr/bin/su -l dev -s /usr/bin/fish -c \
-    'test (id -u) = 1000; and test (id -g) = 1000; and test "$HOME" = /home/dev; and test "$PWD" = "$HOME"; and test "$SHELL" = /usr/bin/fish; and test (fakeroot -- /usr/bin/id -u) = 0; and sudo -n /usr/bin/pacman -Q pacman >/dev/null; and abbr -q up; and functions fish_prompt | string match -q "*starship*"' \
-    > "$OUTPUT_DIR/native-identity-${VERSION}.txt"
+run_image_contract rustup_show /usr/bin/su -l dev -s /usr/bin/fish -c 'rustup show'
+run_image_contract rustc_version /usr/bin/su -l dev -s /usr/bin/fish -c 'rustc --version'
+run_image_contract cargo_version /usr/bin/su -l dev -s /usr/bin/fish -c 'cargo --version'
+run_image_contract starship_login_prompt /usr/bin/su -l dev -s /usr/bin/fish -c 'fish -ic "starship prompt"'
+run_image_contract identity /usr/bin/su -l dev -s /usr/bin/fish -c \
+    'test (id -u) = 1000; and test (id -g) = 1000; and test "$HOME" = /home/dev; and test "$PWD" = "$HOME"; and test "$SHELL" = /usr/bin/fish'
+run_image_contract fakeroot_identity /usr/bin/su -l dev -s /usr/bin/fish -c 'test (fakeroot -- /usr/bin/id -u) = 0'
+run_image_contract sudo_pacman_allowed /usr/bin/su -l dev -s /usr/bin/fish -c 'sudo -n /usr/bin/pacman -Q pacman'
+run_image_contract sudo_unrestricted_root_denied /usr/bin/su -l dev -s /usr/bin/fish -c 'not sudo -n /usr/bin/id -u >/dev/null 2>&1'
+run_image_contract fish_abbreviation /usr/bin/su -l dev -s /usr/bin/fish -c 'abbr -q up'
+run_image_contract fish_starship_prompt_function /usr/bin/su -l dev -s /usr/bin/fish -c 'functions fish_prompt | string match -q "*starship*"'
 printf 'TRITONTERM_NATIVE_ARM64_USERLAND_SMOKE_PASSED\n' | tee -a "$report"
 cp "$ROOTFS/var/cache/tritonterm/developer-setup.log" "$OUTPUT_DIR/build-log-${VERSION}.txt"
 
