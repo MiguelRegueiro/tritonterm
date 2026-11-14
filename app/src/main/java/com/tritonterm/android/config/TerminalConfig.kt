@@ -2,8 +2,6 @@ package com.tritonterm.android.config
 
 import android.content.Context
 import com.tritonterm.android.R
-import android.graphics.fonts.Font
-import android.graphics.fonts.FontFamily
 import android.graphics.Typeface
 import android.os.Build
 import java.io.File
@@ -87,21 +85,22 @@ internal data class TerminalConfig(
     fun typeface(context: Context): Typeface = when (fontFamily) {
         "Hack Nerd Font Mono" -> context.resources.getFont(R.font.hack_nerd_font_mono_regular)
         "JetBrainsMono Nerd Font" -> context.resources.getFont(R.font.jetbrains_mono_nerd_font_regular)
-        "Noto Sans Mono" -> if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            val primary = FontFamily.Builder(Font.Builder(context.resources, R.font.noto_sans_mono).build()).build()
-            val nerdFallback = FontFamily.Builder(
-                Font.Builder(context.resources, R.font.hack_nerd_font_mono_regular).build()
-            ).build()
-            Typeface.CustomFallbackBuilder(primary).addCustomFallback(nerdFallback).build()
-        } else {
-            Typeface.create("sans-serif-monospace", Typeface.NORMAL)
-        }
+        "Noto Sans Mono" -> if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q)
+            context.resources.getFont(R.font.noto_sans_mono)
+        else Typeface.create("sans-serif-monospace", Typeface.NORMAL)
         else -> Typeface.MONOSPACE
     }
 
+    /** Typefaces routed explicitly by TritonTerm's terminal renderer. */
+    fun boxDrawingTypeface(context: Context): Typeface? =
+        if (fontFamily == "Noto Sans Mono") context.resources.getFont(R.font.hack_nerd_font_mono_regular) else null
+
+    fun nerdTypeface(context: Context): Typeface? =
+        if (fontFamily == "Noto Sans Mono") context.resources.getFont(R.font.jetbrains_mono_nerd_font_regular) else null
+
     fun encode(): String = buildList {
         add("# TritonTerm config. map uses Kitty-style modifier+key chords.")
-        add("# config_version 2")
+        add("# config_version 5")
         add("# font_family: Noto Sans Mono, Hack Nerd Font Mono, or JetBrainsMono Nerd Font")
         add("# font_size: 12 through 40")
         add("# Supported map actions: copy_to_clipboard, paste_from_clipboard, send_key esc, send_text all \\x03")
@@ -129,6 +128,15 @@ internal data class TerminalConfig(
                 file.writeText(migrated.encode())
                 return migrated
             }
+            // Version 3 defaulted to Hack, changing Noto's zero. Restore Kitty's
+            // Noto text face for those configs while keeping size and key maps.
+            if (text.lineSequence().any { it.trim() == "# config_version 3" } &&
+                loaded.fontFamily == "Hack Nerd Font Mono"
+            ) {
+                val migrated = loaded.copy(fontFamily = "Noto Sans Mono")
+                file.writeText(migrated.encode())
+                return migrated
+            }
             // Existing app installs keep their config across APK updates. Migrate old
             // generated configs once, adding only missing default chords and preserving
             // any user mapping already assigned to those chords.
@@ -150,7 +158,7 @@ internal data class TerminalConfig(
             return loaded
         }
 
-        private const val CONFIG_VERSION_MARKER = "# config_version 2"
+        private const val CONFIG_VERSION_MARKER = "# config_version 5"
 
         private fun parseMapLine(line: String): TerminalKeyBinding? {
             val fields = line.trim().split(Regex("\\s+"))
