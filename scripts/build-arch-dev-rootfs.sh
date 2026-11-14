@@ -189,6 +189,7 @@ install -m 0755 scripts/arch-image/setup-arch-developer.sh "$ROOTFS/root/.triton
 install -m 0644 scripts/arch-image/starship.toml "$ROOTFS/root/.tritonterm-setup/starship.toml"
 install -m 0644 app/src/main/assets/tritonterm-fish-system-config.fish "$ROOTFS/root/.tritonterm-setup/tritonterm-fish-system-config.fish"
 install -m 0644 scripts/arch-image/paru-bootstrap.PKGBUILD "$ROOTFS/root/.tritonterm-setup/paru-bootstrap.PKGBUILD"
+install -m 0644 scripts/arch-image/starship-prompt-benchmark.fish "$ROOTFS/tmp/tritonterm-starship-prompt-benchmark.fish"
 install -d -m 0755 "$ROOTFS/etc/tritonterm"
 install -m 0644 app/src/main/assets/arch-guest-identity-smoke.fish "$ROOTFS/etc/tritonterm/guest-smoke.fish"
 stage='guest_dns_preflight'
@@ -228,7 +229,16 @@ run_image_contract fixed_account /bin/bash -lc '[[ "$(getent passwd triton | cut
 run_image_contract rustup_show /usr/bin/su -l triton -s /usr/bin/fish -c 'rustup show'
 run_image_contract rustc_version /usr/bin/su -l triton -s /usr/bin/fish -c 'rustc --version'
 run_image_contract cargo_version /usr/bin/su -l triton -s /usr/bin/fish -c 'cargo --version'
+run_image_contract utf8_locale /usr/bin/env LANG=C.UTF-8 LC_ALL=C.UTF-8 /bin/bash -lc 'test "$(locale charmap)" = UTF-8 && bsdtar -cf /dev/null -T /dev/null'
+run_image_contract timezone_winter /usr/bin/env TZ=Europe/Madrid /usr/bin/date -d '2026-01-15 12:00:00 UTC' +%H:%M
+grep -qx '13:00' "$OUTPUT_DIR/contract-${VERSION}-timezone_winter.txt" || fail 4 'Europe/Madrid winter offset did not include standard time'
+run_image_contract timezone_summer /usr/bin/env TZ=Europe/Madrid /usr/bin/date -d '2026-07-15 12:00:00 UTC' +%H:%M
+grep -qx '14:00' "$OUTPUT_DIR/contract-${VERSION}-timezone_summer.txt" || fail 4 'Europe/Madrid summer offset did not include daylight saving time'
+run_image_contract starship_time_timezone /usr/bin/su -l triton -s /usr/bin/fish -c \
+    'set output (env TZ=Europe/Madrid starship module time); and set expected (env TZ=Europe/Madrid date "+%H:%M"); and string match -q "*$expected*" "$output"'
 run_image_contract starship_login_prompt /usr/bin/su -l triton -s /usr/bin/fish -c 'fish -ic "starship prompt"'
+run_image_contract starship_prompt_benchmark /usr/bin/su -l triton -s /usr/bin/fish -c \
+    '/usr/bin/fish /tmp/tritonterm-starship-prompt-benchmark.fish'
 run_image_contract identity /usr/bin/su -l triton -s /usr/bin/fish -c \
     'test (id -u) = 1000; and test (id -g) = 1000; and test "$USER" = triton; and test "$HOME" = /home/triton; and test "$PWD" = "$HOME"; and test "$SHELL" = /usr/bin/fish; and test -x (command -s id); and test -x (command -s sudo); and test -x (command -s fakeroot); and set -q TRITONTERM_FISH_CONFIG_LOADED'
 stage='packaged_fish_smoke'
@@ -249,6 +259,7 @@ run_image_contract sudo_unrestricted_root_denied /usr/bin/su -l triton -s /usr/b
 run_image_contract fish_abbreviation /usr/bin/su -l triton -s /usr/bin/fish -c 'fish -ic "abbr -q up"'
 run_image_contract fish_starship_prompt_function /usr/bin/su -l triton -s /usr/bin/fish -c 'fish -ic "functions fish_prompt | string match -q \"*starship*\""'
 printf 'TRITONTERM_NATIVE_ARM64_USERLAND_SMOKE_PASSED\n' | tee -a "$report"
+rm -f "$ROOTFS/tmp/tritonterm-starship-prompt-benchmark.fish"
 cp "$ROOTFS/var/cache/tritonterm/developer-setup.log" "$OUTPUT_DIR/build-log-${VERSION}.txt"
 
 stage='repeated_pacman_database_integrity'
@@ -263,6 +274,7 @@ printf 'TRITONTERM_NATIVE_PR_CLI_LOGIN_PASSED\n' | tee -a "$report"
 # OUTPUT_DIR for review, but never bake it into the distributable rootfs where
 # a later image build could append to stale CI output.
 rm -f "$ROOTFS/var/cache/tritonterm/developer-setup.log"
+rm -f "$ROOTFS/tmp/tritonterm-starship-prompt-benchmark.fish"
 
 stage='remove_machine_specific_state'
 chroot_guest /usr/bin/usermod --password '!' root

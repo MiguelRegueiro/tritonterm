@@ -15,6 +15,7 @@ import com.termux.terminal.TerminalSessionClient
 import com.termux.view.TerminalView
 import com.termux.view.TerminalViewClient
 import java.io.File
+import java.util.TimeZone
 
 internal class TerminalSessionController(
     private val context: Context,
@@ -294,6 +295,19 @@ internal object TerminalBackendFactory {
         if (Build.SUPPORTED_ABIS.any { it == "arm64-v8a" }) ArchLinuxArmBackend() else AndroidShellBackend()
 }
 
+/** Values refreshed for each guest process so Android timezone changes take effect on restart. */
+internal object ArchGuestEnvironment {
+    const val LANG = "C.UTF-8"
+    fun timezoneId(): String {
+        // Force a fresh platform lookup: the app can stay alive across Android's
+        // ACTION_TIMEZONE_CHANGED broadcast while a later session is launched.
+        TimeZone.setDefault(null)
+        return TimeZone.getDefault().id
+    }
+    fun variables(timezoneId: String = timezoneId()): Map<String, String> =
+        mapOf("LANG" to LANG, "TZ" to timezoneId)
+}
+
 internal class AndroidShellBackend : TerminalBackend {
     override val label = "local"
     override fun isReady(context: Context) = true
@@ -364,7 +378,8 @@ internal class ArchLinuxArmBackend : TerminalBackend {
             "TRITONTERM_DIAGNOSTICS_FILE=${TerminalDiagnostics.file(context).absolutePath}",
             "PATH=${bin.absolutePath}:/system/bin:/system/xbin",
             "TERM=xterm-256color",
-            "LANG=en_US.UTF-8"
+            "LANG=${ArchGuestEnvironment.LANG}",
+            "TZ=${ArchGuestEnvironment.timezoneId()}"
         )
         File(context.filesDir, "home").mkdirs()
         val rustDiagnostic = File(context.filesDir, "home/.tritonterm-diagnose-arch-rust.sh")

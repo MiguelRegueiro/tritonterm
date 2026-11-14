@@ -24,6 +24,17 @@ class ArchDeveloperEnvironmentTest {
     }
 
     @Test
+    fun rootfsStarshipBenchmarkParsesWithFish() {
+        val script = File("../scripts/arch-image/starship-prompt-benchmark.fish")
+        assertTrue("The native rootfs prompt benchmark must be present", script.isFile)
+        val process = ProcessBuilder("fish", "--no-execute", script.absolutePath)
+            .redirectErrorStream(true)
+            .start()
+        val output = process.inputStream.bufferedReader().use { it.readText() }
+        assertEquals("Fish rejected the exact benchmark script:\n$output", 0, process.waitFor())
+    }
+
+    @Test
     fun generatedPermissionProbeParsesWithFishAndUsesSiblingMetadataTree() {
         val script = ProotPermissionProbe.fishAccessScript()
         val process = ProcessBuilder("fish", "--no-execute", "-c", script)
@@ -131,6 +142,13 @@ class ArchDeveloperEnvironmentTest {
             commands.forEach { name ->
                 File(root, "usr/bin/$name").apply { parentFile?.mkdirs(); writeText(name); setExecutable(true) }
             }
+            // Android's host filesystem cannot resolve this absolute guest symlink
+            // against the rootfs. Readiness must inspect its directory entry without
+            // following it; the PRoot smoke executes it later in the guest namespace.
+            File(root, "usr/bin/rustc").delete()
+            File(root, "usr/bin/cargo").delete()
+            Files.createSymbolicLink(File(root, "usr/bin/rustc").toPath(), Paths.get("/usr/bin/rustup"))
+            Files.createSymbolicLink(File(root, "usr/bin/cargo").toPath(), Paths.get("/usr/bin/rustup"))
             File(root, "home/triton/.rustup/toolchains/stable-aarch64-unknown-linux-gnu/bin/rustc")
                 .apply { parentFile?.mkdirs(); writeText("rustc"); setExecutable(true) }
             File(root, "home/triton/.config/starship.toml").apply { parentFile?.mkdirs(); writeText("config") }
@@ -155,6 +173,38 @@ class ArchDeveloperEnvironmentTest {
             assertFalse(ArchDeveloperEnvironment.isReady(root))
         } finally {
             root.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun rustupSymlinkReadinessDoesNotResolveAbsoluteTargetsOnAndroidHost() {
+        val root = Files.createTempDirectory("arch-dev-rust-links").toFile()
+        try {
+            val rustc = File(root, "usr/bin/rustc")
+            rustc.parentFile?.mkdirs()
+            Files.createSymbolicLink(rustc.toPath(), Paths.get("/__tritonterm_guest_only__/usr/bin/rustup"))
+            assertTrue(Files.exists(rustc.toPath(), java.nio.file.LinkOption.NOFOLLOW_LINKS))
+            assertFalse("Android host lookup must not resolve this guest-absolute path", rustc.exists())
+        } finally {
+            root.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun androidTimezoneAndUtf8LocaleAreSampledForEveryNewGuestSession() {
+        val previous = java.util.TimeZone.getDefault()
+        val previousProperty = System.getProperty("user.timezone")
+        try {
+            System.setProperty("user.timezone", "Europe/Madrid")
+            assertEquals("Europe/Madrid", ArchGuestEnvironment.variables()["TZ"])
+            assertEquals("C.UTF-8", ArchGuestEnvironment.variables()["LANG"])
+            System.setProperty("user.timezone", "Pacific/Auckland")
+            assertEquals("Pacific/Auckland", ArchGuestEnvironment.variables()["TZ"])
+            assertEquals("C.UTF-8", ArchGuestEnvironment.variables()["LANG"])
+        } finally {
+            if (previousProperty == null) System.clearProperty("user.timezone")
+            else System.setProperty("user.timezone", previousProperty)
+            java.util.TimeZone.setDefault(previous)
         }
     }
 
@@ -220,6 +270,7 @@ class ArchDeveloperEnvironmentTest {
         assertTrue(installedBranch.contains("runSingleFlight(appContext, \"setup\")"))
         assertTrue(installedBranch.contains("verifyDeveloperImage(app)"))
         assertTrue(installedBranch.contains("requireTcpFakeroot(featureWarnings)"))
+        assertTrue(installedBranch.contains("requireRustToolchain(featureWarnings)"))
         assertTrue(installedBranch.contains("initializePacmanKeys(app)"))
         assertTrue(installedBranch.contains("signing keys could not be initialized and verified"))
         assertTrue(installedBranch.contains("rootfs_reused"))
@@ -230,6 +281,7 @@ class ArchDeveloperEnvironmentTest {
             2,
             Regex("requireTcpFakeroot\\(featureWarnings\\)").findAll(installer).count()
         )
+        assertEquals(2, Regex("requireRustToolchain\\(featureWarnings\\)").findAll(installer).count())
     }
 
     @Test
@@ -281,6 +333,17 @@ class ArchDeveloperEnvironmentTest {
         assertTrue(smoke.contains("check_executable uname /usr/bin/uname"))
         assertTrue(smoke.contains("check_executable sudo /usr/bin/sudo"))
         assertTrue(smoke.contains("check_executable starship /usr/bin/starship"))
+        assertTrue(smoke.contains("check_executable rustc /usr/bin/rustc"))
+        assertTrue(smoke.contains("check_executable cargo /usr/bin/cargo"))
+        assertTrue(smoke.contains("rustup_cargo_build_and_run"))
+        assertTrue(smoke.contains("locale_charmap UTF-8"))
+        assertTrue(smoke.contains("timezone Android timezone was not passed into the guest"))
+        assertTrue(smoke.contains("starship module time"))
+        val terminal = File("src/main/java/com/tritonterm/android/terminal/TerminalSessionController.kt").readText()
+        assertTrue(terminal.contains("LANG=${'$'}{ArchGuestEnvironment.LANG}"))
+        assertTrue(terminal.contains("TZ=${'$'}{ArchGuestEnvironment.timezoneId()}"))
+        assertTrue(installer.contains("put(\"LANG\", ArchGuestEnvironment.LANG)"))
+        assertTrue(installer.contains("put(\"TZ\", ArchGuestEnvironment.timezoneId())"))
         assertTrue(smoke.contains("check_command_resolution id"))
         assertTrue(smoke.contains("check_command_resolution mkdir"))
         assertTrue(smoke.contains("check_command_resolution uname"))

@@ -614,7 +614,8 @@ internal object RuntimeDiagnosticsProbes {
             "TRITONTERM_DIAGNOSTICS_FILE" to TerminalDiagnostics.file(context).absolutePath,
             "PATH" to "${File(prefix, "bin").absolutePath}:/system/bin:/system/xbin",
             "TERM" to "xterm-256color",
-            "LANG" to "en_US.UTF-8"
+            "LANG" to ArchGuestEnvironment.LANG,
+            "TZ" to ArchGuestEnvironment.timezoneId()
         )
         val extra = mapOf(
             "guest_path" to guestPath,
@@ -684,7 +685,8 @@ internal object RuntimeDiagnosticsProbes {
             "TRITONTERM_DIAGNOSTICS_FILE" to TerminalDiagnostics.file(context).absolutePath,
             "PATH" to "${File(prefix, "bin").absolutePath}:/system/bin:/system/xbin",
             "TERM" to "xterm-256color",
-            "LANG" to "en_US.UTF-8"
+            "LANG" to ArchGuestEnvironment.LANG,
+            "TZ" to ArchGuestEnvironment.timezoneId()
         )
         TerminalDiagnostics.record(
             context,
