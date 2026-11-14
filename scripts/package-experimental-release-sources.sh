@@ -159,7 +159,12 @@ packages (`base`,
 programs. The exact fakeroot source tarball used to build TCP fakeroot 2.1.4 is
 included in this source archive; the setup recipe pins its SHA-256 and uses
 `--with-ipc=tcp`. Paru's pinned bootstrap PKGBUILD and source checksum are in
-`scripts/arch-image/paru-bootstrap.PKGBUILD`.
+`scripts/arch-image/paru-bootstrap.PKGBUILD`. The preinstalled `elio-bin` is an
+AUR binary package: its exact AUR PKGBUILD snapshot and AUR commit are included
+under `package-recipes/elio-bin/`, and the package recipe pins the upstream
+versioned AArch64 release archive by SHA-256. The upstream Elio source and MIT
+license are available at the project URL recorded in the package inventory; the
+binary package also installs the MIT license into the rootfs license tree.
 
 The release mirrors the exact recipe files so the source URL and patch lists remain
 available if a current package page changes. TritonTerm does not modify these

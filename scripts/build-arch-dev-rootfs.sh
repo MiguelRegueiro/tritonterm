@@ -189,6 +189,9 @@ install -m 0755 scripts/arch-image/setup-arch-developer.sh "$ROOTFS/root/.triton
 install -m 0644 scripts/arch-image/starship.toml "$ROOTFS/root/.tritonterm-setup/starship.toml"
 install -m 0644 app/src/main/assets/tritonterm-fish-system-config.fish "$ROOTFS/root/.tritonterm-setup/tritonterm-fish-system-config.fish"
 install -m 0644 scripts/arch-image/paru-bootstrap.PKGBUILD "$ROOTFS/root/.tritonterm-setup/paru-bootstrap.PKGBUILD"
+install -m 0644 scripts/arch-image/elio-bin.PKGBUILD "$ROOTFS/root/.tritonterm-setup/elio-bin.PKGBUILD"
+install -m 0644 scripts/arch-image/elio-bin.aur-commit "$ROOTFS/root/.tritonterm-setup/elio-bin.aur-commit"
+install -m 0644 scripts/arch-image/elio-theme.toml "$ROOTFS/root/.tritonterm-setup/elio-theme.toml"
 install -m 0644 scripts/arch-image/starship-prompt-benchmark.fish "$ROOTFS/tmp/tritonterm-starship-prompt-benchmark.fish"
 install -d -m 0755 "$ROOTFS/etc/tritonterm"
 install -m 0644 app/src/main/assets/arch-guest-identity-smoke.fish "$ROOTFS/etc/tritonterm/guest-smoke.fish"
@@ -221,11 +224,25 @@ chmod 0644 "$ROOTFS/etc/tritonterm/rootfs-release"
 printf '%s\n' 'v1' > "$ROOTFS/etc/tritonterm/proot-userland-metadata-v1"
 chmod 0644 "$ROOTFS/etc/tritonterm/proot-userland-metadata-v1"
 touch "$ROOTFS/root/.tritonterm-userland-profile-v1"
-chroot_guest /usr/bin/pacman -Qo /usr/bin/fakeroot /usr/bin/rustup /usr/bin/paru > "$OUTPUT_DIR/package-ownership-${VERSION}.txt"
+chroot_guest /usr/bin/pacman -Qo /usr/bin/fakeroot /usr/bin/rustup /usr/bin/paru /usr/bin/elio > "$OUTPUT_DIR/package-ownership-${VERSION}.txt"
 chroot_guest /usr/bin/pacman -Q > "$OUTPUT_DIR/packages-${VERSION}.txt"
 report_line "installed_package_count=$(wc -l < "$OUTPUT_DIR/packages-${VERSION}.txt" | tr -d ' ')"
 run_image_contract fixed_account /bin/bash -lc '[[ "$(getent passwd triton | cut -d: -f3-4)" == "1000:1000" && "$(getent passwd triton | cut -d: -f6-7)" == "/home/triton:/usr/bin/fish" && "$(getent group 1000 | cut -d: -f1)" == triton && "$(stat -c %u:%g /home/triton)" == "1000:1000" && -z "$(getent passwd alarm || true)" ]]
 ! grep -qE "usermod[[:space:]]+--login|groupmod[[:space:]]+--new-name" /root/.tritonterm-setup/setup-arch-developer.sh'
+run_image_contract elio_package /usr/bin/su -l triton -s /usr/bin/fish -c 'test "$(elio --version)" = "elio 1.15.0" && test -x /usr/bin/elio && pacman -Q elio-bin'
+run_image_contract elio_theme_permissions /usr/bin/stat -c '%a %u:%g %n' /home/triton/.config/elio/theme.toml
+grep -qx '644 1000:1000 /home/triton/.config/elio/theme.toml' "$OUTPUT_DIR/contract-${VERSION}-elio_theme_permissions.txt" || fail 4 'Elio theme must be owned by triton and readable'
+elio_tui_log="$OUTPUT_DIR/contract-${VERSION}-elio_interactive_theme.txt"
+chroot_guest /usr/bin/su -l triton -s /usr/bin/fish -c \
+    'printf q | /usr/bin/script -q -e -c /usr/bin/elio /dev/null 2>&1' > "$elio_tui_log" || {
+    cat "$elio_tui_log" >&2
+    fail 4 'the preinstalled Elio binary did not start and exit through a pseudo-terminal'
+}
+if grep -Fq 'failed to load theme from' "$elio_tui_log"; then
+    cat "$elio_tui_log" >&2
+    fail 4 'Elio rejected the bundled user theme during interactive startup'
+fi
+printf 'TRITONTERM_ELIO_INTERACTIVE_THEME_PASSED\n' | tee -a "$report"
 run_image_contract rustup_show /usr/bin/su -l triton -s /usr/bin/fish -c 'rustup show'
 run_image_contract rustc_version /usr/bin/su -l triton -s /usr/bin/fish -c 'rustc --version'
 run_image_contract cargo_version /usr/bin/su -l triton -s /usr/bin/fish -c 'cargo --version'
@@ -302,7 +319,8 @@ rm -rf "$ROOTFS/root/.gnupg" "$ROOTFS/home/triton/.gnupg"
 # first installation initializes and populates a device-local keyring instead.
 rm -rf "$ROOTFS/etc/pacman.d/gnupg"
 rm -f "$ROOTFS/root/.tritonterm-pacman-keyring-ready"
-rm -rf "$ROOTFS/home/triton/rustup-smoke" "$ROOTFS/home/triton/.cache/tritonterm/paru-2.2.0"
+rm -rf "$ROOTFS/home/triton/rustup-smoke" "$ROOTFS/home/triton/.cache/tritonterm/paru-2.2.0" \
+    "$ROOTFS/home/triton/.cache/tritonterm/elio-bin-1.15.0"
 find "$ROOTFS/var/cache/pacman/pkg" -mindepth 1 -maxdepth 1 -type f -delete 2>/dev/null || true
 
 stage='rootfs_archive_creation'
@@ -363,7 +381,9 @@ mkdir -p "$verify_dir"
 tar --numeric-owner --xattrs --acls -xzf "$OUTPUT_ARCHIVE" -C "$verify_dir"
 [[ -s "$verify_dir/etc/os-release" && -d "$verify_dir/var/lib/pacman/local" &&
    -x "$verify_dir/usr/bin/fish" && -x "$verify_dir/usr/bin/paru" &&
-   -x "$verify_dir/usr/bin/rustup" && -d "$verify_dir/home/triton/.rustup/toolchains" &&
+   -x "$verify_dir/usr/bin/rustup" && -x "$verify_dir/usr/bin/elio" &&
+   -s "$verify_dir/home/triton/.config/elio/theme.toml" &&
+   -d "$verify_dir/home/triton/.rustup/toolchains" &&
    ! -e "$verify_dir/var/cache/tritonterm/developer-setup.log" ]] ||
     fail 6 're-extracted image did not pass required filesystem checks'
 [[ ! -e "$verify_dir/etc/pacman.d/gnupg" && ! -e "$verify_dir/root/.tritonterm-pacman-keyring-ready" ]] ||

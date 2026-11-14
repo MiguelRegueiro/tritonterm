@@ -107,3 +107,14 @@ cat "$output"
 ! grep -q '^CHECK_FAILED ' "$output" || fail 4 "guest feature checks failed; output: $output"
 grep -q '^TRITONTERM_GUEST_CHECKS_COMPLETED failures=0$' "$output" || fail 4 "Fish smoke did not report success; output: $output"
 printf 'TRITONTERM_NATIVE_PR_CLI_LOGIN_PASSED\n'
+
+stage='run_preinstalled_elio_as_guest'
+elio_output="$OUTPUT/contract-native-pr-cli-elio.txt"
+elio_args=(login archlinuxarm --user triton /usr/bin/elio --version)
+result=0
+PATH="$PREFIX/bin:/system/bin:/system/xbin" "$TIMEOUT_BIN" 30 \
+    "$BIN/libpr-cli.so" "${elio_args[@]}" > "$elio_output" 2>&1 || result=$?
+cat "$elio_output"
+(( result == 0 )) || fail "$result" "Elio did not start through the Android-equivalent PRoot login; output: $elio_output"
+grep -qx 'elio 1.15.0' "$elio_output" || fail 4 "unexpected Elio version through PRoot; output: $elio_output"
+printf 'TRITONTERM_NATIVE_PR_CLI_ELIO_PASSED\n'
