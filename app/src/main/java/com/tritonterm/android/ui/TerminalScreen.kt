@@ -129,8 +129,18 @@ internal fun TerminalScreen() {
 
     LaunchedEffect(terminalController) {
         if (terminalController.isReady(context)) {
-            session = terminalController.start()
-            setupReady = true
+            // Post the ongoing notification before PRoot/session startup can take time.
+            TerminalForegroundService.startSession(context)
+            try {
+                session = terminalController.start()
+                setupReady = true
+            } catch (failure: Exception) {
+                TerminalForegroundService.stop(context)
+                TerminalSessionHost.markSessionInactive(context)
+                setupReady = false
+                setupError = failure.message ?: "The terminal shell could not start."
+                TerminalDiagnostics.record(context, "shell_startup", "failed", mapOf("error" to setupError))
+            }
             return@LaunchedEffect
         }
         setupReady = false
@@ -487,7 +497,6 @@ internal fun TerminalScreen() {
                         sessionClient.terminalView = this
                         attachSession(currentSession)
                         terminalViewHolder[0] = this
-                            TerminalForegroundService.startSession(context)
                             setBackgroundColor(android.graphics.Color.BLACK)
                             isFocusable = true
                             isFocusableInTouchMode = true
@@ -526,10 +535,12 @@ internal fun TerminalScreen() {
                         )
                         Button(onClick = {
                             runCatching {
+                                TerminalForegroundService.startSession(context)
                                 session = terminalController.restartFinishedSession()
                                 terminalProcessFinished = false
-                                TerminalForegroundService.startSession(context)
                             }.onFailure { failure ->
+                                TerminalForegroundService.stop(context)
+                                TerminalSessionHost.markSessionInactive(context)
                                 diagnosticsMessage = "Could not start a new shell: ${failure.message ?: failure.javaClass.simpleName}"
                                 TerminalDiagnostics.record(context, "shell_restart", "failed", mapOf("error" to failure.toString()))
                             }

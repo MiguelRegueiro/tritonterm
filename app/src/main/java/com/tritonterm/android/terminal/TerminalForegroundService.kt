@@ -11,6 +11,7 @@ import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.IBinder
 import com.tritonterm.android.MainActivity
+import com.tritonterm.android.R
 
 /** Keeps a user-started terminal or first-run provisioning process important while backgrounded. */
 internal class TerminalForegroundService : Service() {
@@ -25,7 +26,16 @@ internal class TerminalForegroundService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         val setup = intent?.action == ACTION_SETUP
-        val notification = notification(if (setup) "Preparing Arch Linux ARM" else "Terminal session is running")
+        if (intent?.action == ACTION_EXIT) {
+            // Termux-style Exit closes the active PTY as well as the persistent notification.
+            TerminalSessionHost.controller(applicationContext).resetSession()
+            TerminalSessionHost.markSessionInactive(applicationContext)
+            stopForeground(STOP_FOREGROUND_REMOVE)
+            stopSelf(startId)
+            TerminalDiagnostics.record(applicationContext, "foreground_service", "exit_action")
+            return START_NOT_STICKY
+        }
+        val notification = notification(setup)
         if (Build.VERSION.SDK_INT >= 34) {
             startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE)
         } else {
@@ -47,7 +57,7 @@ internal class TerminalForegroundService : Service() {
         super.onDestroy()
     }
 
-    private fun notification(message: String): Notification {
+    private fun notification(setup: Boolean): Notification {
         val launch = PendingIntent.getActivity(
             this,
             0,
@@ -60,10 +70,23 @@ internal class TerminalForegroundService : Service() {
             @Suppress("DEPRECATION") Notification.Builder(this)
         }
         return builder
-            .setSmallIcon(android.R.drawable.ic_menu_info_details)
+            .setSmallIcon(R.drawable.ic_stat_triton)
             .setContentTitle("TritonTerm")
-            .setContentText(message)
+            .setContentText(if (setup) "Preparing Arch Linux ARM" else "Terminal session running")
             .setContentIntent(launch)
+            .setShowWhen(false)
+            .apply {
+                if (!setup) {
+                    val exit = PendingIntent.getService(
+                        this@TerminalForegroundService,
+                        1,
+                        Intent(this@TerminalForegroundService, TerminalForegroundService::class.java)
+                            .setAction(ACTION_EXIT),
+                        PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+                    )
+                    addAction(android.R.drawable.ic_menu_close_clear_cancel, "Exit", exit)
+                }
+            }
             .setOngoing(true)
             .setCategory(Notification.CATEGORY_SERVICE)
             .build()
@@ -74,6 +97,7 @@ internal class TerminalForegroundService : Service() {
         private const val NOTIFICATION_ID = 1701
         private const val ACTION_SETUP = "com.tritonterm.android.action.SETUP"
         private const val ACTION_SESSION = "com.tritonterm.android.action.SESSION"
+        private const val ACTION_EXIT = "com.tritonterm.android.action.EXIT"
 
         fun startSession(context: Context) {
             TerminalSessionHost.markSessionActive(context.applicationContext)
