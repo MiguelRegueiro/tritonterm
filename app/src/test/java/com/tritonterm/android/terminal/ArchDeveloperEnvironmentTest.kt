@@ -249,6 +249,16 @@ class ArchDeveloperEnvironmentTest {
     }
 
     @Test
+    fun reviewApkCanInstallBesideTheExistingAppWithoutChangingNormalApplicationId() {
+        val gradleConfig = File("build.gradle.kts").readText()
+        val apkBuilder = File("../scripts/build-apk.sh").readText()
+        assertTrue(gradleConfig.contains("tritonterm.androidApplicationIdSuffix"))
+        assertTrue(gradleConfig.contains("getByName(\"debug\")"))
+        assertTrue(apkBuilder.contains("TRITONTERM_ANDROID_APPLICATION_ID_SUFFIX"))
+        assertTrue(gradleConfig.contains("applicationId = \"com.tritonterm.android\""))
+    }
+
+    @Test
     fun everyAndroidProotEntryPointSelfHealsTheAppTempDirectory() {
         val installer = File("src/main/java/com/tritonterm/android/terminal/ArchLinuxArmInstaller.kt").readText()
         val terminal = File("src/main/java/com/tritonterm/android/terminal/TerminalSessionController.kt").readText()

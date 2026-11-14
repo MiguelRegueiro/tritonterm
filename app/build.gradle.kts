@@ -12,6 +12,11 @@ val archRootfsReleaseTag = providers.gradleProperty("tritonterm.archRootfsReleas
     .orElse("unconfigured").get()
 val androidVersionCode = providers.gradleProperty("tritonterm.androidVersionCode").orElse("1").get().toInt()
 val androidVersionName = providers.gradleProperty("tritonterm.androidVersionName").orElse("0.1.0").get()
+val androidApplicationIdSuffix = providers.gradleProperty("tritonterm.androidApplicationIdSuffix").orElse("").get()
+require(androidApplicationIdSuffix.isEmpty() ||
+    Regex("\\.[A-Za-z][A-Za-z0-9_]*(\\.[A-Za-z][A-Za-z0-9_]*)*").matches(androidApplicationIdSuffix)) {
+    "tritonterm.androidApplicationIdSuffix must be empty or a dotted Android application ID suffix"
+}
 fun buildConfigString(value: String) = "\"${value.replace("\\", "\\\\").replace("\"", "\\\"")}\""
 
 android {
@@ -39,6 +44,9 @@ android {
         }
     }
     buildTypes {
+        getByName("debug") {
+            if (androidApplicationIdSuffix.isNotEmpty()) applicationIdSuffix = androidApplicationIdSuffix
+        }
         getByName("release") {
             signingConfig = signingConfigs.getByName("tritontermRelease")
             isMinifyEnabled = false
