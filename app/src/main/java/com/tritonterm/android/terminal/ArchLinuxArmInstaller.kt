@@ -54,6 +54,7 @@ internal object ArchLinuxArmInstaller {
                     "Arch Linux ARM signing keys could not be initialized and verified. Setup is not ready; retry setup after checking the setup log."
                 }
                 requireTcpFakeroot(featureWarnings)
+                requireRustToolchain(featureWarnings)
                 mutableState.value = mutableState.value.copy(featureWarnings = featureWarnings.distinct())
                 TerminalDiagnostics.record(
                     app,
@@ -115,6 +116,7 @@ internal object ArchLinuxArmInstaller {
                 "Arch Linux ARM signing keys could not be initialized and verified. Setup is not ready; retry setup after checking the setup log."
             }
             requireTcpFakeroot(featureWarnings)
+            requireRustToolchain(featureWarnings)
             mutableState.value = mutableState.value.copy(featureWarnings = featureWarnings.distinct())
             TerminalDiagnostics.record(
                 app,
@@ -150,6 +152,9 @@ internal object ArchLinuxArmInstaller {
                 )
                 TerminalDiagnostics.record(appContext, phase, "failed", mapOf("error" to message))
             } finally {
+                if (succeeded && phase == "setup") {
+                    ArchLinuxArmBootstrap.removeDownloadedArchiveAfterSuccess(appContext)
+                }
                 if (phase == "setup") TerminalForegroundService.stop(appContext)
                 mutableState.value = mutableState.value.copy(
                     stage = if (succeeded && phase == "setup") TerminalSetupStage.READY else mutableState.value.stage,
@@ -195,7 +200,8 @@ internal object ArchLinuxArmInstaller {
             put("TRITONTERM_PRESERVE_FAILED_ROOTFS", "1")
             put("PATH", "${File(prefix, "bin").absolutePath}:/system/bin:/system/xbin")
             put("TERM", "xterm-256color")
-            put("LANG", "en_US.UTF-8")
+            put("LANG", ArchGuestEnvironment.LANG)
+            put("TZ", ArchGuestEnvironment.timezoneId())
             environmentOverrides.forEach { (key, value) -> put(key, value) }
         }
         val started = System.nanoTime()
@@ -221,7 +227,8 @@ internal object ArchLinuxArmInstaller {
                     "TRITONTERM_PRESERVE_FAILED_ROOTFS" to "1",
                     "PATH" to "${File(prefix, "bin").absolutePath}:/system/bin:/system/xbin",
                     "TERM" to "xterm-256color",
-                    "LANG" to "en_US.UTF-8"
+                    "LANG" to ArchGuestEnvironment.LANG,
+                    "TZ" to ArchGuestEnvironment.timezoneId()
                 )
             )
         )
@@ -318,6 +325,15 @@ internal object ArchLinuxArmInstaller {
         }
         check(failures.isEmpty()) {
             "TCP fakeroot did not pass its installed-image checks: ${failures.joinToString("; ")}"
+        }
+    }
+
+    private fun requireRustToolchain(featureWarnings: List<String>) {
+        val failures = featureWarnings.filter { warning ->
+            warning.contains("rust", ignoreCase = true) || warning.contains("cargo", ignoreCase = true)
+        }
+        check(failures.isEmpty()) {
+            "The preinstalled Rustup stable toolchain did not pass its guest checks: ${failures.joinToString("; ")}"
         }
     }
 

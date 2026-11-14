@@ -213,6 +213,19 @@ internal object ArchLinuxArmBootstrap {
     fun archivePath(context: Context) = archive(context).absolutePath
     fun signaturePath(context: Context) = signature(context).absolutePath
 
+    /** The authenticated archive is needed until setup and guest checks succeed, then costs ~0.9 GB. */
+    fun removeDownloadedArchiveAfterSuccess(context: Context) {
+        val cached = archive(context)
+        val bytes = cached.takeIf(File::isFile)?.length() ?: 0L
+        val removed = !cached.exists() || cached.delete()
+        TerminalDiagnostics.record(
+            context,
+            "rootfs_archive_cache",
+            if (removed) "removed_after_success" else "removal_failed",
+            mapOf("path" to cached.absolutePath, "bytes" to bytes, "removed" to removed)
+        )
+    }
+
     private fun cacheDir(context: Context) =
         File(context.filesDir, "usr/var/lib/pr/dlcache")
 
@@ -347,7 +360,7 @@ internal object ArchRootfsReadiness {
 
 /** Prebuilt-image feature inventory. Failures are reported but do not gate shell startup. */
 internal object ArchDeveloperEnvironment {
-    const val VERSION = "5"
+    const val VERSION = "6"
     const val SOURCE_SHA256 = "0822bd5a9f0cf19d2ba0546b88b0432d4d3d9917db62c57b74044ccadba06e49"
     const val PARU_VERSION = "2.2.0"
     const val FAKEROOT_VERSION = "2.1.4"
@@ -395,7 +408,16 @@ internal object ArchDeveloperEnvironment {
         )
         requiredFiles.forEach { relative ->
             val file = File(root, relative)
-            if (!file.exists() || (relative.contains("/bin/") && !file.canExecute())) missing += "/$relative"
+            // Absolute guest symlinks (notably rustc/cargo -> /usr/bin/rustup) must be
+            // inspected lexically: following /usr/bin/rustup here resolves on Android,
+            // outside this rootfs. PRoot's guest smoke below validates real execution.
+            val existsInRootfs = runCatching {
+                java.nio.file.Files.exists(file.toPath(), java.nio.file.LinkOption.NOFOLLOW_LINKS)
+            }.getOrDefault(false)
+            val isGuestSymlink = runCatching { java.nio.file.Files.isSymbolicLink(file.toPath()) }.getOrDefault(false)
+            if (!existsInRootfs || (relative.contains("/bin/") && !isGuestSymlink && !file.canExecute())) {
+                missing += "/$relative"
+            }
         }
         if (!File(root, "$FAKEROOT_PREFIX/current").isSymbolicLinkTo(FAKEROOT_VERSION)) {
             missing += "TCP fakeroot current symlink"

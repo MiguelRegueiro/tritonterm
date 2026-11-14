@@ -22,6 +22,12 @@ Paru 2.2.0 is built from its upstream source archive with SHA-256 `213d55a67605f
 
 Rustup is Arch Linux ARM's `rustup` package, not the standalone `rust` or `cargo` packages. The stable AArch64 GNU toolchain is initialized for `triton` before the image is made. The image build verifies `rustup show`, rustc/cargo versions, a real `cargo build`, and execution of the result in a Fish login shell.
 
+The shipped toolchain uses Rustup's minimal profile. Rust HTML documentation is optional for compiling and running Cargo projects, so the image recipe removes the `rust-docs` component while retaining rustc, Cargo, the standard library, Cargo's preloaded registry cache, and the stable default toolchain. The image report records the expanded documentation bytes removed. Users can add Rustup components later if they need them.
+
+Each Android-launched guest process receives `LANG=C.UTF-8` and the phone's current IANA timezone ID as `TZ`. TritonTerm refreshes the Android timezone lookup for each new Arch session, so a phone timezone change applies on the next shell without rebuilding the image. The guest's tzdata supplies seasonal daylight-saving rules. CI checks the locale used by bsdtar, January/July Europe/Madrid offsets, and the configured Starship time module. The same Fish login smoke is also run by the Android installer.
+
+The signed rootfs download is retained until extraction, keyring initialization, and required feature checks succeed. Setup then removes the roughly 868 MiB `.12` archive from app-private storage; an interrupted or failed setup retains it so retry does not need to download it again. The installed rootfs and the user's Cargo registry/build caches are not removed. The builder also records Starship prompt latency at idle and while traversing the preloaded Cargo registry; the prompt's `scan_timeout` is changed only if those measurements show a consistent need.
+
 ## Build and artifact authentication
 
 `scripts/build-arch-dev-rootfs.sh` is the native AArch64 build recipe. `.github/workflows/build-arch-dev-rootfs.yml` runs it on GitHub's `ubuntu-24.04-arm` runner and uploads a short-lived **review artifact only**. It does not create a repository, tag, or GitHub Release. The script verifies the upstream Arch Linux ARM generic archive's detached signature against the pinned signing-key fingerprint `68B3537F39A313B3E574D06777193F152BDBE6A6`, records its SHA-256, provisions the development stack, checks pacman and package ownership, and records package versions and build/extraction timings.

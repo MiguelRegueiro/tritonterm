@@ -94,7 +94,7 @@ export HOME="$work/home" TMPDIR="$work/cache/proot" PROOT_TMP_DIR="$work/cache/p
 export PROOT_NO_SECCOMP=1 TRITONTERM_PROOT_USERLAND_METADATA=1
 export TRITONTERM_DIAGNOSTICS_FILE="$OUTPUT/native-pr-cli-diagnostics.jsonl"
 export PROOT_CRASH_DIAGNOSTICS=1 PROOT_CRASH_DIAGNOSTICS_FILE="$OUTPUT/native-pr-cli-crash.log"
-export TERM=xterm-256color LANG=en_US.UTF-8
+export TERM=xterm-256color LANG=C.UTF-8 TZ=Europe/Madrid
 output="$OUTPUT/contract-native-pr-cli-login.txt"
 args=(login archlinuxarm --user triton /usr/bin/fish -l -i -c 'source /etc/tritonterm/guest-smoke.fish')
 printf 'Invocation: %q ' "$BIN/libpr-cli.so" "${args[@]}" > "$output"

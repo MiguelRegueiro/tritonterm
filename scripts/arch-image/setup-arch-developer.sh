@@ -2,7 +2,7 @@
 # Fresh TritonTerm Arch developer environment. Invoked as root inside PRoot.
 set -Eeuo pipefail
 
-readonly VERSION='5'
+readonly VERSION='6'
 readonly FAKEROOT_VERSION='2.1.4'
 readonly FAKEROOT_URL='https://deb.debian.org/debian/pool/main/f/fakeroot/fakeroot_2.1.4.orig.tar.xz'
 readonly FAKEROOT_SHA256='0822bd5a9f0cf19d2ba0546b88b0432d4d3d9917db62c57b74044ccadba06e49'
@@ -228,8 +228,17 @@ chmod 0644 "$triton_home/.config/pacman/makepkg.conf" "$triton_home/.config/paru
 run_triton_fish() { su -l "$TRITON_USER" -s /usr/bin/fish -c "$1"; }
 
 stage='rustup_stable_toolchain'
-say 'Installing the official stable AArch64 GNU toolchain as triton with Arch rustup.'
-run_triton_fish 'rustup default stable'
+say 'Installing the official minimal stable AArch64 GNU toolchain as triton with Arch rustup.'
+run_triton_fish 'rustup set profile minimal && rustup default stable'
+rust_docs_component="$(run_triton_fish 'rustup component list --installed' | grep -m1 '^rust-docs' || true)"
+rust_docs_dir="$triton_home/.rustup/toolchains/stable-aarch64-unknown-linux-gnu/share/doc/rust/html"
+rust_docs_before=0
+if [[ -n "$rust_docs_component" ]]; then
+    rust_docs_before="$(du -sb "$rust_docs_dir" 2>/dev/null | awk '{print $1}' || printf 0)"
+    run_triton_fish 'rustup component remove rust-docs'
+fi
+rust_docs_after="$(du -sb "$rust_docs_dir" 2>/dev/null | awk '{print $1}' || printf 0)"
+say "Optional Rust HTML documentation removed; expanded_bytes_before=${rust_docs_before} expanded_bytes_after=${rust_docs_after} expanded_bytes_saved=$((rust_docs_before - rust_docs_after))."
 run_triton_fish 'rustup show'
 run_triton_fish 'rustup show active-toolchain | string match -q "stable-aarch64-unknown-linux-gnu*"'
 run_triton_fish 'rustc --version'
@@ -448,6 +457,7 @@ fn main() { println!("TRITONTERM_RUSTUP_STABLE_BUILD_OK"); }
 RUST_MAIN
 chown -R "$TRITON_USER:$triton_group" "$rust_smoke"
 run_triton_fish "cd '$rust_smoke' && cargo build --offline && ./target/debug/tritonterm-rustup-smoke"
+rm -rf "$rust_smoke"
 run_triton_fish 'rustup show'
 run_triton_fish 'rustc --version'
 run_triton_fish 'cargo --version'
