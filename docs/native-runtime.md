@@ -21,6 +21,8 @@ For device diagnosis, the pinned `pr-cli` source also writes structured install,
 
 TritonTerm's `pr-cli` patch reports checksum progress for distributions that use SHA-256, interrupted-install cleanup counts, and compressed archive bytes read plus filesystem entries extracted through `APP_PREFIX/var/lib/pr/tritonterm-install-progress`. Android polls the file directly, so progress does not depend on terminal rendering or scrollback. The Arch rootfs uses its detached signature as the integrity check and skips redundant checksum passes. The installer also fails if setting an entry's permissions fails, replacing an extra full-tree scan after extraction; permission errors are reported at the file that caused them.
 
+For Arch guest sessions, the pinned `pr-cli` login patch forwards the Android-selected `LANG=C.UTF-8` and current `TZ` value after clearing the host environment. This preserves the working UTF-8 locale and lets each new session follow Android timezone changes.
+
 ## All native libraries packaged in the APK
 
 There are 11 native libraries in the universal debug APK: three TritonTerm PRoot executables and two upstream Android libraries for each ABI. AndroidX Graphics Path is resolved from its pinned Gradle coordinate. Termux's terminal emulator Java sources and `libtermux.so` are vendored from the documented upstream 0.118.0 revision so TritonTerm can apply its small, source-level session UI patch. [`native-binaries.sha256`](native-binaries.sha256) records each library as extracted from the APK, and [`scripts/verify-packaged-native-libs.sh`](../scripts/verify-packaged-native-libs.sh) checks both the set and each hash after every APK build.
