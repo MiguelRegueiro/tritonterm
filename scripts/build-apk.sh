@@ -69,6 +69,9 @@ fi
 if [[ -n "${TRITONTERM_ANDROID_VERSION_NAME:-}" ]]; then
     gradle_properties+=("-Ptritonterm.androidVersionName=${TRITONTERM_ANDROID_VERSION_NAME}")
 fi
+if [[ -n "${TRITONTERM_ANDROID_APPLICATION_ID_SUFFIX:-}" ]]; then
+    gradle_properties+=("-Ptritonterm.androidApplicationIdSuffix=${TRITONTERM_ANDROID_APPLICATION_ID_SUFFIX}")
+fi
 "$gradle_bin" --no-daemon "${gradle_properties[@]}" :app:testDebugUnitTest :app:assembleDebug
 
 apk="$project_root/app/build/outputs/apk/debug/app-debug.apk"

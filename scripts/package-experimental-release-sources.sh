@@ -211,11 +211,17 @@ these values:
     TRITONTERM_ARCH_ROOTFS_RELEASE_BASE_URL=@ROOTFS_RELEASE_BASE_URL@
     TRITONTERM_ANDROID_VERSION_CODE=@ANDROID_VERSION_CODE@
     TRITONTERM_ANDROID_VERSION_NAME=@ANDROID_VERSION_NAME@
+    TRITONTERM_ANDROID_APPLICATION_ID_SUFFIX=.review
 
 This APK is signed with Android's standard debug certificate so it is installable
 for review and can be replaced by another APK signed with the same development
 key. It is not a production signing identity; future production APKs must use a
 separate protected release keystore.
+
+The review APK uses application ID `com.tritonterm.android.review` so it can
+be installed alongside the stable or previous review app. Its launcher icon is
+the supplied TritonTerm artwork; opening it still starts `MainActivity`
+directly, without a splash or logo screen.
 
 The local patch is included so the published source corresponds to the reviewed
 APK even though the private development repository remains at the recorded base
@@ -263,7 +269,8 @@ tar --wildcards --wildcards-match-slash -xzf "$archive" -C "$work/licenses" \
     './home/triton/.cargo/registry/src/*/*/LICENSE*' \
     './home/triton/.cargo/registry/src/*/*/COPYING*' \
     './home/triton/.cargo/registry/src/*/*/NOTICE*' \
-    './home/triton/.rustup/toolchains/*/share/doc/rust/**/LICENSE*'
+    './home/triton/.rustup/toolchains/*/share/doc/rust/licenses' \
+    './home/triton/.rustup/toolchains/*/share/doc/cargo/LICENSE*'
 fakeroot_name='fakeroot_2.1.4.orig.tar.xz'
 tar -xOzf "$archive" "./var/cache/tritonterm/fakeroot-tcp/2.1.4/$fakeroot_name" \
     > "$source_tree/$fakeroot_name"
