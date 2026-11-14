@@ -1,0 +1,192 @@
+--- a/src/pr-cli/src/shared.rs
++++ b/src/pr-cli/src/shared.rs
+@@ -436,6 +436,87 @@
+     .collect()
+ }
+ 
++// TRITONTERM_ANDROID_MOUNT_TABLE_FILTER_V1: Android's /proc/mounts is visible
++// through PRoot's proc bind. Remove host-only /mnt records from the Arch
++// profile's view; Android mounts are not guest devices, but applications such
++// as Elio intentionally display custom top-level mount points. Keep the
++// shared-storage and standard virtual roots while dropping Android's other
++// top-level mounts. /proc/mounts is a symlink to /proc/self/mounts, so its
++// bind destination must end in `!` to prevent PRoot from canonicalizing away
++// this file-level override.
++fn guest_mount_table_contents(contents: &str) -> String {
++    let mut filtered = String::new();
++    for line in contents.lines() {
++        let mut fields = line.split_ascii_whitespace();
++        let Some(_source) = fields.next() else {
++            continue;
++        };
++        let Some(mount_point) = fields.next() else {
++            continue;
++        };
++        if is_android_host_mount_point(mount_point) {
++            continue;
++        }
++        filtered.push_str(line);
++        filtered.push('\n');
++    }
++    filtered
++}
++
++fn is_android_host_mount_point(mount_point: &str) -> bool {
++    if mount_point == "/mnt" || mount_point.starts_with("/mnt/") {
++        return true;
++    }
++    let Some(name) = mount_point.strip_prefix('/') else {
++        return false;
++    };
++    if name.is_empty() || name.contains('/') {
++        return false;
++    }
++    !matches!(name, "dev" | "proc" | "sdcard" | "storage" | "sys")
++}
++
++fn write_guest_mount_table(rootfs: &str, cache_dir: &std::path::Path) -> Option<std::path::PathBuf> {
++    use std::io::Write;
++    use std::os::unix::fs::OpenOptionsExt;
++
++    if !std::path::Path::new(rootfs)
++        .join("etc/tritonterm/proot-userland-metadata-v1")
++        .is_file()
++    {
++        return None;
++    }
++    let contents = std::fs::read_to_string("/proc/mounts").ok()?;
++    let filtered = guest_mount_table_contents(&contents);
++    std::fs::create_dir_all(cache_dir).ok()?;
++
++    let destination = cache_dir.join("tritonterm-guest-mounts");
++    let temporary = cache_dir.join(format!(
++        ".tritonterm-guest-mounts.{}.{}.tmp",
++        std::process::id(),
++        std::time::SystemTime::now()
++            .duration_since(std::time::UNIX_EPOCH)
++            .ok()?
++            .as_nanos()
++    ));
++    let mut file = std::fs::OpenOptions::new()
++        .write(true)
++        .create_new(true)
++        .mode(0o644)
++        .open(&temporary)
++        .ok()?;
++    if file.write_all(filtered.as_bytes()).is_err() {
++        let _ = std::fs::remove_file(&temporary);
++        return None;
++    }
++    drop(file);
++    if std::fs::rename(&temporary, &destination).is_err() {
++        let _ = std::fs::remove_file(&temporary);
++        return None;
++    }
++    Some(destination)
++}
++
+ pub fn build_proot_args(
+     rootfs: &str,
+     isolated: bool,
+@@ -537,6 +618,13 @@
+ 
+     args.push("--bind=/dev".to_string());
+     args.push("--bind=/proc".to_string());
++    if let Some(mount_table) = write_guest_mount_table(rootfs, Path::new(&cache_dir)) {
++        args.push(format!(
++            "--bind={}:{}",
++            mount_table.display(),
++            "/proc/mounts!"
++        ));
++    }
+     args.push("--bind=/sys".to_string());
+ 
+     args.push("--bind=/proc/self/fd:/dev/fd".to_string());
+@@ -896,6 +984,87 @@
+     }
+ 
+     #[test]
++    fn arch_guest_mount_table_hides_android_host_mounts_but_keeps_shared_paths() {
++        let contents = concat!(
++            "rootfs / ext4 rw 0 0\n",
++            "tmpfs /mnt tmpfs rw 0 0\n",
++            "/dev/fuse /mnt/user/0/emulated fuse rw 0 0\n",
++            "/dev/block/dm-56 /mnt/androidwritable/0/emulated/0/Android/data f2fs rw 0 0\n",
++            "/dev/block/dm-56 /system ext4 ro 0 0\n",
++            "/dev/block/dm-56 /vendor erofs ro 0 0\n",
++            "/dev/block/dm-56 /data f2fs rw 0 0\n",
++            "/dev/fuse /storage/emulated fuse rw 0 0\n",
++            "/dev/block/dm-56 /storage/emulated/0/Android/data f2fs rw 0 0\n",
++            "tmpfs /mnt-archive tmpfs rw 0 0\n",
++            "/dev/fuse /home/triton/storage fuse rw 0 0\n",
++        );
++        assert_eq!(
++            guest_mount_table_contents(contents),
++            concat!(
++                "rootfs / ext4 rw 0 0\n",
++                "/dev/fuse /storage/emulated fuse rw 0 0\n",
++                "/dev/block/dm-56 /storage/emulated/0/Android/data f2fs rw 0 0\n",
++                "/dev/fuse /home/triton/storage fuse rw 0 0\n",
++            )
++        );
++    }
++
++    #[test]
++    fn arch_proot_args_bind_the_filtered_mount_table_after_proc() {
++        let _guard = env_lock().lock().expect("lock env");
++        let base = unique_temp_dir("pr-cli-arch-guest-mounts");
++        let rootfs = base.join("rootfs");
++        let cache = base.join("cache");
++        fs::create_dir_all(rootfs.join("etc/tritonterm")).expect("create Arch marker dir");
++        fs::write(
++            rootfs.join("etc/tritonterm/proot-userland-metadata-v1"),
++            "v1\n",
++        )
++        .expect("write Arch marker");
++        fs::create_dir_all(&cache).expect("create cache");
++        let saved = std::env::var_os("PROOT_TMP_DIR");
++        std::env::set_var("PROOT_TMP_DIR", &cache);
++
++        let args = build_proot_args_for_identity(
++            rootfs.to_str().expect("rootfs path"),
++            true,
++            false,
++            &[],
++            1000,
++            1000,
++            "/home/triton",
++        );
++        let proc_bind = args
++            .iter()
++            .position(|arg| arg == "--bind=/proc")
++            .expect("proc bind");
++        let table_bind = args
++            .iter()
++            .position(|arg| arg.ends_with(":/proc/mounts!"))
++            .expect("filtered mount table bind");
++        assert!(table_bind > proc_bind, "mount table must override /proc");
++        let table_path = args[table_bind]
++            .strip_prefix("--bind=")
++            .and_then(|value| value.strip_suffix(":/proc/mounts!"))
++            .expect("mount table source")
++            .to_string();
++        let table = fs::read_to_string(table_path).expect("read generated mount table");
++        assert!(!table.lines().any(|line| {
++            line.split_ascii_whitespace()
++                .nth(1)
++                .is_some_and(|mount| is_android_host_mount_point(mount))
++        }));
++
++        if let Some(value) = saved {
++            std::env::set_var("PROOT_TMP_DIR", value);
++        } else {
++            std::env::remove_var("PROOT_TMP_DIR");
++        }
++        let _ = fs::remove_dir_all(base);
++        std::env::remove_var("PROOT_L2S_DIR");
++    }
++
++    #[test]
+     fn build_proot_args_includes_custom_bind_and_rootfs_flags() {
+         let _guard = env_lock().lock().expect("lock env");
+         let base = unique_temp_dir("pr-cli-shared-proot-args");
