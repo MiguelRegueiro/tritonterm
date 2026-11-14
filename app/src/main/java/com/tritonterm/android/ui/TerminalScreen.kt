@@ -336,7 +336,7 @@ internal fun TerminalScreen() {
         context.getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
     }
     val zoomTerminal = { increase: Boolean ->
-        terminalFontSize = (terminalFontSize + if (increase) 2 else -2).coerceIn(12, 40)
+        terminalFontSize = (terminalFontSize + if (increase) 2 else -2).coerceIn(12, 112)
     }
     val hideSystemKeyboard = {
         terminalViewHolder[0]?.let { inputMethodManager.hideSoftInputFromWindow(it.windowToken, 0) }
