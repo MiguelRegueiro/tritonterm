@@ -28,9 +28,15 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.text.selection.SelectionContainer
-import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.ime
+import androidx.compose.foundation.layout.isImeVisible
+import androidx.compose.foundation.layout.imeAnimationTarget
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.systemBarsPadding
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
@@ -56,9 +62,12 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
@@ -94,6 +103,7 @@ import kotlinx.coroutines.withContext
 import java.nio.charset.StandardCharsets
 
 @Composable
+@OptIn(ExperimentalLayoutApi::class)
 internal fun TerminalScreen() {
     val context = LocalContext.current
     val terminalController = remember(context) { TerminalSessionHost.controller(context) }
@@ -299,30 +309,69 @@ internal fun TerminalScreen() {
         }
     }
     var useSystemKeyboard by remember { mutableStateOf(false) }
+    var keyboardVisible by remember { mutableStateOf(true) }
+    var pendingBuiltInKeyboard by remember { mutableStateOf(false) }
+    val imeVisible = WindowInsets.isImeVisible
+    val imeTargetInsets = WindowInsets.imeAnimationTarget
+    val animatedImeInsets = WindowInsets.ime
+    LaunchedEffect(imeVisible, pendingBuiltInKeyboard) {
+        if (pendingBuiltInKeyboard && !imeVisible) {
+            useSystemKeyboard = false
+            keyboardVisible = true
+            pendingBuiltInKeyboard = false
+        }
+    }
     val terminalViewHolder = remember { arrayOfNulls<TerminalView>(1) }
+    val inputMethodManager = remember(context) {
+        context.getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
+    }
     val zoomTerminal = { increase: Boolean ->
         terminalFontSize = (terminalFontSize + if (increase) 2 else -2).coerceIn(12, 40)
     }
-    val toggleKeyboard: () -> Unit = {
-        val inputMethodManager = context.getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
+    val hideSystemKeyboard = {
+        terminalViewHolder[0]?.let { inputMethodManager.hideSoftInputFromWindow(it.windowToken, 0) }
+    }
+    val showSystemKeyboard = {
+        terminalViewHolder[0]?.let { view ->
+            view.requestFocus()
+            view.post { inputMethodManager.showSoftInput(view, InputMethodManager.SHOW_IMPLICIT) }
+        }
+    }
+    val toggleKeyboardMode: () -> Unit = {
         if (useSystemKeyboard) {
-            terminalViewHolder[0]?.let { inputMethodManager.hideSoftInputFromWindow(it.windowToken, 0) }
-            useSystemKeyboard = false
-        } else {
-            useSystemKeyboard = true
-            terminalViewHolder[0]?.let { view ->
-                view.requestFocus()
-                view.post { inputMethodManager.showSoftInput(view, InputMethodManager.SHOW_IMPLICIT) }
+            // Let the Android IME finish dismissing before showing our own
+            // keyboard. Otherwise both keyboards briefly occupy the window.
+            if (imeVisible) {
+                pendingBuiltInKeyboard = true
+                keyboardVisible = false
+                hideSystemKeyboard()
+            } else {
+                useSystemKeyboard = false
+                keyboardVisible = true
             }
+        } else {
+            pendingBuiltInKeyboard = false
+            useSystemKeyboard = true
+            keyboardVisible = true
+            showSystemKeyboard()
+        }
+    }
+    val toggleKeyboardVisibility: () -> Unit = {
+        if (pendingBuiltInKeyboard) pendingBuiltInKeyboard = false
+        keyboardVisible = !keyboardVisible
+        if (useSystemKeyboard) {
+            if (keyboardVisible) showSystemKeyboard() else hideSystemKeyboard()
         }
     }
     Column(
         Modifier
             .fillMaxSize()
             .systemBarsPadding()
-            .imePadding()
+            // Use the final IME inset while Android animates. The animated
+            // inset changes every frame; Termux TerminalView turns each size
+            // change into a PTY resize, which flickers the cursor and output.
+            .windowInsetsPadding(WindowInsets.imeAnimationTarget)
             .background(Color.Black)
-            .padding(top = 4.dp)
     ) {
         Row(
             Modifier
@@ -331,47 +380,36 @@ internal fun TerminalScreen() {
                 .padding(horizontal = 12.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Text("tritonterm", fontSize = 13.sp, fontWeight = FontWeight.SemiBold, color = Color(0xFF8992B2))
             Spacer(Modifier.weight(1f))
-            Text(
-                "Config",
-                modifier = Modifier
-                    .clickable {
-                        configText = configFile.readText()
-                        showConfig = true
-                    }
-                    .padding(horizontal = 10.dp, vertical = 8.dp),
-                fontSize = 12.sp,
-                color = Color(0xFFD5D5D5)
-            )
-            Text(
-                "Logs",
-                modifier = Modifier.clickable {
+            TextButton(onClick = {
+                configText = configFile.readText()
+                showConfig = true
+            }) { Text("Config", fontSize = 12.sp) }
+            TextButton(onClick = {
                     diagnosticEvents = runCatching { TerminalDiagnostics.recentEvents(context) }.getOrDefault(emptyList())
                     recorderStatusText = TerminalDiagnostics.recorderStatusText(context)
                     crashRecords = TerminalDiagnostics.guestCrashRecords(context)
                     diagnosticsMessage = ""
                     showDiagnostics = true
-                }.padding(horizontal = 8.dp, vertical = 8.dp),
-                fontSize = 12.sp,
-                color = Color(0xFFD5D5D5)
-            )
+            }) { Text("Logs", fontSize = 12.sp) }
             if (setupReady) {
-                Text(
-                    if (useSystemKeyboard) "Keys" else "IME",
-                    modifier = Modifier
-                        .clickable(onClick = toggleKeyboard)
-                        .padding(horizontal = 12.dp, vertical = 8.dp),
-                    fontSize = 12.sp,
-                    color = Color(0xFFD5D5D5)
-                )
-                Spacer(Modifier.padding(end = 8.dp))
+                TextButton(
+                    onClick = toggleKeyboardMode,
+                    modifier = Modifier.semantics {
+                        contentDescription = if (useSystemKeyboard) "Switch to the built-in keyboard" else "Switch to the Android keyboard"
+                    }
+                ) {
+                    Text(if (useSystemKeyboard) "Built-in" else "Android", fontSize = 11.sp)
+                }
+                TextButton(
+                    onClick = toggleKeyboardVisibility,
+                    modifier = Modifier.semantics {
+                        contentDescription = if (keyboardVisible) "Hide the keyboard" else "Show the keyboard"
+                    }
+                ) {
+                    Text(if (keyboardVisible) "Hide" else "Show", fontSize = 11.sp)
+                }
             }
-            Text(
-                terminalController.runtimeLabel,
-                fontSize = 11.sp,
-                color = Color(0xFF8A8A8A)
-            )
         }
 
         if (pacmanLockWarning && setupReady) {
@@ -634,15 +672,25 @@ internal fun TerminalScreen() {
             }
         }
 
-        if (setupReady) {
+        if (setupReady && keyboardVisible) {
             TerminalKeyboard(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 8.dp),
+                    .padding(horizontal = 8.dp)
+                    .offset {
+                        // Keep the extra keys aligned with the live IME edge,
+                        // while the terminal itself uses the stable target inset.
+                        IntOffset(
+                            x = 0,
+                            y = imeTargetInsets.getBottom(this) - animatedImeInsets.getBottom(this)
+                        )
+                    },
                 onZoom = zoomTerminal,
                 onCopy = { sessionClient.copySelection() },
                 onPaste = { sessionClient.pasteFromClipboard(session) },
                 keyBindings = terminalKeyBindings,
+                // Keep the Termux-style extra-key strip above Android's IME;
+                // only the full custom keyboard is exclusive to built-in mode.
                 compact = useSystemKeyboard,
                 onInput = { input ->
                     val bytes = input.toByteArray(StandardCharsets.UTF_8)
@@ -816,6 +864,7 @@ internal fun TerminalScreen() {
         )
     }
 }
+
 
 @Composable
 private fun SetupStageProgress(
