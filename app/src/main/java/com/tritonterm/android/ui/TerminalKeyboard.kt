@@ -5,6 +5,7 @@ import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -32,13 +33,19 @@ import com.tritonterm.android.config.TerminalKeyAction
 import com.tritonterm.android.terminal.TerminalClipboardSupport
 import kotlinx.coroutines.withTimeoutOrNull
 
-private enum class KeyKind { Text, Escape, Tab, Enter, Backspace, Arrow, Modifier, Caps, Shift, Layer }
+private enum class KeyKind { Text, Escape, Tab, Enter, Backspace, Delete, Arrow, Modifier, Caps, Shift, Layer }
 private data class TerminalKey(
     val label: String,
     val kind: KeyKind = KeyKind.Text,
     val value: String = label,
-    val weight: Float = 1f
+    val weight: Float = 1f,
+    val modeExclusive: Boolean = false
 )
+
+private val KeyboardKeySpacing = 4.dp
+private const val ReferenceBackspaceWeight = 1.5f
+private const val ReferenceBackspaceRowWeight = 10f
+private const val ReferenceBackspaceRowKeyCount = 9
 
 @Composable
 internal fun TerminalKeyboard(
@@ -64,40 +71,46 @@ internal fun TerminalKeyboard(
         if (key.kind == KeyKind.Shift) shift = down
     }
 
-    val fnKeys = (1..12).map { index ->
-        val sequence = when (index) {
-            1 -> "\u001bOP"; 2 -> "\u001bOQ"; 3 -> "\u001bOR"; 4 -> "\u001bOS"
-            in 5..10 -> "\u001b[${index + 10}~"
-            11 -> "\u001b[23~"
-            else -> "\u001b[24~"
-        }
-        TerminalKey("F$index", value = sequence, weight = 1f)
-    }
     val utility = listOf(
         TerminalKey("Esc", KeyKind.Escape), TerminalKey("Tab", KeyKind.Tab),
         TerminalKey("Caps", KeyKind.Caps),
-        TerminalKey(if (layer) "ABC" else "?123", KeyKind.Layer, weight = 1.15f),
+        TerminalKey(if (layer) "ABC" else "?123", KeyKind.Layer, weight = 1.15f, modeExclusive = layer),
         TerminalKey("←", KeyKind.Arrow, "\u001b[D"), TerminalKey("↑", KeyKind.Arrow, "\u001b[A"),
         TerminalKey("↓", KeyKind.Arrow, "\u001b[B"), TerminalKey("→", KeyKind.Arrow, "\u001b[C")
+    )
+    val commonKeys = listOf(
+        TerminalKey("Del", KeyKind.Delete), TerminalKey("/"), TerminalKey("?"), TerminalKey(":"),
+        TerminalKey(";"), TerminalKey("@"), TerminalKey("#"), TerminalKey("\$"), TerminalKey("+"), TerminalKey("-")
     )
     val digits = "1234567890".map { TerminalKey(it.toString()) }
     val qRow = "QWERTYUIOP".map { TerminalKey(it.toString()) }
     val aRow = "ASDFGHJKLÑ".map { TerminalKey(it.toString()) }
     val zRow = listOf(
-        TerminalKey("Shift", KeyKind.Shift, weight = 1.35f),
+        TerminalKey("Shift", KeyKind.Shift, weight = 1.5f),
         *"ZXCVBNM".map { TerminalKey(it.toString()) }.toTypedArray(),
-        TerminalKey(".", value = "."), TerminalKey("⌫", KeyKind.Backspace, weight = 1.35f)
+        TerminalKey("⌫", KeyKind.Backspace, weight = ReferenceBackspaceWeight)
     )
-    val symbolKeys = listOf(
-        "?", "!", "@", "#", "€", "%", "&", "*", "(", ")",
-        "/", "+", "=", "_", ":", ";", ",", ".", "'", "\"",
-        "\\", "|", "[", "]", "{", "}", "<", ">", "-", "¿"
-    ).map { TerminalKey(it) }
+    val symbolRows = listOf(
+        listOf("!", "%", "^", "&", "*", "(", ")", "=", "[", "]").map { TerminalKey(it, modeExclusive = true) },
+        listOf("{", "}", "\\", "|", "<", ">", "~", "`", "'", "\"").map { TerminalKey(it, modeExclusive = true) },
+        listOf(
+            TerminalKey("Home", KeyKind.Arrow, "\u001b[H", 1.05f, modeExclusive = true),
+            TerminalKey("End", KeyKind.Arrow, "\u001b[F", 1.05f, modeExclusive = true),
+            TerminalKey("PgUp", KeyKind.Arrow, "\u001b[5~", 1.05f, modeExclusive = true),
+            TerminalKey("PgDn", KeyKind.Arrow, "\u001b[6~", 1.05f, modeExclusive = true),
+            TerminalKey("Ins", KeyKind.Arrow, "\u001b[2~", 0.95f, modeExclusive = true),
+            TerminalKey("¡", weight = 0.95f, modeExclusive = true),
+            TerminalKey("¿", weight = 0.95f, modeExclusive = true)
+        ) +
+            TerminalKey("⌫", KeyKind.Backspace, weight = ReferenceBackspaceWeight)
+    )
     val modifiers = listOf(
-        TerminalKey("Ctrl", KeyKind.Modifier, "ctrl"),
-        TerminalKey("Alt", KeyKind.Modifier, "alt"),
-        TerminalKey("", value = " ", weight = 2.9f),
-        TerminalKey("Enter", KeyKind.Enter, weight = 1.3f)
+        TerminalKey("Ctrl", KeyKind.Modifier, "ctrl", weight = 0.95f),
+        TerminalKey("Alt", KeyKind.Modifier, "alt", weight = 0.75f),
+        TerminalKey(",", value = ",", weight = 0.6f),
+        TerminalKey("", value = " ", weight = 2.5f),
+        TerminalKey(".", value = ".", weight = 0.6f),
+        TerminalKey("Enter", KeyKind.Enter, weight = 1.2f)
     )
 
     fun emit(key: TerminalKey) {
@@ -115,6 +128,7 @@ internal fun TerminalKeyboard(
                     KeyKind.Tab -> "\t"
                     KeyKind.Enter -> "\r"
                     KeyKind.Backspace -> "\u007f"
+                    KeyKind.Delete -> "\u001b[3~"
                     KeyKind.Arrow -> key.value
                     else -> key.value
                 }
@@ -157,11 +171,11 @@ internal fun TerminalKeyboard(
             KeyRow(utility.filterNot { it.kind == KeyKind.Caps || it.kind == KeyKind.Layer }, 38.dp, onClick = ::emit, onHoldChanged = ::setHeld, active = emptySet())
             KeyRow(modifiers.filter { it.kind == KeyKind.Modifier }, 38.dp, onClick = ::emit, onHoldChanged = ::setHeld, active = buildSet { if (ctrl) add("Ctrl"); if (alt) add("Alt") })
         } else {
-            KeyRow(fnKeys, 38.dp, onClick = ::emit, onHoldChanged = ::setHeld, active = emptySet())
             KeyRow(utility, 38.dp, onClick = ::emit, onHoldChanged = ::setHeld, active = setOfNotNull(if (caps) "Caps" else null))
+            KeyRow(commonKeys, 38.dp, onClick = ::emit, onHoldChanged = ::setHeld, active = emptySet(), caps = caps, shift = shift)
             KeyRow(digits, 50.dp, onClick = ::emit, onHoldChanged = ::setHeld, active = emptySet(), caps = caps, shift = shift)
             if (layer) {
-                symbolKeys.chunked(10).forEach { row -> KeyRow(row, 50.dp, onClick = ::emit, onHoldChanged = ::setHeld, active = emptySet(), caps = caps, shift = shift) }
+                symbolRows.forEach { row -> KeyRow(row, 50.dp, onClick = ::emit, onHoldChanged = ::setHeld, active = emptySet(), caps = caps, shift = shift) }
             } else {
                 KeyRow(qRow, 50.dp, onClick = ::emit, onHoldChanged = ::setHeld, active = emptySet(), caps = caps, shift = shift)
                 KeyRow(aRow, 50.dp, onClick = ::emit, onHoldChanged = ::setHeld, active = emptySet(), caps = caps, shift = shift)
@@ -198,7 +212,20 @@ private fun KeyRow(
     caps: Boolean = false,
     shift: Boolean = false
 ) {
-    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+    BoxWithConstraints(Modifier.fillMaxWidth()) {
+        val availableWidth = maxWidth - KeyboardKeySpacing * (keys.size - 1)
+        val referenceWidth = maxWidth - KeyboardKeySpacing * (ReferenceBackspaceRowKeyCount - 1)
+        val referenceBackspaceWidth = referenceWidth * (ReferenceBackspaceWeight / ReferenceBackspaceRowWeight)
+        val otherKeyWeights = keys.asSequence()
+            .filterNot { it.kind == KeyKind.Backspace }
+            .sumOf { it.weight.toDouble() }
+            .toFloat()
+        val matchedBackspaceWeight = if (availableWidth > referenceBackspaceWidth) {
+            otherKeyWeights * referenceBackspaceWidth.value / (availableWidth - referenceBackspaceWidth).value
+        } else {
+            ReferenceBackspaceWeight
+        }
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(KeyboardKeySpacing)) {
         keys.forEach { key ->
             val highlighted = key.label in active || (key.kind == KeyKind.Shift && key.label in active)
             var pressed by remember(key.kind, key.label) { mutableStateOf(false) }
@@ -209,10 +236,10 @@ private fun KeyRow(
             val label = if (isLetter) {
                 if (caps xor shift) key.value.uppercase() else key.value.lowercase()
             } else key.label
-            val utilityKey = key.kind in setOf(KeyKind.Escape, KeyKind.Tab, KeyKind.Backspace, KeyKind.Enter, KeyKind.Arrow, KeyKind.Modifier, KeyKind.Caps, KeyKind.Shift, KeyKind.Layer)
-            val functionKey = key.label.startsWith("F") && key.label.drop(1).toIntOrNull() != null
+            val modifierKey = key.kind == KeyKind.Modifier || key.kind == KeyKind.Shift || key.kind == KeyKind.Caps || key.kind == KeyKind.Layer
+            val editKey = key.kind == KeyKind.Backspace || key.kind == KeyKind.Delete || key.kind == KeyKind.Enter
+            val utilityKey = modifierKey || editKey || key.kind == KeyKind.Escape || key.kind == KeyKind.Tab || key.kind == KeyKind.Arrow
             val labelSize = when {
-                functionKey -> if (height >= 32.dp) 16.sp else 12.sp
                 utilityKey -> if (height >= 48.dp) 17.sp else 14.sp
                 label.firstOrNull()?.isLowerCase() == true && height >= 48.dp -> 22.sp
                 height >= 48.dp -> 20.sp
@@ -221,7 +248,7 @@ private fun KeyRow(
             }
             Surface(
                 modifier = Modifier
-                    .weight(key.weight)
+                    .weight(if (key.kind == KeyKind.Backspace) matchedBackspaceWeight else key.weight)
                     .height(height)
                     .pointerInput(key.kind, key.label) {
                         awaitEachGesture {
@@ -230,17 +257,18 @@ private fun KeyRow(
                             if (holdModifier) currentOnHoldChanged(key, true) else currentOnClick(key)
                             try {
                                 var isPressed = true
-                                var nextBackspaceRepeat = SystemClock.uptimeMillis() + 450L
+                                val repeatable = key.kind in setOf(KeyKind.Text, KeyKind.Tab, KeyKind.Enter, KeyKind.Backspace, KeyKind.Delete, KeyKind.Arrow)
+                                var nextRepeat = SystemClock.uptimeMillis() + 450L
                                 while (isPressed) {
-                                    val event = if (key.kind == KeyKind.Backspace) {
-                                        val remaining = (nextBackspaceRepeat - SystemClock.uptimeMillis()).coerceAtLeast(1L)
+                                    val event = if (repeatable) {
+                                        val remaining = (nextRepeat - SystemClock.uptimeMillis()).coerceAtLeast(1L)
                                         withTimeoutOrNull(remaining) { awaitPointerEvent() }
                                     } else {
                                         awaitPointerEvent()
                                     }
-                                    if (event == null && key.kind == KeyKind.Backspace) {
+                                    if (event == null && repeatable) {
                                         currentOnClick(key)
-                                        nextBackspaceRepeat = SystemClock.uptimeMillis() + 55L
+                                        nextRepeat = SystemClock.uptimeMillis() + 55L
                                     } else if (event != null) {
                                         isPressed = event.changes.firstOrNull { it.id == down.id }?.pressed == true
                                     }
@@ -255,8 +283,10 @@ private fun KeyRow(
                 color = when {
                     pressed -> Color(0xFF6A6A6A)
                     highlighted -> Color(0xFF525252)
-                    utilityKey -> MaterialTheme.colorScheme.secondaryContainer
-                    functionKey -> MaterialTheme.colorScheme.surface
+                    key.modeExclusive -> Color(0xFF242424)
+                    modifierKey -> Color(0xFF353535)
+                    editKey -> Color(0xFF3A3A3A)
+                    utilityKey -> Color(0xFF2F2F2F)
                     else -> MaterialTheme.colorScheme.surfaceVariant
                 }
             ) {
@@ -275,6 +305,7 @@ private fun KeyRow(
                     )
                 }
             }
+        }
         }
     }
 }
