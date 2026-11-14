@@ -1,6 +1,7 @@
 package com.tritonterm.android.ui
 
 import android.os.SystemClock
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.layout.Arrangement
@@ -11,6 +12,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -23,6 +25,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
@@ -72,15 +75,16 @@ internal fun TerminalKeyboard(
     }
 
     val utility = listOf(
-        TerminalKey("Esc", KeyKind.Escape), TerminalKey("Tab", KeyKind.Tab),
+        TerminalKey("Esc", KeyKind.Escape), TerminalKey("↹", KeyKind.Tab),
         TerminalKey("Caps", KeyKind.Caps),
         TerminalKey(if (layer) "ABC" else "?123", KeyKind.Layer, weight = 1.15f, modeExclusive = layer),
         TerminalKey("←", KeyKind.Arrow, "\u001b[D"), TerminalKey("↑", KeyKind.Arrow, "\u001b[A"),
         TerminalKey("↓", KeyKind.Arrow, "\u001b[B"), TerminalKey("→", KeyKind.Arrow, "\u001b[C")
     )
     val commonKeys = listOf(
-        TerminalKey("Del", KeyKind.Delete), TerminalKey("/"), TerminalKey("?"), TerminalKey(":"),
-        TerminalKey(";"), TerminalKey("@"), TerminalKey("#"), TerminalKey("\$"), TerminalKey("+"), TerminalKey("-")
+        TerminalKey("/"), TerminalKey("?"), TerminalKey(":"), TerminalKey(";"),
+        TerminalKey("@"), TerminalKey("#"), TerminalKey("~"), TerminalKey("+"), TerminalKey("-"),
+        TerminalKey("Del", KeyKind.Delete)
     )
     val digits = "1234567890".map { TerminalKey(it.toString()) }
     val qRow = "QWERTYUIOP".map { TerminalKey(it.toString()) }
@@ -92,7 +96,7 @@ internal fun TerminalKeyboard(
     )
     val symbolRows = listOf(
         listOf("!", "%", "^", "&", "*", "(", ")", "=", "[", "]").map { TerminalKey(it, modeExclusive = true) },
-        listOf("{", "}", "\\", "|", "<", ">", "~", "`", "'", "\"").map { TerminalKey(it, modeExclusive = true) },
+        listOf("{", "}", "\\", "|", "<", ">", "\$", "`", "'", "\"").map { TerminalKey(it, modeExclusive = true) },
         listOf(
             TerminalKey("Home", KeyKind.Arrow, "\u001b[H", 1.05f, modeExclusive = true),
             TerminalKey("End", KeyKind.Arrow, "\u001b[F", 1.05f, modeExclusive = true),
@@ -110,7 +114,7 @@ internal fun TerminalKeyboard(
         TerminalKey(",", value = ",", weight = 0.6f),
         TerminalKey("", value = " ", weight = 2.5f),
         TerminalKey(".", value = ".", weight = 0.6f),
-        TerminalKey("Enter", KeyKind.Enter, weight = 1.2f)
+        TerminalKey("↵", KeyKind.Enter, weight = 1.2f)
     )
 
     fun emit(key: TerminalKey) {
@@ -239,7 +243,13 @@ private fun KeyRow(
             val modifierKey = key.kind == KeyKind.Modifier || key.kind == KeyKind.Shift || key.kind == KeyKind.Caps || key.kind == KeyKind.Layer
             val editKey = key.kind == KeyKind.Backspace || key.kind == KeyKind.Delete || key.kind == KeyKind.Enter
             val utilityKey = modifierKey || editKey || key.kind == KeyKind.Escape || key.kind == KeyKind.Tab || key.kind == KeyKind.Arrow
+            val directionalArrow = key.kind == KeyKind.Arrow && key.label in setOf("←", "↑", "↓", "→")
+            val longNavigationLabel = key.label == "Home" || key.label == "End" || key.label == "PgUp" || key.label == "PgDn"
             val labelSize = when {
+                key.kind == KeyKind.Tab -> 18.sp
+                key.kind == KeyKind.Backspace -> 21.sp
+                directionalArrow -> 17.sp
+                longNavigationLabel -> 14.sp
                 utilityKey -> if (height >= 48.dp) 17.sp else 14.sp
                 label.firstOrNull()?.isLowerCase() == true && height >= 48.dp -> 22.sp
                 height >= 48.dp -> 20.sp
@@ -283,7 +293,7 @@ private fun KeyRow(
                 color = when {
                     pressed -> Color(0xFF6A6A6A)
                     highlighted -> Color(0xFF525252)
-                    key.modeExclusive -> Color(0xFF242424)
+                    key.modeExclusive -> Color(0xFF202020)
                     modifierKey -> Color(0xFF353535)
                     editKey -> Color(0xFF3A3A3A)
                     utilityKey -> Color(0xFF2F2F2F)
@@ -291,18 +301,54 @@ private fun KeyRow(
                 }
             ) {
                 Box(contentAlignment = Alignment.Center) {
-                    Text(
-                        label,
-                        fontSize = labelSize,
-                        fontWeight = FontWeight.Medium,
-                        color = when {
-                            pressed -> Color.White
-                            highlighted -> MaterialTheme.colorScheme.onPrimaryContainer
-                            utilityKey -> MaterialTheme.colorScheme.onSecondaryContainer
-                            else -> MaterialTheme.colorScheme.onSurfaceVariant
-                        },
-                        maxLines = 1
-                    )
+                    val labelColor = when {
+                        pressed -> Color.White
+                        highlighted -> MaterialTheme.colorScheme.onPrimaryContainer
+                        utilityKey -> MaterialTheme.colorScheme.onSecondaryContainer
+                        else -> MaterialTheme.colorScheme.onSurfaceVariant
+                    }
+                    if (key.kind == KeyKind.Enter) {
+                        Canvas(Modifier.size(width = 28.dp, height = 26.dp)) {
+                            val scale = size.minDimension / 24f
+                            val stroke = 1.5f * scale
+                            drawLine(
+                                labelColor,
+                                androidx.compose.ui.geometry.Offset(20f * scale, 5f * scale),
+                                androidx.compose.ui.geometry.Offset(20f * scale, 14f * scale),
+                                strokeWidth = stroke,
+                                cap = StrokeCap.Round
+                            )
+                            drawLine(
+                                labelColor,
+                                androidx.compose.ui.geometry.Offset(20f * scale, 14f * scale),
+                                androidx.compose.ui.geometry.Offset(4f * scale, 14f * scale),
+                                strokeWidth = stroke,
+                                cap = StrokeCap.Round
+                            )
+                            drawLine(
+                                labelColor,
+                                androidx.compose.ui.geometry.Offset(9f * scale, 9f * scale),
+                                androidx.compose.ui.geometry.Offset(4f * scale, 14f * scale),
+                                strokeWidth = stroke,
+                                cap = StrokeCap.Round
+                            )
+                            drawLine(
+                                labelColor,
+                                androidx.compose.ui.geometry.Offset(4f * scale, 14f * scale),
+                                androidx.compose.ui.geometry.Offset(9f * scale, 19f * scale),
+                                strokeWidth = stroke,
+                                cap = StrokeCap.Round
+                            )
+                        }
+                    } else {
+                        Text(
+                            label,
+                            fontSize = labelSize,
+                            fontWeight = if (directionalArrow) FontWeight.SemiBold else FontWeight.Medium,
+                            color = labelColor,
+                            maxLines = 1
+                        )
+                    }
                 }
             }
         }
