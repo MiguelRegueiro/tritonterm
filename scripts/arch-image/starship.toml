@@ -1,8 +1,6 @@
 "$schema" = 'https://starship.rs/config-schema.json'
 
-# Android/PRoot can make a cold directory scan exceed Starship's 30 ms default.
-# This is a ceiling, so normal prompt renders are unchanged.
-scan_timeout = 150
+add_newline = false
 
 format = """
 $cmd_duration\
@@ -27,10 +25,9 @@ style = "fg:lavender"
 [directory]
 style = "fg:foreground bg:overlay0"
 format = "[ $path ]($style)"
-# Keep the complete working-directory path, including above a Git repository.
-truncation_length = 0
+# Keep the prompt narrow on a phone while retaining useful path context.
+truncation_length = 3
 truncate_to_repo = false
-# Abbreviate only the home-directory prefix; the rest of the path stays complete.
 home_symbol = "~"
 
 [git_branch]
@@ -83,22 +80,24 @@ format = '[ $time ]($style)'
 
 # Prompt character
 [character]
-success_symbol = '[➜](bold fg:#5246f2)'
-error_symbol = '[➜](bold fg:#5246f2)'
+success_symbol = '[➜](bold fg:phone)'
+error_symbol = '[➜](bold fg:phone)'
 
 [status]
 disabled = false
 map_symbol = true
 symbol = "✘"
 sigint_symbol = ""
-style = "bold fg:#ff0000"
+style = "bold fg:error"
 format = '([$symbol]($style) )'
 
 # ---------- Prompt Palette ----------
 [palettes.prompt]
 overlay0 = "#2f2f3c"       # Slightly lighter grey
-git = "#2D5BE3"             # Git branch and status
-runtime = "#1a48cf"         # Language and tool versions
+git = "#C48604"             # Phone Git segment
+runtime = "#A87508"         # Runtime/tool versions
 time_bg = "#22222e"         # Time segment and end cap
 lavender = "#9a9fe1"        # Command duration
+phone = "#C48604"           # Prompt character matches the phone accent
+error = "#ff0000"
 foreground = "#d4d6e0"      # Prompt text
