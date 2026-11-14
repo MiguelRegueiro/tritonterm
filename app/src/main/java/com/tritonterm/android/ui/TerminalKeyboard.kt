@@ -26,6 +26,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
@@ -90,7 +91,7 @@ internal fun TerminalKeyboard(
     val qRow = "QWERTYUIOP".map { TerminalKey(it.toString()) }
     val aRow = "ASDFGHJKLÑ".map { TerminalKey(it.toString()) }
     val zRow = listOf(
-        TerminalKey("Shift", KeyKind.Shift, weight = 1.5f),
+        TerminalKey("⇧", KeyKind.Shift, weight = 1.5f),
         *"ZXCVBNM".map { TerminalKey(it.toString()) }.toTypedArray(),
         TerminalKey("⌫", KeyKind.Backspace, weight = ReferenceBackspaceWeight)
     )
@@ -183,7 +184,7 @@ internal fun TerminalKeyboard(
             } else {
                 KeyRow(qRow, 50.dp, onClick = ::emit, onHoldChanged = ::setHeld, active = emptySet(), caps = caps, shift = shift)
                 KeyRow(aRow, 50.dp, onClick = ::emit, onHoldChanged = ::setHeld, active = emptySet(), caps = caps, shift = shift)
-                KeyRow(zRow, 50.dp, onClick = ::emit, onHoldChanged = ::setHeld, active = if (shift) setOf("Shift") else emptySet(), caps = caps, shift = shift)
+                KeyRow(zRow, 50.dp, onClick = ::emit, onHoldChanged = ::setHeld, active = if (shift) setOf("⇧") else emptySet(), caps = caps, shift = shift)
             }
             KeyRow(
                 modifiers,
@@ -250,6 +251,7 @@ private fun KeyRow(
             val longNavigationLabel = key.label == "Home" || key.label == "End" || key.label == "PgUp" || key.label == "PgDn"
             val labelSize = when {
                 key.kind == KeyKind.Tab -> 18.sp
+                key.kind == KeyKind.Shift -> 22.sp
                 key.kind == KeyKind.Backspace -> 21.sp
                 directionalArrow -> 17.sp
                 longNavigationLabel -> 14.sp
@@ -347,6 +349,7 @@ private fun KeyRow(
                     } else {
                         Text(
                             label,
+                            modifier = if (key.kind == KeyKind.Shift) Modifier.graphicsLayer(scaleX = 1.35f) else Modifier,
                             fontSize = labelSize,
                             fontWeight = if (directionalArrow) FontWeight.SemiBold else FontWeight.Medium,
                             color = labelColor,
