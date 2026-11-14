@@ -10,6 +10,31 @@ class TerminalConfigTest {
     @Test
     fun defaultsToKittyTextFaceWithNerdSymbols() {
         assertEquals("Noto Sans Mono", TerminalConfig().fontFamily)
+        assertEquals(32, TerminalConfig().fontSize)
+    }
+
+    @Test
+    fun migratesUntouchedTwentyEightPixelDefaultToThirtyTwo() {
+        val file = temporaryConfig(
+            TerminalConfig(fontFamily = "Noto Sans Mono", fontSize = 28)
+                .encode()
+                .replace("# config_version 6", "# config_version 5")
+        )
+
+        val loaded = TerminalConfig.loadOrCreate(file)
+
+        assertEquals(32, loaded.fontSize)
+        assertEquals(defaultTerminalKeyBindings, loaded.keyBindings)
+        assertTrue(file.readText().contains("font_size 32"))
+        assertTrue(file.readText().contains("# config_version 6"))
+        file.parentFile?.deleteRecursively()
+    }
+
+    @Test
+    fun acceptsFontSizesThroughOneHundredTwelveAndRejectsLargerValues() {
+        assertEquals(112, TerminalConfig.parse("font_size 112").config?.fontSize)
+        assertEquals(12, TerminalConfig.parse("font_size 12").config?.fontSize)
+        assertTrue(TerminalConfig.parse("font_size 113").error != null)
     }
 
     @Test
@@ -17,7 +42,7 @@ class TerminalConfigTest {
         val file = temporaryConfig(
             TerminalConfig(fontFamily = "Hack Nerd Font Mono", fontSize = 31)
                 .encode()
-                .replace("# config_version 5", "# config_version 3")
+                .replace("# config_version 6", "# config_version 3")
         )
 
         val loaded = TerminalConfig.loadOrCreate(file)
@@ -25,7 +50,7 @@ class TerminalConfigTest {
         assertEquals("Noto Sans Mono", loaded.fontFamily)
         assertEquals(31, loaded.fontSize)
         assertEquals(defaultTerminalKeyBindings, loaded.keyBindings)
-        assertTrue(file.readText().contains("# config_version 5"))
+        assertTrue(file.readText().contains("# config_version 6"))
         file.parentFile?.deleteRecursively()
     }
 
@@ -34,14 +59,14 @@ class TerminalConfigTest {
         val file = temporaryConfig(
             TerminalConfig(fontFamily = "Noto Sans Mono", fontSize = 30)
                 .encode()
-                .replace("# config_version 5", "# config_version 2")
+                .replace("# config_version 6", "# config_version 2")
         )
 
         val loaded = TerminalConfig.loadOrCreate(file)
 
         assertEquals("Noto Sans Mono", loaded.fontFamily)
         assertEquals(30, loaded.fontSize)
-        assertTrue(file.readText().contains("# config_version 5"))
+        assertTrue(file.readText().contains("# config_version 6"))
         file.parentFile?.deleteRecursively()
     }
 

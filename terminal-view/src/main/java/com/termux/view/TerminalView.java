@@ -443,7 +443,7 @@ public final class TerminalView extends View {
     /**
      * Sets the text size, which in turn sets the number of rows and columns.
      *
-     * @param textSize the new font size, in density-independent pixels.
+     * @param textSize the new font size, in pixels.
      */
     public void setTextSize(int textSize) {
         mRenderer = new TerminalRenderer(textSize, mRenderer == null ? Typeface.MONOSPACE : mRenderer.mTypeface,
