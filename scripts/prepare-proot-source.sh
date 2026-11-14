@@ -106,4 +106,6 @@ fi
 archive_test_patch="$PROJECT_ROOT/scripts/patches/pr-cli-rootfs-archive-test.patch"
 apply_patch_or_check_marker "$archive_test_patch" \
     'extract_arch_fakeroot_payload' 'src/pr-cli/src/install.rs'
+apply_patch_or_check_marker "$PROJECT_ROOT/scripts/patches/tritonterm-arch-guest-env.patch" \
+    'TRITONTERM_GUEST_LOCALE_TZ_V1' 'src/pr-cli/src/login.rs'
 printf 'TRITONTERM_PINNED_PROOT_PATCHES_READY %s\n' "$EXPECTED_PR_COMMIT"
