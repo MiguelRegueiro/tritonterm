@@ -83,7 +83,7 @@ internal fun TerminalKeyboard(
     )
     val commonKeys = listOf(
         TerminalKey("/"), TerminalKey("?"), TerminalKey(":"), TerminalKey(";"),
-        TerminalKey("@"), TerminalKey("#"), TerminalKey("~"), TerminalKey("+"), TerminalKey("-"),
+        TerminalKey("@"), TerminalKey("#"), TerminalKey("~"), TerminalKey("+"), TerminalKey("-", weight = 1.1f),
         TerminalKey("Del", KeyKind.Delete)
     )
     val digits = "1234567890".map { TerminalKey(it.toString()) }
@@ -202,7 +202,7 @@ private fun shiftedSymbol(value: String): String = when (value) {
     "1" -> "!"; "2" -> "@"; "3" -> "#"; "4" -> "$"; "5" -> "%"
     "6" -> "^"; "7" -> "&"; "8" -> "*"; "9" -> "("; "0" -> ")"
     "-" -> "_"; "=" -> "+"; "[" -> "{"; "]" -> "}"
-    ";" -> ":"; "'" -> "\""; "," -> "<"; "." -> ">"; "/" -> "?"
+    "'" -> "\""; "," -> "<"; "." -> ">"
     else -> value
 }
 
@@ -237,19 +237,23 @@ private fun KeyRow(
             val currentOnHoldChanged by rememberUpdatedState(onHoldChanged)
             val holdModifier = key.kind == KeyKind.Modifier || key.kind == KeyKind.Shift
             val isLetter = key.kind == KeyKind.Text && key.value.length == 1 && key.value[0].isLetter()
-            val label = if (isLetter) {
-                if (caps xor shift) key.value.uppercase() else key.value.lowercase()
-            } else key.label
+            val label = when {
+                isLetter -> if (caps xor shift) key.value.uppercase() else key.value.lowercase()
+                key.kind == KeyKind.Text && shift -> shiftedSymbol(key.value)
+                else -> key.label
+            }
             val modifierKey = key.kind == KeyKind.Modifier || key.kind == KeyKind.Shift || key.kind == KeyKind.Caps || key.kind == KeyKind.Layer
             val editKey = key.kind == KeyKind.Backspace || key.kind == KeyKind.Delete || key.kind == KeyKind.Enter
             val utilityKey = modifierKey || editKey || key.kind == KeyKind.Escape || key.kind == KeyKind.Tab || key.kind == KeyKind.Arrow
             val directionalArrow = key.kind == KeyKind.Arrow && key.label in setOf("←", "↑", "↓", "→")
+            val smallSymbol = key.kind == KeyKind.Text && label.length == 1 && !label[0].isLetterOrDigit()
             val longNavigationLabel = key.label == "Home" || key.label == "End" || key.label == "PgUp" || key.label == "PgDn"
             val labelSize = when {
                 key.kind == KeyKind.Tab -> 18.sp
                 key.kind == KeyKind.Backspace -> 21.sp
                 directionalArrow -> 17.sp
                 longNavigationLabel -> 14.sp
+                smallSymbol -> if (height >= 48.dp) 22.sp else 18.sp
                 utilityKey -> if (height >= 48.dp) 17.sp else 14.sp
                 label.firstOrNull()?.isLowerCase() == true && height >= 48.dp -> 22.sp
                 height >= 48.dp -> 20.sp
