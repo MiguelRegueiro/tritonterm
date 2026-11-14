@@ -453,8 +453,10 @@ internal fun TerminalScreen() {
                     modifier = Modifier.fillMaxSize(),
                     factory = { viewContext ->
                         TerminalView(viewContext, null).apply {
+                        val config = TerminalConfig(terminalFontFamily, terminalFontSize)
                         setTextSize(terminalFontSize)
-                        setTypeface(TerminalConfig(terminalFontFamily, terminalFontSize).typeface(context))
+                        setTypeface(config.typeface(context))
+                        setSpecialTypefaces(config.boxDrawingTypeface(context), config.nerdTypeface(context))
                         setTerminalViewClient(TerminalCallbacks(currentSession, zoomTerminal))
                         setOnKeyListener { _, keyCode, event ->
                             if (event.action != KeyEvent.ACTION_DOWN || event.repeatCount != 0) {
@@ -509,7 +511,9 @@ internal fun TerminalScreen() {
                             appliedFontSize = terminalFontSize
                         }
                         if (appliedFontFamily != terminalFontFamily) {
-                            it.setTypeface(TerminalConfig(terminalFontFamily, terminalFontSize).typeface(context))
+                            val config = TerminalConfig(terminalFontFamily, terminalFontSize)
+                            it.setTypeface(config.typeface(context))
+                            it.setSpecialTypefaces(config.boxDrawingTypeface(context), config.nerdTypeface(context))
                             appliedFontFamily = terminalFontFamily
                         }
                     }

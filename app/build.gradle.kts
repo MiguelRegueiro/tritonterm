@@ -28,6 +28,7 @@ android {
         // Bundled Android PRoot runtime targets Android 9+.
         minSdk = 28
         targetSdk = 35
+        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         versionCode = androidVersionCode
         versionName = androidVersionName
         buildConfigField("String", "ARCH_ROOTFS_VERSION", buildConfigString(archRootfsVersion))
@@ -80,12 +81,13 @@ dependencies {
     implementation("androidx.compose.ui:ui")
     implementation("androidx.compose.ui:ui-tooling-preview")
     implementation("androidx.compose.material3:material3")
-    implementation("com.termux.termux-app:terminal-view:0.118.0") {
-        exclude(group = "com.termux.termux-app", module = "terminal-emulator")
-    }
+    implementation(project(":terminal-view"))
     implementation(project(":terminal-emulator"))
     implementation("org.bouncycastle:bcpg-jdk18on:1.80.2")
     implementation("org.bouncycastle:bcprov-jdk18on:1.80.2")
     testImplementation("junit:junit:4.13.2")
+    androidTestImplementation("androidx.test:runner:1.6.2")
+    androidTestImplementation("androidx.test:core:1.6.1")
+    androidTestImplementation("androidx.test.ext:junit:1.2.1")
     debugImplementation("androidx.compose.ui:ui-tooling")
 }
