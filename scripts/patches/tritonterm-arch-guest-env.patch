@@ -1,6 +1,7 @@
+diff --git a/src/pr-cli/src/login.rs b/src/pr-cli/src/login.rs
 --- a/src/pr-cli/src/login.rs
 +++ b/src/pr-cli/src/login.rs
-@@ -180,6 +180,21 @@
+@@ -180,6 +180,22 @@
      env
  }
  
@@ -19,10 +20,11 @@
 +    }
 +    env
 +}
- 
++
  fn login_command(proot: &Path, args: &[String], env: Vec<(String, String)>) -> Command {
      let mut cmd = Command::new(proot);
-@@ -315,7 +330,10 @@
+     cmd.arg0("proot");
+@@ -314,7 +330,10 @@
          "TERM".to_string(),
          std::env::var("TERM").unwrap_or_else(|_| "xterm-256color".to_string()),
      ));
@@ -34,11 +36,10 @@
      child_env.push(("TMPDIR".to_string(), "/tmp".to_string()));
  
      let runtime_env: Vec<(String, String)> = build_proot_runtime_env()
-@@ -433,6 +451,20 @@
-         assert!(env.contains(&("HOME".to_string(), "/root".to_string())));
+@@ -433,6 +452,21 @@
      }
  
-+    #[test]
+     #[test]
 +    fn guest_login_forwards_utf8_locale_and_optional_phone_timezone() {
 +        assert_eq!(
 +            guest_locale_environment(Some("C.UTF-8"), Some("Europe/Madrid")),
@@ -52,6 +53,8 @@
 +            vec![("LANG".to_string(), "C.UTF-8".to_string())]
 +        );
 +    }
- 
-     #[test]
++
++    #[test]
      fn the_login_process_starts_with_only_the_given_environment() {
+         let _guard = env_lock().lock().expect("lock env");
+         std::env::set_var("PR_CLI_TEST_LEAK", "leaked");
