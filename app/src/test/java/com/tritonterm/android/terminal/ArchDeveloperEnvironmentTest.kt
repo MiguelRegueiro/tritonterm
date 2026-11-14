@@ -301,6 +301,10 @@ class ArchDeveloperEnvironmentTest {
         val builder = File("../scripts/build-arch-dev-rootfs.sh").readText()
         assertTrue(builder.contains("--acls \\\n    --use-compress-program='gzip -1'"))
         assertFalse("the Android Rust tar extractor cannot decode GNU sparse entries", builder.contains("--acls --sparse"))
+        assertTrue(
+            "the packaged Fish login smoke must receive the Android guest locale and timezone",
+            builder.contains("env LANG=C.UTF-8 TZ=Europe/Madrid /usr/bin/fish -l -i -c")
+        )
         val workflow = File("../.github/workflows/build-arch-dev-rootfs.yml").readText()
         assertTrue(workflow.contains("extract_arch_fakeroot_payload -- --ignored --nocapture"))
     }

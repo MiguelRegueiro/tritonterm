@@ -244,7 +244,7 @@ run_image_contract identity /usr/bin/su -l triton -s /usr/bin/fish -c \
 stage='packaged_fish_smoke'
 fish_smoke_output="$OUTPUT_DIR/contract-${VERSION}-packaged_fish_smoke.txt"
 chroot_guest /usr/bin/su -l triton -s /usr/bin/fish -c \
-    '/usr/bin/fish -l -i -c "source /etc/tritonterm/guest-smoke.fish"' > "$fish_smoke_output" 2>&1 || {
+    'env LANG=C.UTF-8 TZ=Europe/Madrid /usr/bin/fish -l -i -c "source /etc/tritonterm/guest-smoke.fish"' > "$fish_smoke_output" 2>&1 || {
     cat "$fish_smoke_output" >&2
     fail 4 'the packaged Fish smoke script did not complete under the triton login environment'
 }
