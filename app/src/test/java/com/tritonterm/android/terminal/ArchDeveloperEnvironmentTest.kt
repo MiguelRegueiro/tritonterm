@@ -344,6 +344,8 @@ class ArchDeveloperEnvironmentTest {
         assertTrue(smoke.contains("check_executable rustc /usr/bin/rustc"))
         assertTrue(smoke.contains("check_executable cargo /usr/bin/cargo"))
         assertTrue(smoke.contains("rustup_cargo_build_and_run"))
+        assertTrue("Rust smoke executables must be built in the guest user's home, not PRoot's host-bound /tmp", smoke.contains("mktemp -d \"\$rust_smoke_cache/tritonterm-rust-smoke.XXXXXX\""))
+        assertFalse("Do not put executable Rust smoke artifacts in PRoot's host-bound /tmp", smoke.contains("mktemp -d /tmp/tritonterm-rust-smoke"))
         assertTrue(smoke.contains("locale_charmap UTF-8"))
         assertTrue(smoke.contains("timezone Android timezone was not passed into the guest"))
         assertTrue(smoke.contains("starship module time"))

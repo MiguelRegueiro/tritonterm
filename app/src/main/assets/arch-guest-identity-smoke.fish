@@ -90,7 +90,9 @@ else
     set failures (math $failures + 1)
 end
 
-set rust_smoke_dir (mktemp -d /tmp/tritonterm-rust-smoke.XXXXXX 2>/dev/null)
+set rust_smoke_cache "$HOME/.cache"
+mkdir -p "$rust_smoke_cache" 2>/dev/null
+set rust_smoke_dir (mktemp -d "$rust_smoke_cache/tritonterm-rust-smoke.XXXXXX" 2>/dev/null)
 if test -n "$rust_smoke_dir"
     mkdir -p "$rust_smoke_dir/src"
     printf '[package]\nname = "tritonterm-rust-smoke"\nversion = "0.1.0"\nedition = "2021"\n' > "$rust_smoke_dir/Cargo.toml"
