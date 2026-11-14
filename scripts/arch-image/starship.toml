@@ -1,5 +1,9 @@
 "$schema" = 'https://starship.rs/config-schema.json'
 
+# Android/PRoot can make a cold directory scan exceed Starship's 30 ms default.
+# This is a ceiling, so normal prompt renders are unchanged.
+scan_timeout = 150
+
 format = """
 $cmd_duration\
 [](fg:overlay0)\
