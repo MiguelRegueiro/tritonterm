@@ -27,7 +27,8 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.text.font.FontWeight
-import com.tritonterm.android.terminal.TerminalClipboardAction
+import com.tritonterm.android.config.TerminalKeyBinding
+import com.tritonterm.android.config.TerminalKeyAction
 import com.tritonterm.android.terminal.TerminalClipboardSupport
 import kotlinx.coroutines.withTimeoutOrNull
 
@@ -44,8 +45,9 @@ internal fun TerminalKeyboard(
     modifier: Modifier = Modifier,
     onInput: (String) -> Unit,
     onZoom: (Boolean) -> Unit,
-    onCopy: () -> Unit,
+    onCopy: () -> Boolean,
     onPaste: () -> Unit,
+    keyBindings: List<TerminalKeyBinding>,
     compact: Boolean
 ) {
     var layer by remember { mutableStateOf(false) }
@@ -125,10 +127,20 @@ internal fun TerminalKeyboard(
                 } else if (key.kind == KeyKind.Text && shift) {
                     shiftedSymbol(text)
                 } else text
-                if (ctrl && shift && key.kind == KeyKind.Text && adjusted.length == 1) {
-                    when (TerminalClipboardSupport.shortcut(adjusted[0], control = true, shift = true)) {
-                        TerminalClipboardAction.COPY -> { onCopy(); return }
-                        TerminalClipboardAction.PASTE -> { onPaste(); return }
+                val mappedKeyName = when {
+                    key.kind == KeyKind.Escape -> "esc"
+                    key.kind == KeyKind.Text && adjusted.length == 1 -> TerminalClipboardSupport.keyName(adjusted[0])
+                    else -> null
+                }
+                if (mappedKeyName != null) {
+                    val action = keyBindings.lastOrNull { it.matches(mappedKeyName, ctrl, shift, alt) }?.action
+                    when (action) {
+                        TerminalKeyAction.COPY_TO_CLIPBOARD -> if (onCopy()) return
+                        TerminalKeyAction.PASTE_FROM_CLIPBOARD -> { onPaste(); return }
+                        TerminalKeyAction.SEND_ESCAPE, TerminalKeyAction.SEND_CTRL_C -> {
+                            action.terminalInput?.let(onInput)
+                            return
+                        }
                         null -> Unit
                     }
                 }
