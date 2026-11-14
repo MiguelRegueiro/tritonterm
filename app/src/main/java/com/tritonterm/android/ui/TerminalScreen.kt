@@ -50,6 +50,7 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -82,8 +83,8 @@ import com.tritonterm.android.terminal.TerminalSetupProgressFile
 import com.tritonterm.android.terminal.TerminalSetupStage
 import com.tritonterm.android.terminal.ArchGuestUser
 import com.tritonterm.android.terminal.TerminalCallbacks
-import com.tritonterm.android.terminal.TerminalClipboardAction
 import com.tritonterm.android.terminal.TerminalClipboardSupport
+import com.tritonterm.android.config.TerminalKeyAction
 import com.termux.terminal.TerminalSession
 import com.termux.view.TerminalView
 import kotlinx.coroutines.Dispatchers
@@ -112,6 +113,7 @@ internal fun TerminalScreen() {
     }
     var stageElapsedSeconds by remember(context) { mutableLongStateOf(0L) }
     var session by remember(terminalController) { mutableStateOf<TerminalSession?>(null) }
+    val currentTerminalSession = rememberUpdatedState(session)
     var terminalProcessFinished by remember(terminalController) { mutableStateOf(false) }
     val setupScope = androidx.compose.runtime.rememberCoroutineScope()
 
@@ -257,6 +259,8 @@ internal fun TerminalScreen() {
     val initialConfig = remember(configFile) { TerminalConfig.loadOrCreate(configFile) }
     var terminalFontSize by remember { mutableIntStateOf(initialConfig.fontSize) }
     var terminalFontFamily by remember { mutableStateOf(initialConfig.fontFamily) }
+    var terminalKeyBindings by remember { mutableStateOf(initialConfig.keyBindings) }
+    val currentTerminalKeyBindings = rememberUpdatedState(terminalKeyBindings)
     var appliedFontSize by remember { mutableIntStateOf(terminalFontSize) }
     var appliedFontFamily by remember { mutableStateOf(terminalFontFamily) }
     var showConfig by remember { mutableStateOf(false) }
@@ -408,21 +412,24 @@ internal fun TerminalScreen() {
                             if (event.action != KeyEvent.ACTION_DOWN || event.repeatCount != 0) {
                                 false
                             } else {
-                                val character = when (keyCode) {
-                                    KeyEvent.KEYCODE_C -> 'c'
-                                    KeyEvent.KEYCODE_V -> 'v'
-                                    else -> null
-                                }
-                                val action = character?.let {
-                                    TerminalClipboardSupport.shortcut(it, event.isCtrlPressed, event.isShiftPressed)
+                                val keyName = TerminalClipboardSupport.keyName(keyCode)
+                                val action = keyName?.let { name ->
+                                    currentTerminalKeyBindings.value.lastOrNull {
+                                        it.matches(name, event.isCtrlPressed, event.isShiftPressed, event.isAltPressed)
+                                    }?.action
                                 }
                                 when (action) {
-                                    TerminalClipboardAction.COPY -> {
+                                    TerminalKeyAction.COPY_TO_CLIPBOARD -> {
+                                        // With no selection, preserve Ctrl+C as the terminal's interrupt key.
                                         sessionClient.copySelection()
+                                    }
+                                    TerminalKeyAction.PASTE_FROM_CLIPBOARD -> {
+                                        sessionClient.pasteFromClipboard(currentTerminalSession.value)
                                         true
                                     }
-                                    TerminalClipboardAction.PASTE -> {
-                                        sessionClient.pasteFromClipboard(currentSession)
+                                    TerminalKeyAction.SEND_ESCAPE, TerminalKeyAction.SEND_CTRL_C -> {
+                                        val bytes = action.terminalInput.orEmpty().toByteArray(StandardCharsets.UTF_8)
+                                        currentTerminalSession.value?.write(bytes, 0, bytes.size)
                                         true
                                     }
                                     null -> false
@@ -633,12 +640,9 @@ internal fun TerminalScreen() {
                     .fillMaxWidth()
                     .padding(horizontal = 8.dp),
                 onZoom = zoomTerminal,
-                onCopy = {
-                    if (!sessionClient.copySelection()) {
-                        Toast.makeText(context, "Select terminal text first", Toast.LENGTH_SHORT).show()
-                    }
-                },
+                onCopy = { sessionClient.copySelection() },
                 onPaste = { sessionClient.pasteFromClipboard(session) },
+                keyBindings = terminalKeyBindings,
                 compact = useSystemKeyboard,
                 onInput = { input ->
                     val bytes = input.toByteArray(StandardCharsets.UTF_8)
@@ -661,6 +665,7 @@ internal fun TerminalScreen() {
                     configFile.writeText(editedText)
                     terminalFontSize = parsed.fontSize
                     terminalFontFamily = parsed.fontFamily
+                    terminalKeyBindings = parsed.keyBindings
                     showConfig = false
                     null
                 }
@@ -919,7 +924,7 @@ private fun TerminalConfigDialog(
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text(
-                    "Supported options: font_family and font_size.",
+                    "Options: font_family, font_size, and Kitty-style key maps for clipboard and terminal keys.",
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     fontSize = 13.sp
                 )
