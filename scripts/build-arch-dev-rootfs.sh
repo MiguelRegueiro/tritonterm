@@ -33,7 +33,7 @@ trap cleanup_guest_mounts EXIT
 [[ "$VERSION" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$ ]] || fail 2 'usage: build-arch-dev-rootfs.sh VERSION OUTPUT_DIR'
 [[ -s "$ROOTFS_SIGNING_KEY" && -s "$ROOTFS_SIGNING_PASSPHRASE_FILE" ]] ||
     fail 2 'set TRITONTERM_ROOTFS_SIGNING_KEY and TRITONTERM_ROOTFS_SIGNING_PASSPHRASE_FILE to the release-signing inputs'
-for command in curl gpg gpgv bsdtar chroot mount mountpoint umount tar gzip sha256sum openssl python3; do
+for command in curl gpg gpgv bsdtar chroot mount mountpoint umount tar gzip sha256sum openssl python3 script; do
     command -v "$command" >/dev/null || fail 2 "required host command is missing: $command"
 done
 mkdir -p "$OUTPUT_DIR" "$WORK_PARENT"
@@ -233,8 +233,9 @@ run_image_contract elio_package /usr/bin/su -l triton -s /usr/bin/fish -c 'test 
 run_image_contract elio_theme_permissions /usr/bin/stat -c '%a %u:%g %n' /home/triton/.config/elio/theme.toml
 grep -qx '644 1000:1000 /home/triton/.config/elio/theme.toml' "$OUTPUT_DIR/contract-${VERSION}-elio_theme_permissions.txt" || fail 4 'Elio theme must be owned by triton and readable'
 elio_tui_log="$OUTPUT_DIR/contract-${VERSION}-elio_interactive_theme.txt"
-chroot_guest /usr/bin/su -l triton -s /usr/bin/fish -c \
-    'printf q | /usr/bin/script -q -e -c /usr/bin/elio /dev/null 2>&1' > "$elio_tui_log" || {
+printf q | script -q -e -c \
+    "chroot '$ROOTFS' /usr/bin/env -i HOME=/home/triton PATH=/usr/local/sbin:/usr/local/bin:/usr/bin:/bin TERM=xterm-256color LANG=C.UTF-8 /usr/bin/su -l triton -s /usr/bin/fish -c /usr/bin/elio" \
+    /dev/null > "$elio_tui_log" 2>&1 || {
     cat "$elio_tui_log" >&2
     fail 4 'the preinstalled Elio binary did not start and exit through a pseudo-terminal'
 }
