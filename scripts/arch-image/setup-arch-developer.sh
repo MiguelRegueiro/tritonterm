@@ -14,6 +14,7 @@ readonly FAKEROOT_PREFIX="${FAKEROOT_PARENT}/${FAKEROOT_VERSION}"
 readonly FAKEROOT_CURRENT="${FAKEROOT_PARENT}/current"
 readonly ASSET_DIR='/root/.tritonterm-setup'
 readonly TRITON_USER='triton'
+readonly ELIO_BIN_AUR_COMMIT='eaa17064f729a58c5d49ed84bd11df0b1d6c7c6e'
 readonly READY_MARKER='/root/.tritonterm-developer-environment-ready'
 readonly RUN_LOG='/var/cache/tritonterm/developer-setup.log'
 readonly PACMAN_LOCK='/var/lib/pacman/db.lck'
@@ -37,8 +38,12 @@ trap on_error ERR
 
 [[ "$(id -u)" == 0 ]] || die 10 'must run as root in the Arch PRoot guest'
 [[ "$(uname -m)" == aarch64 ]] || die 11 'expected an AArch64 guest'
-[[ -s "${ASSET_DIR}/starship.toml" && -s "${ASSET_DIR}/paru-bootstrap.PKGBUILD" ]] ||
+[[ -s "${ASSET_DIR}/starship.toml" && -s "${ASSET_DIR}/paru-bootstrap.PKGBUILD" &&
+   -s "${ASSET_DIR}/elio-bin.PKGBUILD" && -s "${ASSET_DIR}/elio-bin.aur-commit" &&
+   -s "${ASSET_DIR}/elio-theme.toml" ]] ||
     die 12 "bundled setup inputs are missing from ${ASSET_DIR}"
+[[ "$(<"${ASSET_DIR}/elio-bin.aur-commit")" == "$ELIO_BIN_AUR_COMMIT" ]] ||
+    die 12 'the bundled elio-bin AUR recipe commit does not match the pinned image input'
 
 install -d -m 0755 /var/cache/tritonterm "$CACHE" "$FAKEROOT_PARENT"
 rm -f "$READY_MARKER"
@@ -129,7 +134,7 @@ require_pacman_transaction 'pacman -Syu --needed --noconfirm' pacman -Syu --need
 stage='development_packages'
 say 'Installing build tools, fish, Starship, rustup, and narrowly scoped sudo through pacman.'
 require_pacman_transaction 'install developer packages' pacman -S --needed --noconfirm \
-    base-devel autoconf automake libtool curl ca-certificates git fish starship rustup sudo fakeroot strace
+    base-devel autoconf automake libtool curl ca-certificates git fish starship rustup sudo fakeroot strace hicolor-icon-theme
 for tool in gcc make autoreconf libtoolize curl sha256sum rustup fish starship sudo makepkg bsdtar strace; do
     command -v "$tool" >/dev/null || die 22 "required command is missing after package installation: ${tool}"
 done
@@ -166,7 +171,7 @@ install -d -o "$TRITON_USER" -g "$triton_group" -m 0750 "$triton_home"
 install -d -o "$TRITON_USER" -g "$triton_group" -m 0750 \
     "$triton_home/.local" "$triton_home/.local/bin" \
     "$triton_home/.config" "$triton_home/.config/fish" \
-    "$triton_home/.config/paru" "$triton_home/.config/pacman" \
+    "$triton_home/.config/paru" "$triton_home/.config/pacman" "$triton_home/.config/elio" \
     "$triton_home/.cache/fish" "$triton_home/.cache/tritonterm" "$triton_home/.cargo" "$triton_home/.rustup"
 # Normalize the fresh account's home ownership before starting Fish or rustup.
 chown -R "$TRITON_USER:$triton_group" "$triton_home"
@@ -207,6 +212,8 @@ install -d -m 0755 /etc/fish/conf.d
 install -m 0644 "${ASSET_DIR}/tritonterm-fish-system-config.fish" /etc/fish/conf.d/20-tritonterm.fish
 install -o "$TRITON_USER" -g "$triton_group" -m 0644 \
     "${ASSET_DIR}/starship.toml" "$triton_home/.config/starship.toml"
+install -o "$TRITON_USER" -g "$triton_group" -m 0644 \
+    "${ASSET_DIR}/elio-theme.toml" "$triton_home/.config/elio/theme.toml"
 cat > "$triton_home/.config/pacman/makepkg.conf" <<'MAKEPKG_CONF'
 # TritonTerm: use PRoot-compatible, pacman-only authorization for package installs.
 PACMAN_AUTH=(/usr/bin/sudo -n)
@@ -442,6 +449,26 @@ test -f /usr/share/tritonterm-paru-default-smoke/installed
 require_pacman_transaction 'remove Paru smoke package' pacman -Rns --noconfirm tritonterm-paru-default-smoke
 rm -rf "$paru_smoke"
 
+stage='elio_binary_package'
+say 'Building the pinned AUR elio-bin 1.15.0-2 package from its checksummed AArch64 release archive.'
+elio_build="$triton_home/.cache/tritonterm/elio-bin-1.15.0"
+install -d -o "$TRITON_USER" -g "$triton_group" -m 0750 "$elio_build"
+install -o "$TRITON_USER" -g "$triton_group" -m 0644 \
+    "${ASSET_DIR}/elio-bin.PKGBUILD" "$elio_build/PKGBUILD"
+run_triton_fish "cd '$elio_build' && makepkg --noconfirm --syncdeps --force"
+elio_package="$(find "$elio_build" -maxdepth 1 -type f -name 'elio-bin-1.15.0-2-aarch64.pkg.tar.*' -print -quit)"
+[[ -n "$elio_package" ]] || die 37 'the pinned elio-bin PKGBUILD produced no AArch64 package archive'
+bsdtar -xOf "$elio_package" .PKGINFO | grep -qx 'arch = aarch64' ||
+    die 37 'the elio-bin package archive does not declare AArch64 architecture'
+require_pacman_transaction 'install pinned elio-bin package' pacman -U --noconfirm "$elio_package"
+pacman -Qo /usr/bin/elio
+run_triton_fish 'test "$(elio --version)" = "elio 1.15.0"'
+run_triton_fish 'test -r "$HOME/.config/elio/theme.toml"'
+readelf -h /usr/bin/elio | grep -q 'Machine:.*AArch64' ||
+    die 37 'the installed Elio binary is not an AArch64 ELF executable'
+say 'Pinned Elio package, AArch64 binary, ownership, version, and per-user theme checks passed.'
+rm -rf "$elio_build"
+
 stage='rust_compilation_smoke'
 say 'Compiling and executing a dependency-free Rust program from fresh login shells.'
 rust_smoke="$triton_home/rustup-smoke"
@@ -470,6 +497,7 @@ pacman -Dk
 pacman -Qo /usr/bin/fakeroot
 pacman -Qo /usr/bin/rustup
 pacman -Qo /usr/bin/paru
+pacman -Qo /usr/bin/elio
 [[ "$(getent passwd "$TRITON_USER" | cut -d: -f7)" == /usr/bin/fish ]]
 [[ "$(readlink "$FAKEROOT_CURRENT")" == "$FAKEROOT_VERSION" ]]
 run_triton_fish "string match -q '${FAKEROOT_PREFIX}/bin/fakeroot' (command -v fakeroot)"
@@ -477,6 +505,7 @@ run_triton_fish "test -r '${FAKEROOT_PREFIX}/lib/libfakeroot.so'"
 run_triton_fish 'sudo -n /usr/bin/pacman -Q pacman >/dev/null'
 [[ -x "$triton_home/.rustup/toolchains/stable-aarch64-unknown-linux-gnu/bin/rustc" ]]
 [[ -x /usr/bin/paru && -x /usr/bin/fish && -x /usr/bin/starship ]]
+[[ -x /usr/bin/elio && -s "$triton_home/.config/elio/theme.toml" ]]
 printf '%s\n' "$VERSION" > "$READY_MARKER"
 say 'Fresh Arch developer environment passed pacman, TCP fakeroot, makepkg, Paru, Fish/Starship, and Rustup checks.'
 printf '%s\n' 'TRITONTERM_ARCH_DEVELOPER_ENVIRONMENT_READY'

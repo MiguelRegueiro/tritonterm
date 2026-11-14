@@ -22,6 +22,7 @@ ALARM_RAW = "https://raw.githubusercontent.com/archlinuxarm/PKGBUILDs/{}/{}"
 ARCH_RAW = "https://gitlab.archlinux.org/archlinux/packaging/packages/{}/-/raw/{}/PKGBUILD"
 ARCH_SRCINFO = "https://gitlab.archlinux.org/archlinux/packaging/packages/{}/-/raw/{}/.SRCINFO"
 META_BASES = {"base", "base-devel", "licenses"}
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
 def request_json(url):
@@ -169,6 +170,38 @@ def main():
                 "recipe_path": recipe_file,
                 "recipe_file": recipe_file,
                 "status": "exact 2.2.0 PKGBUILD and source checksum included in Android source archive",
+            }
+            continue
+        if pkgbase == "elio-bin":
+            recipe_file = PROJECT_ROOT / "scripts/arch-image/elio-bin.PKGBUILD"
+            recipe_text = recipe_file.read_text(encoding="utf-8")
+            commit_file = PROJECT_ROOT / "scripts/arch-image/elio-bin.aur-commit"
+            aur_commit = commit_file.read_text(encoding="ascii").strip()
+            if not re.fullmatch(r"[0-9a-f]{40}", aur_commit):
+                failures.append(f"{pkgbase} {package_version}: invalid pinned AUR commit")
+                continue
+            if not recipe_version_matches(recipe_text, package_version):
+                failures.append(
+                    f"{pkgbase} {package_version}: bundled pinned AUR PKGBUILD does not match"
+                )
+                continue
+            recipe_relpath = "package-recipes/elio-bin/PKGBUILD"
+            dest = output_dir / recipe_relpath
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            dest.write_text(recipe_text, encoding="utf-8")
+            found[pkgbase] = {
+                "source_type": "AUR binary package recipe snapshot",
+                "commit": aur_commit,
+                "recipe_url": (
+                    "https://aur.archlinux.org/cgit/aur.git/tree/PKGBUILD?"
+                    f"h={urllib.parse.quote(aur_commit)}"
+                ),
+                "recipe_path": recipe_relpath,
+                "recipe_file": recipe_relpath,
+                "status": (
+                    "AUR recipe commit and architecture-specific upstream release checksum "
+                    "are pinned in the source tree"
+                ),
             }
             continue
 
