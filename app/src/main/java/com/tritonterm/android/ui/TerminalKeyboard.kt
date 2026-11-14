@@ -117,6 +117,26 @@ internal fun TerminalKeyboard(
         TerminalKey(".", value = ".", weight = 0.6f),
         TerminalKey("↵", KeyKind.Enter, weight = 1.2f)
     )
+    val compactNavigationKeys = listOf(
+        utility[0], // Esc
+        utility[1], // Tab
+        TerminalKey("Home", KeyKind.Arrow, "\u001b[H"),
+        TerminalKey("End", KeyKind.Arrow, "\u001b[F"),
+        utility[4], // Left
+        utility[5], // Up
+        utility[6], // Down
+        utility[7]  // Right
+    )
+    val compactShellKeys = listOf(
+        modifiers[0].copy(weight = 1f), // Ctrl, same width as Esc and Tab.
+        modifiers[1].copy(weight = 1f), // Alt, same width as Esc and Tab.
+        TerminalKey("PgUp", KeyKind.Arrow, "\u001b[5~"),
+        TerminalKey("PgDn", KeyKind.Arrow, "\u001b[6~"),
+        TerminalKey("~"),
+        TerminalKey("/"),
+        TerminalKey("-"),
+        TerminalKey("Del", KeyKind.Delete)
+    )
 
     fun emit(key: TerminalKey) {
         when (key.kind) {
@@ -173,8 +193,14 @@ internal fun TerminalKeyboard(
 
     Column(modifier.fillMaxWidth().padding(bottom = if (compact) 4.dp else 16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
         if (compact) {
-            KeyRow(utility.filterNot { it.kind == KeyKind.Caps || it.kind == KeyKind.Layer }, 38.dp, onClick = ::emit, onHoldChanged = ::setHeld, active = emptySet())
-            KeyRow(modifiers.filter { it.kind == KeyKind.Modifier }, 38.dp, onClick = ::emit, onHoldChanged = ::setHeld, active = buildSet { if (ctrl) add("Ctrl"); if (alt) add("Alt") })
+            KeyRow(compactNavigationKeys, 38.dp, onClick = ::emit, onHoldChanged = ::setHeld, active = emptySet())
+            KeyRow(
+                compactShellKeys,
+                38.dp,
+                onClick = ::emit,
+                onHoldChanged = ::setHeld,
+                active = buildSet { if (ctrl) add("Ctrl"); if (alt) add("Alt") }
+            )
         } else {
             KeyRow(utility, 38.dp, onClick = ::emit, onHoldChanged = ::setHeld, active = setOfNotNull(if (caps) "Caps" else null))
             KeyRow(commonKeys, 38.dp, onClick = ::emit, onHoldChanged = ::setHeld, active = emptySet(), caps = caps, shift = shift)
