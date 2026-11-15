@@ -38,6 +38,17 @@ internal class TerminalSessionController(
         onSetupStage: ((TerminalSetupStage) -> Unit)? = null,
         onSetupFailure: ((String) -> Unit)? = null
     ): TerminalSession {
+        prepareForStart()
+        return startPrepared(onSetupStage, onSetupFailure)
+    }
+
+    /** File-system setup can be done on an I/O dispatcher before creating the PTY on the main thread. */
+    fun prepareForStart() = backend.prepareForStart(context)
+
+    fun startPrepared(
+        onSetupStage: ((TerminalSetupStage) -> Unit)? = null,
+        onSetupFailure: ((String) -> Unit)? = null
+    ): TerminalSession {
         client.beginSetup(captureOutput = onSetupStage != null || onSetupFailure != null)
         client.setupObserver = onSetupStage
         client.setupFailureObserver = onSetupFailure
@@ -48,11 +59,16 @@ internal class TerminalSessionController(
 
     /** Start a replacement PTY only after the previous top-level session process has exited. */
     fun restartFinishedSession(): TerminalSession {
+        prepareForStart()
+        return restartFinishedSessionPrepared()
+    }
+
+    fun restartFinishedSessionPrepared(): TerminalSession {
         check(TerminalSessionRecovery.canRestart(activeSession?.isRunning == true)) {
             "The terminal session is still running."
         }
         activeSession = null
-        return start()
+        return startPrepared()
     }
 
     fun close() {
@@ -288,6 +304,7 @@ internal interface TerminalBackend {
     val label: String
     fun isReady(context: Context): Boolean
     suspend fun prepare(context: Context, onProgress: (TerminalSetupProgress) -> Unit)
+    fun prepareForStart(context: Context) = Unit
     fun start(context: Context, client: TerminalSessionClient): TerminalSession
 }
 
@@ -350,13 +367,12 @@ internal class ArchLinuxArmBackend : TerminalBackend {
         onProgress: (TerminalSetupProgress) -> Unit
     ) = ArchLinuxArmBootstrap.prepare(context, onProgress)
 
-    override fun start(context: Context, client: TerminalSessionClient): TerminalSession {
+    override fun prepareForStart(context: Context) {
         // Keep the existing tested pacman/PRoot settings in place for fresh and
         // previously prepared rootfs images; this does not run a package transaction.
         PacmanConfigCompatibility.migrate(context)
         val prefix = File(context.filesDir, "usr")
         val bin = File(prefix, "bin")
-        val nativeLibs = File(context.applicationInfo.nativeLibraryDir)
         val cache = ProotTempDirectory.forApp(context)
         listOf(
             bin,
@@ -364,14 +380,26 @@ internal class ArchLinuxArmBackend : TerminalBackend {
             File(prefix, "etc/pr"),
             File(prefix, "var/lib/pr/installed-rootfs"),
             cache
-        )
-            .forEach { directory ->
-                check(directory.mkdirs() || directory.isDirectory) {
-                    "Could not create TritonTerm environment directory: $directory"
-                }
+        ).forEach { directory ->
+            check(directory.mkdirs() || directory.isDirectory) {
+                "Could not create TritonTerm environment directory: $directory"
             }
+        }
+        val nativeLibs = File(context.applicationInfo.nativeLibraryDir)
         linkNativeExecutable(nativeLibs, "libpr-cli.so", File(bin, "pr-cli"))
         linkNativeExecutable(nativeLibs, "libproot.so", File(bin, "proot"))
+        File(context.filesDir, "home").mkdirs()
+        val rustDiagnostic = File(context.filesDir, "home/.tritonterm-diagnose-arch-rust.sh")
+        context.assets.open("diagnose-arch-rust.sh").use { source ->
+            rustDiagnostic.outputStream().use { destination -> source.copyTo(destination) }
+        }
+    }
+
+    override fun start(context: Context, client: TerminalSessionClient): TerminalSession {
+        val prefix = File(context.filesDir, "usr")
+        val bin = File(prefix, "bin")
+        val nativeLibs = File(context.applicationInfo.nativeLibraryDir)
+        val cache = ProotTempDirectory.forApp(context)
         val cli = File(nativeLibs, "libpr-cli.so").absolutePath
         val guestRoot = ArchLinuxArmBootstrap.rootfs(context)
         val loginUser = ArchGuestUser.NAME
@@ -395,11 +423,6 @@ internal class ArchLinuxArmBackend : TerminalBackend {
             "LANG=${ArchGuestEnvironment.LANG}",
             "TZ=${ArchGuestEnvironment.timezoneId()}"
         ) + ArchGuestNetworkDns.environment(context)
-        File(context.filesDir, "home").mkdirs()
-        val rustDiagnostic = File(context.filesDir, "home/.tritonterm-diagnose-arch-rust.sh")
-        context.assets.open("diagnose-arch-rust.sh").use { source ->
-            rustDiagnostic.outputStream().use { destination -> source.copyTo(destination) }
-        }
         val startedAt = System.nanoTime()
         TerminalDiagnostics.record(
             context,
