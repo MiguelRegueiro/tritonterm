@@ -1,6 +1,5 @@
 package com.tritonterm.android.ui
 
-import android.animation.ValueAnimator
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
@@ -12,7 +11,6 @@ import android.widget.Toast
 import androidx.core.content.FileProvider
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
-import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Arrangement
@@ -38,10 +36,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.systemBarsPadding
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.layout.width
-import androidx.compose.animation.core.animateFloat
-import androidx.compose.animation.core.infiniteRepeatable
-import androidx.compose.animation.core.rememberInfiniteTransition
-import androidx.compose.animation.core.tween
+import androidx.compose.foundation.layout.size
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
@@ -77,9 +72,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Surface
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.text.style.TextAlign
-import androidx.compose.ui.geometry.CornerRadius
-import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.text.style.TextOverflow
 import com.tritonterm.android.config.TerminalConfig
 import com.tritonterm.android.config.TerminalConfigSyntaxHighlighter
 import com.tritonterm.android.terminal.TerminalSessionController
@@ -96,7 +89,6 @@ import com.tritonterm.android.terminal.RuntimeDiagnosticsProbes
 import com.tritonterm.android.terminal.TerminalSetupProgress
 import com.tritonterm.android.terminal.TerminalSetupProgressFile
 import com.tritonterm.android.terminal.TerminalSetupStage
-import com.tritonterm.android.terminal.ArchGuestUser
 import com.tritonterm.android.terminal.TerminalCallbacks
 import com.tritonterm.android.terminal.TerminalClipboardSupport
 import com.tritonterm.android.config.TerminalKeyAction
@@ -127,7 +119,7 @@ internal fun TerminalScreen() {
     var setupProgress by remember(context) {
         mutableStateOf(TerminalSetupProgress(TerminalSetupStage.IDLE))
     }
-    var stageElapsedSeconds by remember(context) { mutableLongStateOf(0L) }
+    var installElapsedSeconds by remember(context) { mutableLongStateOf(0L) }
     var session by remember(terminalController) { mutableStateOf<TerminalSession?>(null) }
     val currentTerminalSession = rememberUpdatedState(session)
     var terminalProcessFinished by remember(terminalController) { mutableStateOf(false) }
@@ -220,15 +212,11 @@ internal fun TerminalScreen() {
         }
     }
 
-    LaunchedEffect(installState.running, installState.stage) {
-        if (!installState.running) {
-            stageElapsedSeconds = 0L
-            return@LaunchedEffect
-        }
-        val stage = installState.stage
+    LaunchedEffect(installState.running) {
+        if (!installState.running) return@LaunchedEffect
         val started = android.os.SystemClock.elapsedRealtime()
-        while (ArchLinuxArmInstaller.state.value.running && ArchLinuxArmInstaller.state.value.stage == stage) {
-            stageElapsedSeconds = (android.os.SystemClock.elapsedRealtime() - started) / 1_000L
+        while (ArchLinuxArmInstaller.state.value.running) {
+            installElapsedSeconds = (android.os.SystemClock.elapsedRealtime() - started) / 1_000L
             delay(1_000L)
         }
     }
@@ -575,136 +563,152 @@ internal fun TerminalScreen() {
                 }
             }
         } else {
+            val phases = listOf("Download image", "Verify image", "Install image", "Check development tools", "Prepare package signing")
+            val currentStage = setupProgress.stage
+            val downloadTotal = setupProgress.total
+            val downloadFraction = downloadTotal?.takeIf { it > 0L }?.let {
+                (setupProgress.downloaded.toFloat() / it).coerceIn(0f, 1f)
+            }
+            val verifyFraction = setupProgress.extractionTotal.takeIf { currentStage == TerminalSetupStage.VERIFYING && it > 0L }?.let {
+                (setupProgress.extractedBytes.toFloat() / it).coerceIn(0f, 1f)
+            }
+            val installFraction = setupProgress.extractionTotal.takeIf { currentStage == TerminalSetupStage.INSTALLING && it > 0L }?.let {
+                (setupProgress.extractedBytes.toFloat() / it).coerceIn(0f, 1f)
+            }
+            val phaseActive = when (currentStage) {
+                TerminalSetupStage.DOWNLOADING -> 0
+                TerminalSetupStage.VERIFYING -> 1
+                TerminalSetupStage.CLEANING, TerminalSetupStage.INSTALLING -> 2
+                TerminalSetupStage.DEVELOPER_TOOLS -> 3
+                TerminalSetupStage.PREPARING, TerminalSetupStage.INITIALIZING -> 4
+                else -> -1
+            }
+            val extracted = reusableArchRootfs || currentStage in setOf(
+                TerminalSetupStage.PREPARING,
+                TerminalSetupStage.DEVELOPER_TOOLS,
+                TerminalSetupStage.INITIALIZING,
+                TerminalSetupStage.READY
+            )
+            val phaseDone = listOf(
+                extracted || currentStage in setOf(TerminalSetupStage.VERIFYING, TerminalSetupStage.CLEANING,
+                    TerminalSetupStage.INSTALLING, TerminalSetupStage.PREPARING, TerminalSetupStage.DEVELOPER_TOOLS,
+                    TerminalSetupStage.INITIALIZING, TerminalSetupStage.READY),
+                extracted || currentStage in setOf(TerminalSetupStage.CLEANING, TerminalSetupStage.INSTALLING,
+                    TerminalSetupStage.PREPARING, TerminalSetupStage.DEVELOPER_TOOLS,
+                    TerminalSetupStage.INITIALIZING, TerminalSetupStage.READY) ||
+                    (currentStage == TerminalSetupStage.VERIFYING && verifyFraction == 1f),
+                extracted || currentStage in setOf(TerminalSetupStage.PREPARING, TerminalSetupStage.DEVELOPER_TOOLS,
+                    TerminalSetupStage.INITIALIZING, TerminalSetupStage.READY) ||
+                    (currentStage == TerminalSetupStage.INSTALLING && installFraction == 1f),
+                currentStage in setOf(TerminalSetupStage.PREPARING, TerminalSetupStage.INITIALIZING, TerminalSetupStage.READY),
+                currentStage == TerminalSetupStage.READY
+            )
+            val phaseDetails = listOf(
+                when {
+                    phaseDone[0] -> "Signed image downloaded"
+                    currentStage == TerminalSetupStage.DOWNLOADING && downloadTotal != null && downloadTotal > 0L ->
+                        "${formatMiB(setupProgress.downloaded)} / ${formatMiB(downloadTotal)} · ${downloadFraction?.times(100)?.toInt() ?: 0}% · ${formatMiB(setupProgress.downloadBytesPerSecond)}/s"
+                    currentStage == TerminalSetupStage.DOWNLOADING -> "Fetching the signed release metadata and image"
+                    else -> "Arch Linux ARM · ${ArchRootfsRelease.pinnedVersion()}"
+                },
+                when {
+                    phaseDone[1] -> "Signed manifest and SHA-256 verified"
+                    currentStage == TerminalSetupStage.VERIFYING && setupProgress.extractionTotal > 0L ->
+                        "${formatMiB(setupProgress.extractedBytes)} / ${formatMiB(setupProgress.extractionTotal)} · ${verifyFraction?.times(100)?.toInt() ?: 0}%"
+                    else -> "Authenticate the image before installation"
+                },
+                when {
+                    phaseDone[2] -> "Image unpacked into app storage"
+                    currentStage == TerminalSetupStage.CLEANING -> "Preparing the install destination · ${setupProgress.extractedEntries} entries"
+                    currentStage == TerminalSetupStage.INSTALLING && setupProgress.extractionTotal > 0L ->
+                        "${formatMiB(setupProgress.extractedBytes)} / ${formatMiB(setupProgress.extractionTotal)} · ${installFraction?.times(100)?.toInt() ?: 0}% · ${setupProgress.extractedEntries} entries"
+                    else -> "Unpack the verified image into app storage"
+                },
+                if (phaseDone[3]) "Required development tools checked" else "Checking Fish, pacman, Rust and fakeroot",
+                if (phaseDone[4]) "Device-local package signing trust is ready" else "Initialize pacman’s signing keys for this device"
+            )
+            val phaseProgress = listOf(downloadFraction, verifyFraction, installFraction, null, null)
+
             Box(
                 modifier = paneModifier.fillMaxSize().background(Color.Black),
-                contentAlignment = Alignment.Center
+                contentAlignment = Alignment.TopCenter
             ) {
                 Column(
-                    modifier = Modifier.fillMaxWidth().padding(horizontal = 28.dp),
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                    verticalArrangement = Arrangement.spacedBy(14.dp)
+                    modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState())
+                        .padding(horizontal = 20.dp, vertical = 12.dp),
+                    verticalArrangement = Arrangement.spacedBy(18.dp)
                 ) {
-                    Text(
-                        setupError ?: when (setupProgress.stage) {
-                            TerminalSetupStage.IDLE -> if (reusableArchRootfs) {
-                                "An Arch installation is present. Start the preconfigured Triton shell."
-                            } else {
-                                "Arch Linux ARM is ready to install with the Triton development environment."
+                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                            Text("Arch Linux ARM", color = Color(0xFFF1F1F1), fontSize = 23.sp, fontWeight = FontWeight.SemiBold)
+                            Surface(shape = RoundedCornerShape(20.dp), color = Color(0xFF28222A)) {
+                                Text("${ArchRootfsRelease.pinnedVersion()}", color = Color(0xFFDEA016), fontSize = 11.sp,
+                                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp))
                             }
-                            TerminalSetupStage.DOWNLOADING -> "Downloading Arch Linux ARM…"
-                            TerminalSetupStage.VERIFYING -> "Checking the downloaded Arch Linux ARM archive…"
-                            TerminalSetupStage.CLEANING -> "Checking interrupted-install state without removing files…"
-                            TerminalSetupStage.INSTALLING -> "Unpacking Arch Linux ARM…"
-                            TerminalSetupStage.PREPARING -> "Preparing the Arch rootfs…"
-                            TerminalSetupStage.DEVELOPER_TOOLS -> "Checking the prebuilt development environment…"
-                            TerminalSetupStage.INITIALIZING -> "Initializing Arch package keys…"
-                            TerminalSetupStage.READY -> "Starting shell…"
-                            TerminalSetupStage.FAILED -> "Setup failed."
-                        },
-                        color = if (setupError == null) Color(0xFFD5D5D5) else Color(0xFFFF8A80),
-                        textAlign = TextAlign.Center,
-                        fontSize = 14.sp
-                    )
-                    setupWarning?.let {
-                        Text(it, color = Color(0xFFFFCC80), textAlign = TextAlign.Center, fontSize = 12.sp)
-                    }
-                    if (!setupReady && !ArchRootfsRelease.isConfigured()) {
+                        }
                         Text(
-                            "This APK is not pinned to a signed rootfs release yet.",
-                            color = Color(0xFFFFCC80),
-                            textAlign = TextAlign.Center,
-                            fontSize = 12.sp
+                            if (installState.running) "Setting up your Linux environment" else "A ready-to-use Linux development environment",
+                            color = Color(0xFFAAAAAA), fontSize = 14.sp
                         )
                     }
-                    if (!setupReady && setupProgress.stage != TerminalSetupStage.READY) {
-                        Text("Linux account · ${ArchGuestUser.NAME}", color = Color(0xFFBDBDBD), fontSize = 13.sp)
+
+                    Surface(
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(16.dp),
+                        color = Color(0xFF171717),
+                        border = BorderStroke(1.dp, Color(0xFF303030))
+                    ) {
+                        Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                            phases.forEachIndexed { index, title ->
+                                val completed = phaseDone[index]
+                                val active = installState.running && phaseActive == index && !completed
+                                val failed = setupError != null && phaseActive == index && !completed
+                                SetupPhaseRow(
+                                    index = index + 1,
+                                    title = title,
+                                    detail = phaseDetails[index],
+                                    state = when {
+                                        completed -> SetupPhaseState.COMPLETE
+                                        failed -> SetupPhaseState.FAILED
+                                        active -> SetupPhaseState.ACTIVE
+                                        else -> SetupPhaseState.PENDING
+                                    },
+                                    progress = if (active) phaseProgress[index] else null
+                                )
+                            }
+                        }
                     }
+
                     if (installState.running) {
-                        Text(
-                            "${setupProgress.stage.name.lowercase().replace('_', ' ')} · ${stageElapsedSeconds / 60}:${(stageElapsedSeconds % 60).toString().padStart(2, '0')}",
-                            color = Color(0xFF8A8A8A),
-                            fontSize = 11.sp
-                        )
-                        val total = setupProgress.total
-                        if (setupProgress.stage == TerminalSetupStage.DOWNLOADING && total != null && total > 0) {
+                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically) {
                             Text(
-                                "${setupProgress.downloaded / (1024 * 1024)} / ${total / (1024 * 1024)} MiB · " +
-                                    "${(setupProgress.downloaded * 100 / total).coerceIn(0, 100)}% · " +
-                                    "${setupProgress.downloadBytesPerSecond / (1024 * 1024)} MiB/s",
-                                color = Color(0xFF8A8A8A),
-                                fontSize = 12.sp
+                                if (phaseActive >= 0) "Step ${phaseActive + 1} of ${phases.size}" else "Finishing setup",
+                                color = Color(0xFFBDBDBD), fontSize = 13.sp
                             )
+                            Text("Elapsed ${formatElapsed(installElapsedSeconds)}", color = Color(0xFFBDBDBD), fontSize = 13.sp)
                         }
-                        if ((setupProgress.stage == TerminalSetupStage.VERIFYING ||
-                                setupProgress.stage == TerminalSetupStage.INSTALLING) &&
-                            setupProgress.extractionTotal > 0L
-                        ) {
-                            val progressText = if (setupProgress.stage == TerminalSetupStage.VERIFYING) {
-                                "${setupProgress.extractedBytes / (1024 * 1024)} / " +
-                                    "${setupProgress.extractionTotal / (1024 * 1024)} MiB checked"
-                            } else {
-                                "${setupProgress.extractedBytes / (1024 * 1024)} / " +
-                                    "${setupProgress.extractionTotal / (1024 * 1024)} MiB · " +
-                                    "${setupProgress.extractedEntries} entries"
-                            }
-                            Text(progressText, color = Color(0xFF8A8A8A), fontSize = 12.sp)
+                    } else if (!setupReady) {
+                        setupError?.let {
+                            Text(it, color = Color(0xFFFF8A80), fontSize = 13.sp)
                         }
-                        if (setupProgress.stage == TerminalSetupStage.CLEANING) {
-                            Text(
-                                "${setupProgress.extractedEntries} installer entries checked",
-                                color = Color(0xFF8A8A8A),
-                                fontSize = 12.sp
-                            )
+                        setupWarning?.let {
+                            Text(it, color = Color(0xFFFFCC80), fontSize = 12.sp)
                         }
-                        if (setupProgress.stage == TerminalSetupStage.PREPARING && setupProgress.stepTotal > 0) {
-                            Text(
-                                "Preparation step ${setupProgress.stepCompleted} of ${setupProgress.stepTotal}",
-                                color = Color(0xFF8A8A8A),
-                                fontSize = 12.sp
-                            )
+                        if (!ArchRootfsRelease.isConfigured()) {
+                            Text("This build is not pinned to a signed Linux image release.", color = Color(0xFFFFCC80), fontSize = 12.sp)
                         }
-                        if (setupProgress.stage == TerminalSetupStage.DEVELOPER_TOOLS) {
-                            setupProgress.lastActivity?.let { activity ->
-                                Text(activity.take(120), color = Color(0xFF8A8A8A), fontSize = 11.sp, maxLines = 2)
-                            }
-                            setupProgress.commandStatus?.let { status ->
-                                Text(status.take(160), color = Color(0xFFBDBDBD), fontSize = 11.sp, maxLines = 2)
-                            }
-                        }
-                        SetupStageProgress(
-                            downloadFraction = when {
-                                setupProgress.stage.ordinal >= TerminalSetupStage.VERIFYING.ordinal -> 1f
-                                total != null && total > 0 -> setupProgress.downloaded.toFloat() / total
-                                else -> null
-                            },
-                            installStage = setupProgress.stage,
-                            installFraction = when (setupProgress.stage) {
-                                TerminalSetupStage.PREPARING -> setupProgress.stepTotal.takeIf { it > 0 }?.let {
-                                    setupProgress.stepCompleted.toFloat() / it
-                                }
-                                TerminalSetupStage.DEVELOPER_TOOLS -> null
-                                else -> setupProgress.extractionTotal.takeIf { it > 0L }?.let {
-                                    setupProgress.extractedBytes.toFloat() / it
-                                }
-                            },
+                        TritonActionButton(
+                            label = if (setupError != null) "Retry setup" else if (reusableArchRootfs) "Continue setup" else "Install Arch Linux ARM",
+                            enabled = ArchRootfsRelease.isConfigured(),
+                            onClick = { ArchLinuxArmInstaller.start(context) },
                             modifier = Modifier.fillMaxWidth()
                         )
-                    } else if (!setupReady) {
-                        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                            TritonActionButton(
-                                label = if (installState.error != null) "Retry setup" else if (reusableArchRootfs) "Continue setup" else "Install Arch",
-                                enabled = !installState.running && ArchRootfsRelease.isConfigured(),
-                                onClick = { ArchLinuxArmInstaller.start(context) }
-                            )
-                        }
-                        if (setupError != null) {
-                            Text(
-                                "The rootfs and user files are preserved. Review Logs, then retry setup after resolving the reported issue.",
-                                color = Color(0xFFFFCC80),
-                                textAlign = TextAlign.Center,
-                                fontSize = 12.sp
-                            )
-                        }
+                        Text(
+                            "The verified archive is removed automatically after setup completes.",
+                            modifier = Modifier.fillMaxWidth(),
+                            color = Color(0xFF888888), fontSize = 12.sp, textAlign = TextAlign.Center
+                        )
                     }
                 }
             }
@@ -918,96 +922,101 @@ internal fun TerminalScreen() {
 }
 
 
-@Composable
-private fun SetupStageProgress(
-    downloadFraction: Float?,
-    installStage: TerminalSetupStage,
-    installFraction: Float?,
-    modifier: Modifier = Modifier
-) {
-    Row(modifier, horizontalArrangement = Arrangement.spacedBy(20.dp)) {
-        StageProgressBar(
-            title = "Download",
-            fraction = downloadFraction,
-            active = downloadFraction == null,
-            modifier = Modifier.weight(1f)
-        )
-        StageProgressBar(
-            title = when (installStage) {
-                TerminalSetupStage.VERIFYING -> "Verify"
-                TerminalSetupStage.CLEANING -> "Cleanup"
-                TerminalSetupStage.INSTALLING -> "Unpack"
-                TerminalSetupStage.PREPARING -> "Prepare"
-                TerminalSetupStage.DEVELOPER_TOOLS -> "Developer tools"
-                else -> "Install"
-            },
-            fraction = when (installStage) {
-                TerminalSetupStage.VERIFYING -> installFraction
-                TerminalSetupStage.CLEANING -> null
-                TerminalSetupStage.INSTALLING -> installFraction
-                TerminalSetupStage.PREPARING, TerminalSetupStage.DEVELOPER_TOOLS -> installFraction
-                else -> 0f
-            },
-            active = installStage in setOf(
-                TerminalSetupStage.VERIFYING,
-                TerminalSetupStage.INSTALLING,
-                TerminalSetupStage.DEVELOPER_TOOLS
-            ) &&
-                installFraction == null,
-            modifier = Modifier.weight(1f)
-        )
-    }
-}
+private enum class SetupPhaseState { COMPLETE, ACTIVE, PENDING, FAILED }
 
 @Composable
-private fun StageProgressBar(
+private fun SetupPhaseRow(
+    index: Int,
     title: String,
-    fraction: Float?,
-    active: Boolean,
-    modifier: Modifier = Modifier
+    detail: String,
+    state: SetupPhaseState,
+    progress: Float?
 ) {
-    val animationsEnabled = remember { ValueAnimator.areAnimatorsEnabled() }
-    val offset = if (fraction == null && active && animationsEnabled) {
-        val transition = rememberInfiniteTransition(label = "${title}Progress")
-        val animatedOffset by transition.animateFloat(
-            initialValue = -0.35f,
-            targetValue = 1f,
-            animationSpec = infiniteRepeatable(tween(durationMillis = 5_000)),
-            label = "${title}ProgressOffset"
-        )
-        animatedOffset
-    } else {
-        0f
+    val accent = Color(0xFFDEA016)
+    val foreground = when (state) {
+        SetupPhaseState.COMPLETE, SetupPhaseState.ACTIVE -> Color(0xFFF0F0F0)
+        SetupPhaseState.PENDING -> Color(0xFF777777)
+        SetupPhaseState.FAILED -> Color(0xFFFF8A80)
     }
-    Column(modifier, verticalArrangement = Arrangement.spacedBy(7.dp)) {
-        Text(title, color = Color(0xFF929292), fontSize = 11.sp)
-        Canvas(Modifier.fillMaxWidth().height(6.dp)) {
-            val radius = CornerRadius(size.height / 2f)
-            drawRoundRect(Color(0xFF292929), cornerRadius = radius)
-            if (fraction != null) {
-                val width = size.width * fraction.coerceIn(0f, 1f)
-                if (width > 0f) {
-                    drawRoundRect(
-                        Color(0xFFBDBDBD),
-                        size = Size(width, size.height),
-                        cornerRadius = radius
-                    )
+    val secondary = when (state) {
+        SetupPhaseState.COMPLETE -> Color(0xFF9B9B9B)
+        SetupPhaseState.ACTIVE -> Color(0xFFC7C7C7)
+        SetupPhaseState.PENDING -> Color(0xFF666666)
+        SetupPhaseState.FAILED -> Color(0xFFFF8A80)
+    }
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(12.dp),
+        color = when (state) {
+            SetupPhaseState.ACTIVE -> Color(0xFF242119)
+            SetupPhaseState.FAILED -> Color(0xFF261B1B)
+            else -> Color.Transparent
+        },
+        border = when (state) {
+            SetupPhaseState.ACTIVE -> BorderStroke(1.dp, Color(0xFF6D531C))
+            SetupPhaseState.FAILED -> BorderStroke(1.dp, Color(0xFF6B3434))
+            else -> null
+        }
+    ) {
+        Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 10.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                Surface(
+                    modifier = Modifier.size(28.dp),
+                    shape = RoundedCornerShape(50),
+                    color = when (state) {
+                        SetupPhaseState.COMPLETE -> Color(0xFF193323)
+                        SetupPhaseState.ACTIVE -> Color(0xFF4A3917)
+                        SetupPhaseState.FAILED -> Color(0xFF492323)
+                        SetupPhaseState.PENDING -> Color(0xFF292929)
+                    }
+                ) {
+                    Box(contentAlignment = Alignment.Center) {
+                        Text(
+                            when (state) {
+                                SetupPhaseState.COMPLETE -> "✓"
+                                SetupPhaseState.FAILED -> "!"
+                                else -> index.toString()
+                            },
+                            color = when (state) {
+                                SetupPhaseState.COMPLETE -> Color(0xFF8FD0A0)
+                                SetupPhaseState.ACTIVE -> accent
+                                SetupPhaseState.FAILED -> Color(0xFFFF8A80)
+                                SetupPhaseState.PENDING -> Color(0xFF777777)
+                            },
+                            fontSize = 14.sp,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                    }
                 }
-            } else if (active) {
-                val segmentWidth = size.width * 0.34f
-                val left = ((size.width + segmentWidth) * offset - segmentWidth).coerceIn(0f, size.width)
-                val right = (left + segmentWidth).coerceAtMost(size.width)
-                if (right > left) {
-                    drawRoundRect(
-                        Color(0xFFBDBDBD),
-                        topLeft = Offset(left, 0f),
-                        size = Size(right - left, size.height),
-                        cornerRadius = radius
+                Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                    Text(title, color = foreground, fontSize = 14.sp, fontWeight = if (state == SetupPhaseState.ACTIVE) FontWeight.SemiBold else FontWeight.Medium)
+                    Text(detail, color = secondary, fontSize = 12.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                }
+                if (state == SetupPhaseState.ACTIVE) {
+                    Text("ACTIVE", color = accent, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                }
+            }
+            if (state == SetupPhaseState.ACTIVE && progress != null) {
+                Spacer(Modifier.height(10.dp))
+                Box(Modifier.fillMaxWidth().height(5.dp).background(Color(0xFF393939), RoundedCornerShape(8.dp))) {
+                    Box(
+                        Modifier.fillMaxWidth(progress.coerceIn(0f, 1f)).height(5.dp)
+                            .background(accent, RoundedCornerShape(8.dp))
                     )
                 }
             }
         }
     }
+}
+
+private fun formatMiB(bytes: Long): String = "${bytes.coerceAtLeast(0L) / (1024L * 1024L)} MiB"
+
+private fun formatElapsed(seconds: Long): String {
+    val hours = seconds / 3600
+    val minutes = (seconds % 3600) / 60
+    val remainder = seconds % 60
+    return if (hours > 0) "$hours:${minutes.toString().padStart(2, '0')}:${remainder.toString().padStart(2, '0')}"
+    else "${minutes.toString().padStart(2, '0')}:${remainder.toString().padStart(2, '0')}"
 }
 
 

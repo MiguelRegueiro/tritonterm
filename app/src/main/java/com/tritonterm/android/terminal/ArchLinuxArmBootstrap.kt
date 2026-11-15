@@ -151,7 +151,15 @@ internal object ArchLinuxArmBootstrap {
             }
             onProgress(TerminalSetupProgress(TerminalSetupStage.VERIFYING, extractionTotal = releaseManifest.size))
             try {
-                ArchRootfsRelease.verifyArchive(archive, releaseManifest)
+                ArchRootfsRelease.verifyArchive(archive, releaseManifest) { verifiedBytes ->
+                    onProgress(
+                        TerminalSetupProgress(
+                            stage = TerminalSetupStage.VERIFYING,
+                            extractedBytes = verifiedBytes,
+                            extractionTotal = releaseManifest.size
+                        )
+                    )
+                }
             } catch (failure: Exception) {
                 if (!isRootfsExtracted(context)) {
                     check(discardInvalidCacheFile(archive)) {
