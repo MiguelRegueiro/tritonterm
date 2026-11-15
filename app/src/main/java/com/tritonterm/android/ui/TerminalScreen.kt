@@ -98,6 +98,7 @@ import com.tritonterm.android.config.TerminalKeyAction
 import com.termux.terminal.TerminalSession
 import com.termux.view.TerminalView
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -112,10 +113,13 @@ internal fun TerminalScreen() {
     val reusableArchRootfs = remember(context, installState.ready) {
         ArchLinuxArmBootstrap.isRootfsExtracted(context)
     }
-    var pacmanLockWarning by remember(context) { mutableStateOf(false) }
-    var setupReady by remember(terminalController) {
-        mutableStateOf(terminalController.isReady(context))
+    val rootfsReadyAtStartup = remember(terminalController) {
+        terminalController.isReady(context)
     }
+    var pacmanLockWarning by remember(context) { mutableStateOf(false) }
+    var setupReady by remember(terminalController) { mutableStateOf(rootfsReadyAtStartup) }
+    var shellStarting by remember(terminalController) { mutableStateOf(false) }
+    var shellStartupError by remember(terminalController) { mutableStateOf<String?>(null) }
     var setupError by remember(context) { mutableStateOf<String?>(null) }
     var showFeatureWarnings by remember(context) { mutableStateOf(false) }
     var setupWarning by remember(context) { mutableStateOf<String?>(null) }
@@ -128,37 +132,51 @@ internal fun TerminalScreen() {
     var terminalProcessFinished by remember(terminalController) { mutableStateOf(false) }
     val setupScope = androidx.compose.runtime.rememberCoroutineScope()
 
-    LaunchedEffect(terminalController) {
-        if (terminalController.isReady(context)) {
-            // Post the ongoing notification before PRoot/session startup can take time.
-            TerminalForegroundService.startSession(context)
-            try {
-                session = terminalController.start()
-                setupReady = true
-            } catch (failure: Exception) {
-                TerminalForegroundService.stop(context)
-                TerminalSessionHost.markSessionInactive(context)
-                setupReady = false
-                setupError = failure.message ?: "The terminal shell could not start."
-                TerminalDiagnostics.record(context, "shell_startup", "failed", mapOf("error" to setupError))
+    val startInteractiveShell: () -> Unit = {
+        if (!shellStarting && session == null) {
+            shellStarting = true
+            shellStartupError = null
+            setupScope.launch {
+                try {
+                    // Post the ongoing notification before file preparation and PRoot startup.
+                    TerminalForegroundService.startSession(context)
+                    withContext(Dispatchers.IO) { terminalController.prepareForStart() }
+                    // TerminalSession creates its main-thread Handler in the constructor.
+                    session = terminalController.startPrepared()
+                    setupReady = true
+                    shellStarting = false
+                    terminalProcessFinished = false
+                } catch (cancelled: CancellationException) {
+                    TerminalForegroundService.stop(context)
+                    TerminalSessionHost.markSessionInactive(context)
+                    shellStarting = false
+                    throw cancelled
+                } catch (failure: Exception) {
+                    TerminalForegroundService.stop(context)
+                    TerminalSessionHost.markSessionInactive(context)
+                    shellStarting = false
+                    shellStartupError = failure.message ?: "The terminal shell could not start."
+                    TerminalDiagnostics.record(context, "shell_startup", "failed", mapOf("error" to shellStartupError))
+                }
             }
-            return@LaunchedEffect
         }
-        setupReady = false
+    }
+
+    LaunchedEffect(terminalController, rootfsReadyAtStartup) {
+        if (rootfsReadyAtStartup) {
+            startInteractiveShell()
+        } else {
+            setupReady = false
+            shellStarting = false
+        }
     }
 
     LaunchedEffect(installState) {
         setupProgress = installState.progress
         setupError = installState.error
-        if (installState.ready && !installState.running && session == null) {
-            try {
-                session = terminalController.start()
-                setupReady = true
-            } catch (failure: Exception) {
-                setupReady = false
-                setupError = failure.message ?: "Arch is installed, but its interactive shell could not start."
-                TerminalDiagnostics.record(context, "shell_startup", "failed", mapOf("error" to setupError))
-            }
+        if (installState.ready && !installState.running && session == null && !shellStarting) {
+            setupReady = true
+            startInteractiveShell()
         }
     }
 
@@ -394,6 +412,8 @@ internal fun TerminalScreen() {
                 .windowInsetsPadding(WindowInsets.imeAnimationTarget)
                 .background(Color.Black)
         ) {
+        val currentSession = session
+        val terminalInteractive = setupReady && currentSession != null
         Row(
             Modifier
                 .fillMaxWidth()
@@ -407,7 +427,7 @@ internal fun TerminalScreen() {
                 showConfig = true
             }) { Text("Config", fontSize = 12.sp) }
             TextButton(onClick = openDiagnostics) { Text("Logs", fontSize = 12.sp) }
-            if (setupReady) {
+            if (terminalInteractive) {
                 TextButton(
                     onClick = toggleKeyboardMode,
                     modifier = Modifier.semantics {
@@ -427,7 +447,7 @@ internal fun TerminalScreen() {
             }
         }
 
-        if (pacmanLockWarning && setupReady) {
+        if (pacmanLockWarning && terminalInteractive) {
             Text(
                 "A pacman database lock has remained without an active pacman process. It may be stale or left by an interrupted transaction. TritonTerm will not remove it; verify pacman is stopped before recovering the lock.",
                 modifier = Modifier.fillMaxWidth().background(Color(0xFF3B2D1A)).padding(horizontal = 12.dp, vertical = 8.dp),
@@ -436,8 +456,7 @@ internal fun TerminalScreen() {
             )
         }
 
-        val currentSession = session
-        if (currentSession != null && setupReady && installState.featureWarnings.isNotEmpty()) {
+        if (terminalInteractive && installState.featureWarnings.isNotEmpty()) {
             Row(
                 modifier = Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 2.dp),
                 horizontalArrangement = Arrangement.SpaceBetween,
@@ -451,7 +470,7 @@ internal fun TerminalScreen() {
             }
         }
         val terminalPane: @Composable (Modifier) -> Unit = { paneModifier ->
-        if (currentSession != null && setupReady) {
+        if (terminalInteractive) {
             Box(modifier = paneModifier.fillMaxSize()) {
                 AndroidView(
                     modifier = Modifier.fillMaxSize(),
@@ -549,20 +568,56 @@ internal fun TerminalScreen() {
                                 fontSize = 13.sp,
                                 maxLines = 2
                             )
-                            TritonActionButton(label = "New shell", onClick = {
-                                runCatching {
-                                    TerminalForegroundService.startSession(context)
-                                    session = terminalController.restartFinishedSession()
-                                    terminalProcessFinished = false
-                                }.onFailure { failure ->
-                                    TerminalForegroundService.stop(context)
-                                    TerminalSessionHost.markSessionInactive(context)
-                                    diagnosticsMessage = "Could not start a new shell: ${failure.message ?: failure.javaClass.simpleName}"
-                                    TerminalDiagnostics.record(context, "shell_restart", "failed", mapOf("error" to failure.toString()))
+                            TritonActionButton(
+                                label = if (shellStarting) "Starting…" else "New shell",
+                                enabled = !shellStarting,
+                                onClick = {
+                                    shellStarting = true
+                                    setupScope.launch {
+                                        try {
+                                            TerminalForegroundService.startSession(context)
+                                            withContext(Dispatchers.IO) { terminalController.prepareForStart() }
+                                            session = terminalController.restartFinishedSessionPrepared()
+                                            terminalProcessFinished = false
+                                            shellStarting = false
+                                        } catch (cancelled: CancellationException) {
+                                            TerminalForegroundService.stop(context)
+                                            TerminalSessionHost.markSessionInactive(context)
+                                            shellStarting = false
+                                            throw cancelled
+                                        } catch (failure: Exception) {
+                                            TerminalForegroundService.stop(context)
+                                            TerminalSessionHost.markSessionInactive(context)
+                                            shellStarting = false
+                                            diagnosticsMessage = "Could not start a new shell: ${failure.message ?: failure.javaClass.simpleName}"
+                                            TerminalDiagnostics.record(context, "shell_restart", "failed", mapOf("error" to failure.toString()))
+                                        }
+                                    }
                                 }
-                            })
+                            )
                         }
                     }
+                }
+            }
+        } else if (setupReady && shellStartupError == null) {
+            Box(modifier = paneModifier.fillMaxSize().background(Color.Black))
+        } else if (setupReady) {
+            Box(
+                modifier = paneModifier.fillMaxSize().background(Color.Black),
+                contentAlignment = Alignment.Center
+            ) {
+                Column(
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 28.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    Text("The terminal couldn’t start", color = Color(0xFFF1F1F1), fontSize = 16.sp, fontWeight = FontWeight.Medium)
+                    Text(shellStartupError.orEmpty(), color = Color(0xFFFF8A80), fontSize = 12.sp, textAlign = TextAlign.Center)
+                    TritonActionButton(
+                        label = if (shellStarting) "Starting…" else "Retry terminal",
+                        enabled = !shellStarting,
+                        onClick = startInteractiveShell
+                    )
                 }
             }
         } else {
@@ -746,7 +801,7 @@ internal fun TerminalScreen() {
         }
 
         BoxWithConstraints(Modifier.weight(1f).fillMaxWidth()) {
-            val sideBySide = maxWidth > maxHeight && setupReady && keyboardVisible && !useSystemKeyboard
+            val sideBySide = maxWidth > maxHeight && terminalInteractive && keyboardVisible && !useSystemKeyboard
             if (sideBySide) {
                 Row(
                     modifier = Modifier.fillMaxSize(),
@@ -761,7 +816,7 @@ internal fun TerminalScreen() {
             } else {
                 Column(Modifier.fillMaxSize()) {
                     terminalPane(Modifier.weight(1f).fillMaxWidth())
-                    if (setupReady && keyboardVisible) {
+                    if (terminalInteractive && keyboardVisible) {
                         keyboardContent(
                             Modifier
                                 .fillMaxWidth()
