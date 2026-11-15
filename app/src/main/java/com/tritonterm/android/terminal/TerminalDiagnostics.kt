@@ -15,6 +15,9 @@ import java.io.InputStream
 import java.io.OutputStream
 import java.io.FilterOutputStream
 import java.time.Instant
+import java.time.ZoneId
+import java.time.format.DateTimeFormatter
+import java.util.Locale
 import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
@@ -46,6 +49,7 @@ internal data class GuestCrashRecord(val id: Int, val summary: String, val raw: 
 internal object TerminalDiagnostics {
     private const val MAX_OUTPUT_CHARS = 16_000
     private const val MAX_OUTPUT_TOTAL_CHARS = 300_000L
+    private val logTimestampFormatter = DateTimeFormatter.ofPattern("yyyy/MM/dd HH:mm:ss", Locale.ROOT)
     private const val MAX_RECENT_EVENTS = 120
     private const val MAX_RECENT_EVENT_CHARS = 80_000
     private const val MAX_NATIVE_LOG_BYTES = 512 * 1024
@@ -72,6 +76,17 @@ internal object TerminalDiagnostics {
                 output.write(event.toByteArray(Charsets.UTF_8))
                 output.fd.sync()
             }
+        }
+    }
+
+    fun clear(context: Context) {
+        check(flushProcessOutput()) { "Timed out while flushing terminal output before clearing logs." }
+        synchronized(this) {
+            listOf(file(context), crashFile(context)).forEach { logFile ->
+                FileOutputStream(logFile, false).use { it.fd.sync() }
+            }
+            outputCharacters.set(0L)
+            record(context, "diagnostics_logs", "cleared")
         }
     }
 
@@ -120,7 +135,9 @@ internal object TerminalDiagnostics {
                 val timestamp = json.optString("time")
                 DiagnosticEvent(
                     id = "$timestamp:$index",
-                    time = timestamp.substringAfter('T', timestamp).take(8),
+                    time = runCatching {
+                        Instant.parse(timestamp).atZone(ZoneId.systemDefault()).format(logTimestampFormatter)
+                    }.getOrElse { timestamp.substringAfter('T', timestamp).take(8) },
                     source = json.optString("source", "unknown"),
                     phase = phase,
                     status = status,
@@ -213,7 +230,7 @@ internal object TerminalDiagnostics {
         nativeRecords(raw).filter { it.type == "guest_sigsegv" }
             .joinToString("\n\n") { it.text }
 
-    fun recentExportText(context: Context): String =
+    fun shareableLogText(context: Context): String =
         exportPayload(recentEventsText(context), nativeRecords(nativeLogText(context)))
 
     fun confirmCrashRecorder(context: Context, previousBytes: Long) {
@@ -431,7 +448,7 @@ internal object TerminalDiagnostics {
     }
 
     fun createShareableDiagnosticsFile(context: Context): File {
-        val payload = recentExportText(context)
+        val payload = shareableLogText(context)
         val directory = File(context.cacheDir, "diagnostics").apply { check(isDirectory || mkdirs()) }
         val output = File(directory, "tritonterm-diagnostics.jsonl")
         FileOutputStream(output).use { stream ->
