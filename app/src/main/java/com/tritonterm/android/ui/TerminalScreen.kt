@@ -70,6 +70,8 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.TextRange
+import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -79,6 +81,7 @@ import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import com.tritonterm.android.config.TerminalConfig
+import com.tritonterm.android.config.TerminalConfigSyntaxHighlighter
 import com.tritonterm.android.terminal.TerminalSessionController
 import com.tritonterm.android.terminal.TerminalSessionHost
 import com.tritonterm.android.terminal.TerminalForegroundService
@@ -991,6 +994,14 @@ private fun TerminalConfigScreen(
     onSave: (String) -> String?
 ) {
     var error by remember { mutableStateOf<String?>(null) }
+    var editorValue by remember {
+        mutableStateOf(
+            TextFieldValue(
+                annotatedString = TerminalConfigSyntaxHighlighter.highlight(text),
+                selection = TextRange(text.length)
+            )
+        )
+    }
     var showDiscardConfirmation by remember { mutableStateOf(false) }
     val originalText = remember { text }
     val focusManager = androidx.compose.ui.platform.LocalFocusManager.current
@@ -1007,12 +1018,14 @@ private fun TerminalConfigScreen(
         Modifier
             .fillMaxSize()
             .systemBarsPadding()
-            .imePadding()
             .background(Color.Black)
-            .padding(horizontal = 16.dp, vertical = 8.dp),
-        verticalArrangement = Arrangement.spacedBy(6.dp)
     ) {
-        Box(Modifier.fillMaxWidth().height(48.dp)) {
+        Box(
+            Modifier
+                .fillMaxWidth()
+                .height(56.dp)
+                .padding(horizontal = 16.dp, vertical = 8.dp)
+        ) {
             TextButton(onClick = {
                 requestLeave()
             }, modifier = Modifier.align(Alignment.CenterStart)) { Text("← Terminal") }
@@ -1023,30 +1036,48 @@ private fun TerminalConfigScreen(
                 color = MaterialTheme.colorScheme.onSurface
             )
         }
-        OutlinedTextField(
-            value = text,
-            onValueChange = onTextChanged,
-            modifier = Modifier.fillMaxWidth().weight(1f),
-            textStyle = TextStyle(fontFamily = FontFamily.Monospace, fontSize = 14.sp),
-            shape = MaterialTheme.shapes.medium
-        )
-        error?.let {
-            Text(it, color = MaterialTheme.colorScheme.error, fontSize = 13.sp)
-        }
-        Row(
-            Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.End,
-            verticalAlignment = Alignment.CenterVertically
+        Column(
+            Modifier
+                .fillMaxWidth()
+                .weight(1f)
+                .imePadding()
+                .padding(horizontal = 16.dp, vertical = 8.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp)
         ) {
-            TextButton(onClick = {
-                focusManager.clearFocus()
-                onDismiss()
-            }) { Text("Cancel") }
-            Spacer(Modifier.width(8.dp))
-            Button(onClick = {
-                error = onSave(text)
-                if (error == null) focusManager.clearFocus()
-            }) { Text("Save & apply") }
+            OutlinedTextField(
+                value = editorValue,
+                onValueChange = { updated ->
+                    editorValue = updated.copy(
+                        annotatedString = TerminalConfigSyntaxHighlighter.highlight(updated.text)
+                    )
+                    onTextChanged(updated.text)
+                },
+                modifier = Modifier.fillMaxWidth().weight(1f),
+                textStyle = TextStyle(
+                    fontFamily = FontFamily.Monospace,
+                    fontSize = 14.sp,
+                    color = TerminalConfigSyntaxHighlighter.foreground
+                ),
+                shape = MaterialTheme.shapes.medium
+            )
+            error?.let {
+                Text(it, color = MaterialTheme.colorScheme.error, fontSize = 13.sp)
+            }
+            Row(
+                Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.End,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                TextButton(onClick = {
+                    focusManager.clearFocus()
+                    onDismiss()
+                }) { Text("Cancel") }
+                Spacer(Modifier.width(8.dp))
+                Button(onClick = {
+                    error = onSave(editorValue.text)
+                    if (error == null) focusManager.clearFocus()
+                }) { Text("Save & apply") }
+            }
         }
     }
     if (showDiscardConfirmation) {
