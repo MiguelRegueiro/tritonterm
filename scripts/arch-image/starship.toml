@@ -93,11 +93,11 @@ format = '([$symbol]($style) )'
 
 # ---------- Prompt Palette ----------
 [palettes.prompt]
-overlay0 = "#2f2f3c"       # Slightly lighter grey
+overlay0 = "#373039"       # Surrounding charcoal
 git = "#C48604"             # Phone Git segment
-runtime = "#A87508"         # Runtime/tool versions
-time_bg = "#22222e"         # Time segment and end cap
+runtime = "#A96800"         # Runtime/tool versions
+time_bg = "#28222A"         # Time segment and end cap
 lavender = "#9a9fe1"        # Command duration
-phone = "#C48604"           # Prompt character matches the phone accent
+phone = "#DEA016"           # Prompt arrow accent
 error = "#ff0000"
 foreground = "#d4d6e0"      # Prompt text
