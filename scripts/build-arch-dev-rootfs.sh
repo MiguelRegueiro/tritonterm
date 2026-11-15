@@ -116,6 +116,12 @@ run_image_contract() {
         cat "$output" >&2
         fail 4 "image contract '${label}' failed (exit ${result}); output: ${output}"
     fi
+    # GitHub Releases rejects zero-byte assets with HTTP 400 Bad Content-Length.
+    # Some successful contracts only run assertions and therefore produce no
+    # output; leave an explicit success record so every report is publishable.
+    if [[ ! -s "$output" ]]; then
+        printf 'PASS: %s\n' "$label" > "$output"
+    fi
     cat "$output"
 }
 
