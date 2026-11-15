@@ -30,7 +30,7 @@ jobs:
       artifact_id: ${{ steps.upload-test-binary.outputs.artifact-id }}
     steps:
       - name: Check out build recipes
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           submodules: true
 
@@ -61,7 +61,7 @@ jobs:
 
       - name: Upload embedded Android PRoot test binary
         id: upload-test-binary
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: proot-integration-test-aarch64-android
           path: third_party/oonid-pr/src/proot-integration-test/target/aarch64-linux-android/release/proot-integration-test
@@ -80,7 +80,7 @@ jobs:
     timeout-minutes: 180
     steps:
       - name: Check out build recipes
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           submodules: true
 
@@ -98,7 +98,7 @@ jobs:
           test "$(git -C third_party/oonid-pr/vendor/bionic rev-parse HEAD)" = 731631f300090436d7f5df80d50b6275c8c60a93
 
       - name: Download embedded Android PRoot test binary
-        uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: proot-integration-test-aarch64-android
           path: third_party/oonid-pr/src/proot-integration-test/target/aarch64-linux-android/release
@@ -163,6 +163,9 @@ jobs:
         run: |
           sudo --preserve-env=TRITONTERM_ROOTFS_SIGNING_KEY,TRITONTERM_ROOTFS_SIGNING_PASSPHRASE_FILE,TRITONTERM_ROOTFS_WORK_PARENT,TRITONTERM_NATIVE_PR_CLI_DIR \
             ./scripts/build-arch-dev-rootfs.sh "$ROOTFS_VERSION" "$GITHUB_WORKSPACE/dist/arch-rootfs"
+
+      - name: Return build outputs to the runner user
+        run: sudo chown -R "$(id -u):$(id -g)" "$GITHUB_WORKSPACE/dist/arch-rootfs"
 
       - name: Verify the signed rootfs archive through the production Rust extractor
         env:
