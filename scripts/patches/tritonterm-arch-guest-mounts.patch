@@ -7,7 +7,7 @@
 +// TRITONTERM_ANDROID_MOUNT_TABLE_FILTER_V1: Android's /proc/mounts is visible
 +// through PRoot's proc bind. Remove host-only /mnt records from the Arch
 +// profile's view; Android mounts are not guest devices, but applications such
-+// as Elio intentionally display custom top-level mount points. Keep the
++// as elio intentionally display custom top-level mount points. Keep the
 +// shared-storage and standard virtual roots while dropping Android's other
 +// top-level mounts. /proc/mounts is a symlink to /proc/self/mounts, so its
 +// bind destination must end in `!` to prevent PRoot from canonicalizing away

@@ -309,10 +309,10 @@ internal object ArchGuestEnvironment {
         mapOf("LANG" to LANG, "TZ" to timezoneId)
 }
 
-/** Give Elio the same focus marker Kitty supplies, without advertising Kitty graphics support. */
+/** Give elio the same focus marker Kitty supplies, without advertising Kitty graphics support. */
 private val ELIO_KITTY_KEYMAP_INIT = """
     if not functions -q elio; and not test -e ${'$'}HOME/.config/fish/functions/elio.fish
-        function elio --description 'TritonTerm Kitty-compatible Elio key maps'
+        function elio --description 'TritonTerm Kitty-compatible elio key maps'
             printf '\e]1337;SetUserVar=elio=MQ==\a'
             command /usr/bin/elio ${'$'}argv
             set -l elio_status ${'$'}status

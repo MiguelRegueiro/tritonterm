@@ -162,7 +162,7 @@ included in this source archive; the setup recipe pins its SHA-256 and uses
 `scripts/arch-image/paru-bootstrap.PKGBUILD`. The preinstalled `elio-bin` is an
 AUR binary package: its exact AUR PKGBUILD snapshot and AUR commit are included
 under `package-recipes/elio-bin/`, and the package recipe pins the upstream
-versioned AArch64 release archive by SHA-256. The upstream Elio source and MIT
+versioned AArch64 release archive by SHA-256. The upstream elio source and MIT
 license are available at the project URL recorded in the package inventory; the
 binary package also installs the MIT license into the rootfs license tree.
 

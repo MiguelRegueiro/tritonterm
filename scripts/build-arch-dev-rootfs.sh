@@ -231,7 +231,7 @@ run_image_contract fixed_account /bin/bash -lc '[[ "$(getent passwd triton | cut
 ! grep -qE "usermod[[:space:]]+--login|groupmod[[:space:]]+--new-name" /root/.tritonterm-setup/setup-arch-developer.sh'
 run_image_contract elio_package /usr/bin/su -l triton -s /usr/bin/fish -c 'test "$(elio --version)" = "elio 1.15.0" && test -x /usr/bin/elio && pacman -Q elio-bin'
 run_image_contract elio_theme_permissions /usr/bin/stat -c '%a %u:%g %n' /home/triton/.config/elio/theme.toml
-grep -qx '644 1000:1000 /home/triton/.config/elio/theme.toml' "$OUTPUT_DIR/contract-${VERSION}-elio_theme_permissions.txt" || fail 4 'Elio theme must be owned by triton and readable'
+grep -qx '644 1000:1000 /home/triton/.config/elio/theme.toml' "$OUTPUT_DIR/contract-${VERSION}-elio_theme_permissions.txt" || fail 4 'elio theme must be owned by triton and readable'
 run_image_contract rustup_show /usr/bin/su -l triton -s /usr/bin/fish -c 'rustup show'
 run_image_contract rustc_version /usr/bin/su -l triton -s /usr/bin/fish -c 'rustc --version'
 run_image_contract cargo_version /usr/bin/su -l triton -s /usr/bin/fish -c 'cargo --version'

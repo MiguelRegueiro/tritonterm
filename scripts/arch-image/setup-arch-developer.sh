@@ -465,8 +465,8 @@ pacman -Qo /usr/bin/elio
 run_triton_fish 'test "$(elio --version)" = "elio 1.15.0"'
 run_triton_fish 'test -r "$HOME/.config/elio/theme.toml"'
 readelf -h /usr/bin/elio | grep -q 'Machine:.*AArch64' ||
-    die 37 'the installed Elio binary is not an AArch64 ELF executable'
-say 'Pinned Elio package, AArch64 binary, ownership, version, and per-user theme checks passed.'
+    die 37 'the installed elio binary is not an AArch64 ELF executable'
+say 'Pinned elio package, AArch64 binary, ownership, version, and per-user theme checks passed.'
 rm -rf "$elio_build"
 
 stage='rust_compilation_smoke'
