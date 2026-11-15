@@ -379,6 +379,10 @@ internal fun TerminalScreen() {
                 }
             }
         )
+    } else if (showDiagnostics) {
+        // Keep the terminal view and its keyboard out of the composition while
+        // the full-screen Logs page is active.
+        Box(Modifier.fillMaxSize().background(Color.Black))
     } else {
         Column(
             Modifier
