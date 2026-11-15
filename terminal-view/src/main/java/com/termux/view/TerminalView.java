@@ -35,6 +35,8 @@ import androidx.annotation.RequiresApi;
 import com.termux.terminal.KeyHandler;
 import com.termux.terminal.TerminalEmulator;
 import com.termux.terminal.TerminalSession;
+import com.termux.terminal.TerminalColors;
+import com.termux.terminal.TextStyle;
 import com.termux.view.textselection.TextSelectionCursorController;
 
 /** View displaying and interacting with a {@link TerminalSession}. */
@@ -57,6 +59,8 @@ public final class TerminalView extends View {
     private Handler mTerminalCursorBlinkerHandler;
     private TerminalCursorBlinkerRunnable mTerminalCursorBlinkerRunnable;
     private int mTerminalCursorBlinkerRate;
+    private float mCursorBeamThickness = 1.5f;
+    private float mCursorUnderlineThickness = 2f;
     private boolean mCursorInvisibleIgnoreOnce;
     public static final int TERMINAL_CURSOR_BLINK_RATE_MIN = 100;
     public static final int TERMINAL_CURSOR_BLINK_RATE_MAX = 2000;
@@ -449,6 +453,7 @@ public final class TerminalView extends View {
         mRenderer = new TerminalRenderer(textSize, mRenderer == null ? Typeface.MONOSPACE : mRenderer.mTypeface,
             mRenderer == null ? null : mRenderer.mBoxDrawingTypeface,
             mRenderer == null ? null : mRenderer.mNerdTypeface);
+        mRenderer.setCursorThickness(mCursorBeamThickness, mCursorUnderlineThickness);
         updateSize();
         // Font metrics can change while the calculated row and column counts stay the same.
         // updateSize() only invalidates when the terminal grid changes, so redraw for every zoom step.
@@ -458,6 +463,7 @@ public final class TerminalView extends View {
     public void setTypeface(Typeface newTypeface) {
         mRenderer = new TerminalRenderer(mRenderer.mTextSize, newTypeface,
             mRenderer.mBoxDrawingTypeface, mRenderer.mNerdTypeface);
+        mRenderer.setCursorThickness(mCursorBeamThickness, mCursorUnderlineThickness);
         updateSize();
         invalidate();
     }
@@ -466,7 +472,21 @@ public final class TerminalView extends View {
     public void setSpecialTypefaces(Typeface boxDrawingTypeface, Typeface nerdTypeface) {
         mRenderer = new TerminalRenderer(mRenderer.mTextSize, mRenderer.mTypeface,
             boxDrawingTypeface, nerdTypeface);
+        mRenderer.setCursorThickness(mCursorBeamThickness, mCursorUnderlineThickness);
         updateSize();
+        invalidate();
+    }
+
+    /** Apply Kitty-style cursor palette and outline weights to this terminal. */
+    public void setCursorAppearance(int cursorColor, int cursorTextColor, float beamThickness, float underlineThickness) {
+        mCursorBeamThickness = beamThickness;
+        mCursorUnderlineThickness = underlineThickness;
+        TerminalColors.COLOR_SCHEME.mDefaultColors[TextStyle.COLOR_INDEX_CURSOR] = cursorColor | 0xff000000;
+        if (mEmulator != null) {
+            mEmulator.mColors.mCurrentColors[TextStyle.COLOR_INDEX_CURSOR] = cursorColor | 0xff000000;
+            mEmulator.setCursorTextColor(cursorTextColor);
+        }
+        if (mRenderer != null) mRenderer.setCursorThickness(mCursorBeamThickness, mCursorUnderlineThickness);
         invalidate();
     }
 

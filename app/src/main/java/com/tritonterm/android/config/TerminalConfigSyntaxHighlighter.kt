@@ -38,6 +38,10 @@ internal object TerminalConfigSyntaxHighlighter {
                                 addStyle(SpanStyle(color = number), it.start, it.end)
                             }
                         }
+                        "cursor_shape" -> highlightValue(tokens, chord)
+                        "cursor_blink_interval", "cursor_beam_thickness", "cursor_underline_thickness" ->
+                            highlightValue(tokens, number)
+                        "cursor", "cursor_text_color" -> highlightValue(tokens, action)
                         "map" -> highlightMap(tokens)
                     }
                 }
@@ -46,6 +50,12 @@ internal object TerminalConfigSyntaxHighlighter {
             if (newline < 0) break
             lineStart = newline + 1
         }
+    }
+
+    private fun androidx.compose.ui.text.AnnotatedString.Builder.highlightValue(tokens: List<Token>, valueColor: Color) {
+        val option = tokens.first()
+        addStyle(SpanStyle(color = directive), option.start, option.end)
+        tokens.getOrNull(1)?.let { addStyle(SpanStyle(color = valueColor), it.start, it.end) }
     }
 
     private fun androidx.compose.ui.text.AnnotatedString.Builder.highlightMap(tokens: List<Token>) {

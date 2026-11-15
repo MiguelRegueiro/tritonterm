@@ -131,9 +131,22 @@ internal fun TerminalScreen() {
     val currentTerminalSession = rememberUpdatedState(session)
     var terminalProcessFinished by remember(terminalController) { mutableStateOf(false) }
     val setupScope = androidx.compose.runtime.rememberCoroutineScope()
+    val sessionClient = terminalController.client
+    val configFile = remember(context) { TerminalConfig.file(context.filesDir) }
+    val initialConfig = remember(configFile) { TerminalConfig.loadOrCreate(configFile) }
+    var terminalConfig by remember { mutableStateOf(initialConfig) }
+    var terminalFontSize by remember { mutableIntStateOf(initialConfig.fontSize) }
+    var terminalFontFamily by remember { mutableStateOf(initialConfig.fontFamily) }
+    var terminalKeyBindings by remember { mutableStateOf(initialConfig.keyBindings) }
+    val currentTerminalKeyBindings = rememberUpdatedState(terminalKeyBindings)
+    var appliedFontSize by remember { mutableIntStateOf(terminalFontSize) }
+    var appliedFontFamily by remember { mutableStateOf(terminalFontFamily) }
 
     val startInteractiveShell: () -> Unit = {
         if (!shellStarting && session == null) {
+            // Initialize cursor defaults before Fish starts. Shell startup may
+            // emit its own cursor shape before AndroidView gets attached.
+            sessionClient.setTerminalConfig(terminalConfig)
             shellStarting = true
             shellStartupError = null
             setupScope.launch {
@@ -279,7 +292,6 @@ internal fun TerminalScreen() {
         }
     }
 
-    val sessionClient = terminalController.client
     LaunchedEffect(session) {
         terminalProcessFinished = session?.isRunning == false
     }
@@ -290,14 +302,6 @@ internal fun TerminalScreen() {
             terminalController.detachView()
         }
     }
-    val configFile = remember(context) { TerminalConfig.file(context.filesDir) }
-    val initialConfig = remember(configFile) { TerminalConfig.loadOrCreate(configFile) }
-    var terminalFontSize by remember { mutableIntStateOf(initialConfig.fontSize) }
-    var terminalFontFamily by remember { mutableStateOf(initialConfig.fontFamily) }
-    var terminalKeyBindings by remember { mutableStateOf(initialConfig.keyBindings) }
-    val currentTerminalKeyBindings = rememberUpdatedState(terminalKeyBindings)
-    var appliedFontSize by remember { mutableIntStateOf(terminalFontSize) }
-    var appliedFontFamily by remember { mutableStateOf(terminalFontFamily) }
     var showConfig by remember { mutableStateOf(false) }
     var configText by remember { mutableStateOf("") }
     var showDiagnostics by remember { mutableStateOf(false) }
@@ -322,6 +326,7 @@ internal fun TerminalScreen() {
         }
     }
     val terminalViewHolder = remember { arrayOfNulls<TerminalView>(1) }
+    val appliedCursorConfig = remember { arrayOfNulls<TerminalConfig>(1) }
     val inputMethodManager = remember(context) {
         context.getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
     }
@@ -389,6 +394,7 @@ internal fun TerminalScreen() {
                     result.error ?: "The config could not be parsed."
                 } else {
                     configFile.writeText(editedText)
+                    terminalConfig = parsed
                     terminalFontSize = parsed.fontSize
                     terminalFontFamily = parsed.fontFamily
                     terminalKeyBindings = parsed.keyBindings
@@ -524,6 +530,8 @@ internal fun TerminalScreen() {
                         }
                         sessionClient.terminalView = this
                         attachSession(currentSession)
+                        sessionClient.setTerminalConfig(terminalConfig)
+                        appliedCursorConfig[0] = terminalConfig
                         terminalViewHolder[0] = this
                             setBackgroundColor(android.graphics.Color.BLACK)
                             isFocusable = true
@@ -532,6 +540,10 @@ internal fun TerminalScreen() {
                     },
                     update = {
                         it.attachSession(currentSession)
+                        if (appliedCursorConfig[0] != terminalConfig) {
+                            sessionClient.setTerminalConfig(terminalConfig)
+                            appliedCursorConfig[0] = terminalConfig
+                        }
                         if (appliedFontSize != terminalFontSize) {
                             it.setTextSize(terminalFontSize)
                             appliedFontSize = terminalFontSize

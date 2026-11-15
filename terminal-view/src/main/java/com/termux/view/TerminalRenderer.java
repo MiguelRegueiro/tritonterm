@@ -21,6 +21,9 @@ import java.util.List;
  */
 public final class TerminalRenderer {
 
+    /** Cursor thickness settings are calibrated at TritonTerm's 32 px default font size. */
+    private static final float CURSOR_THICKNESS_REFERENCE_TEXT_SIZE = 32f;
+
     private static final int METRIC_AFFECTING_EFFECTS = TextStyle.CHARACTER_ATTRIBUTE_BOLD |
         TextStyle.CHARACTER_ATTRIBUTE_BLINK | TextStyle.CHARACTER_ATTRIBUTE_ITALIC;
 
@@ -31,6 +34,8 @@ public final class TerminalRenderer {
     private final Paint mTextPaint = new Paint();
     /** Measurement paint is isolated from drawTextRun's bold/italic/typeface state. */
     private final Paint mMeasurePaint = new Paint();
+    private float mCursorBeamThickness = 1.5f;
+    private float mCursorUnderlineThickness = 2f;
 
     /** The width of a single mono spaced character obtained by {@link Paint#measureText(String)} on a single 'X'. */
     final float mFontWidth;
@@ -70,6 +75,15 @@ public final class TerminalRenderer {
             sb.setCharAt(0, (char) i);
             asciiMeasures[i] = mTextPaint.measureText(sb, 0, 1);
         }
+    }
+
+    public void setCursorThickness(float beamThickness, float underlineThickness) {
+        // Keep cursor weight proportional to the cell as the user zooms. The config
+        // value is the thickness at the reference text size; the renderer is rebuilt
+        // for every zoom step, so derive the current pixel width from its text size.
+        float zoomScale = mTextSize / CURSOR_THICKNESS_REFERENCE_TEXT_SIZE;
+        mCursorBeamThickness = Math.max(0.5f, beamThickness * zoomScale);
+        mCursorUnderlineThickness = Math.max(0.5f, underlineThickness * zoomScale);
     }
 
     /** Render the terminal to a canvas with at a specified row scroll, and an optional rectangular selection. */
@@ -157,7 +171,7 @@ public final class TerminalRenderer {
                             invertCursorTextColor = true;
                         }
                         runs.add(new TextRun(lastRunStartColumn, columnWidthSinceLastRun, lastRunStartIndex,
-                            charsSinceLastRun, measuredWidthForRun, cursorColor, cursorShape, lastRunStyle,
+                            charsSinceLastRun, measuredWidthForRun, cursorColor, mEmulator.getCursorTextColor(), cursorShape, lastRunStyle,
                             reverseVideo || invertCursorTextColor || lastRunInsideSelection, lastRunTypeface));
                     }
                     measuredWidthForRun = 0.f;
@@ -187,7 +201,7 @@ public final class TerminalRenderer {
                 invertCursorTextColor = true;
             }
             runs.add(new TextRun(lastRunStartColumn, columnWidthSinceLastRun, lastRunStartIndex, charsSinceLastRun,
-                measuredWidthForRun, cursorColor, cursorShape, lastRunStyle,
+                measuredWidthForRun, cursorColor, mEmulator.getCursorTextColor(), cursorShape, lastRunStyle,
                 reverseVideo || invertCursorTextColor || lastRunInsideSelection, lastRunTypeface));
 
             // Draw every cell background before any glyph. Nerd Font symbols may
@@ -240,6 +254,10 @@ public final class TerminalRenderer {
             backColor = tmp;
         }
 
+        if (cursor != 0 && cursorStyle == TerminalEmulator.TERMINAL_CURSOR_STYLE_BLOCK) {
+            foreColor = run.cursorTextColor;
+        }
+
         float left = startColumn * mFontWidth;
         float right = left + runWidthColumns * mFontWidth;
 
@@ -262,8 +280,11 @@ public final class TerminalRenderer {
         if (!drawForeground && cursor != 0) {
             mTextPaint.setColor(cursor);
             float cursorHeight = mFontLineSpacingAndAscent - mFontAscent;
-            if (cursorStyle == TerminalEmulator.TERMINAL_CURSOR_STYLE_UNDERLINE) cursorHeight /= 4.;
-            else if (cursorStyle == TerminalEmulator.TERMINAL_CURSOR_STYLE_BAR) right -= ((right - left) * 3) / 4.;
+            if (cursorStyle == TerminalEmulator.TERMINAL_CURSOR_STYLE_UNDERLINE) {
+                cursorHeight = Math.min(cursorHeight, mCursorUnderlineThickness);
+            } else if (cursorStyle == TerminalEmulator.TERMINAL_CURSOR_STYLE_BAR) {
+                right = Math.min(right, left + mCursorBeamThickness);
+            }
             canvas.drawRect(left, y - cursorHeight, right, y, mTextPaint);
         }
 
@@ -326,19 +347,21 @@ public final class TerminalRenderer {
         final int widthChars;
         final float measuredWidth;
         final int cursorColor;
+        final int cursorTextColor;
         final int cursorStyle;
         final long textStyle;
         final boolean reverseVideo;
         final Typeface typeface;
 
         TextRun(int startColumn, int widthColumns, int startCharIndex, int widthChars, float measuredWidth,
-                int cursorColor, int cursorStyle, long textStyle, boolean reverseVideo, Typeface typeface) {
+                int cursorColor, int cursorTextColor, int cursorStyle, long textStyle, boolean reverseVideo, Typeface typeface) {
             this.startColumn = startColumn;
             this.widthColumns = widthColumns;
             this.startCharIndex = startCharIndex;
             this.widthChars = widthChars;
             this.measuredWidth = measuredWidth;
             this.cursorColor = cursorColor;
+            this.cursorTextColor = cursorTextColor;
             this.cursorStyle = cursorStyle;
             this.textStyle = textStyle;
             this.reverseVideo = reverseVideo;

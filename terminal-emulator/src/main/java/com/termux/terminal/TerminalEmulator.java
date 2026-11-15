@@ -155,6 +155,7 @@ public final class TerminalEmulator {
 
     /** The terminal cursor styles. */
     private int mCursorStyle = DEFAULT_TERMINAL_CURSOR_STYLE;
+    private int mCursorTextColor = 0xff111111;
 
 
     /** The normal screen buffer. Stores the characters that appear on the screen of the emulated terminal. */
@@ -331,7 +332,9 @@ public final class TerminalEmulator {
 
     public void updateTerminalSessionClient(TerminalSessionClient client) {
         mClient = client;
-        setCursorStyle();
+        // The session can emit DECSCUSR before a TerminalView is attached (for
+        // example, Fish sets its insert-mode beam during startup). Reattaching
+        // a view must not replace that live style with the configured default.
         setCursorBlinkState(true);
     }
 
@@ -422,6 +425,14 @@ public final class TerminalEmulator {
         return mCursorStyle;
     }
 
+    public int getCursorTextColor() {
+        return mCursorTextColor;
+    }
+
+    public void setCursorTextColor(int color) {
+        mCursorTextColor = color | 0xff000000;
+    }
+
     /** Set the terminal cursor style. */
     public void setCursorStyle() {
         Integer cursorStyle = null;
@@ -433,6 +444,11 @@ public final class TerminalEmulator {
             mCursorStyle = DEFAULT_TERMINAL_CURSOR_STYLE;
         else
             mCursorStyle = cursorStyle;
+    }
+
+    private void setCursorStyle(int style, boolean blinking) {
+        mCursorStyle = style;
+        if (mClient != null) mClient.onTerminalCursorBlinkChange(blinking);
     }
 
     public boolean isReverseVideo() {
@@ -849,18 +865,27 @@ public final class TerminalEmulator {
                         switch (b) {
                             case 'q': // "${CSI}${STYLE} q" - set cursor style (http://www.vt100.net/docs/vt510-rm/DECSCUSR).
                                 switch (arg) {
-                                    case 0: // Blinking block.
+                                    case 0: // Blinking default shape.
+                                        Integer defaultStyle = mClient == null ? null : mClient.getTerminalCursorStyle();
+                                        setCursorStyle(defaultStyle == null ? DEFAULT_TERMINAL_CURSOR_STYLE : defaultStyle, true);
+                                        break;
                                     case 1: // Blinking block.
+                                        setCursorStyle(TERMINAL_CURSOR_STYLE_BLOCK, true);
+                                        break;
                                     case 2: // Steady block.
-                                        mCursorStyle = TERMINAL_CURSOR_STYLE_BLOCK;
+                                        setCursorStyle(TERMINAL_CURSOR_STYLE_BLOCK, false);
                                         break;
                                     case 3: // Blinking underline.
+                                        setCursorStyle(TERMINAL_CURSOR_STYLE_UNDERLINE, true);
+                                        break;
                                     case 4: // Steady underline.
-                                        mCursorStyle = TERMINAL_CURSOR_STYLE_UNDERLINE;
+                                        setCursorStyle(TERMINAL_CURSOR_STYLE_UNDERLINE, false);
                                         break;
                                     case 5: // Blinking bar (xterm addition).
+                                        setCursorStyle(TERMINAL_CURSOR_STYLE_BAR, true);
+                                        break;
                                     case 6: // Steady bar (xterm addition).
-                                        mCursorStyle = TERMINAL_CURSOR_STYLE_BAR;
+                                        setCursorStyle(TERMINAL_CURSOR_STYLE_BAR, false);
                                         break;
                                 }
                                 break;
@@ -2417,6 +2442,7 @@ public final class TerminalEmulator {
     public void reset() {
         mUserVariables.clear();
         setCursorStyle();
+        if (mClient != null) mClient.onTerminalCursorBlinkChange(mClient.getTerminalCursorBlinkInterval() > 0);
         mArgIndex = 0;
         mContinueSequence = false;
         mEscapeState = ESC_NONE;

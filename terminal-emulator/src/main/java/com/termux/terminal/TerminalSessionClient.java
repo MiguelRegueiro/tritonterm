@@ -23,6 +23,12 @@ public interface TerminalSessionClient {
 
     void onTerminalCursorStateChange(boolean state);
 
+    /** Called when DECSCUSR changes between a blinking and steady cursor. */
+    default void onTerminalCursorBlinkChange(boolean blinking) { }
+
+    /** Configured default cursor blink interval in milliseconds, or zero to disable blinking. */
+    default int getTerminalCursorBlinkInterval() { return 0; }
+
 
 
     Integer getTerminalCursorStyle();

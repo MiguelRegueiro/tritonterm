@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Added Kitty-style cursor settings to `tritonterm.conf`, including shape, blink interval, cursor colors, and beam and underline thickness.
+
+### Changed
+
+- Cursor beam and underline thickness now scale with terminal zoom. The default beam thickness is 3.5 px at the 32 px reference font size.
+
 ## [1.0.0] - 2026-11-15
 
 ### Added

@@ -13,8 +13,12 @@ import android.view.KeyEvent
 import android.view.MotionEvent
 import com.termux.terminal.TerminalSession
 import com.termux.terminal.TerminalSessionClient
+import com.termux.terminal.TerminalEmulator
 import com.termux.view.TerminalView
 import com.termux.view.TerminalViewClient
+import com.tritonterm.android.config.TerminalConfig
+import android.graphics.Color
+import kotlin.math.roundToInt
 import java.io.File
 import java.util.TimeZone
 
@@ -491,6 +495,12 @@ internal class ArchLinuxArmBackend : TerminalBackend {
 
 internal class TritonSessionClient(private val context: Context) : TerminalSessionClient {
     var terminalView: TerminalView? = null
+        set(value) {
+            field = value
+            if (value != null) applyCursorAppearance(value)
+        }
+    private var terminalConfig = TerminalConfig()
+    private var cursorBlinkRequested = false
     var finishObserver: (() -> Unit)? = null
     var setupObserver: ((TerminalSetupStage) -> Unit)? = null
     var setupFailureObserver: ((String) -> Unit)? = null
@@ -499,6 +509,34 @@ internal class TritonSessionClient(private val context: Context) : TerminalSessi
     private val emittedMarkers = mutableSetOf<String>()
     private var shellOutputRecorded = false
     private var observedProcessPid: Int? = null
+
+    fun setTerminalConfig(config: TerminalConfig) {
+        val blinkIntervalChanged = terminalConfig.cursorBlinkInterval != config.cursorBlinkInterval
+        val shapeChanged = terminalConfig.cursorShape != config.cursorShape
+        terminalConfig = config
+        if (blinkIntervalChanged) cursorBlinkRequested = config.cursorBlinkInterval > 0
+        if (shapeChanged) terminalView?.mEmulator?.setCursorStyle()
+        terminalView?.let(::applyCursorAppearance)
+    }
+
+    private fun applyCursorAppearance(view: TerminalView) {
+        val blinkRate = (terminalConfig.cursorBlinkInterval * 1000).roundToInt()
+        if (blinkRate == 0) cursorBlinkRequested = false
+        view.setTerminalCursorBlinkerRate(blinkRate)
+        view.setCursorAppearance(
+            Color.parseColor(terminalConfig.cursorColor),
+            Color.parseColor(terminalConfig.cursorTextColor),
+            terminalConfig.cursorBeamThickness.toFloat(),
+            terminalConfig.cursorUnderlineThickness.toFloat()
+        )
+        view.setTerminalCursorBlinkerState(cursorBlinkRequested && blinkRate > 0, true)
+    }
+
+    private fun updateCursorBlinker() {
+        val interval = (terminalConfig.cursorBlinkInterval * 1000).roundToInt()
+        terminalView?.setTerminalCursorBlinkerRate(interval)
+        terminalView?.setTerminalCursorBlinkerState(cursorBlinkRequested && interval > 0, true)
+    }
 
     fun beginSetup(captureOutput: Boolean) {
         setupReady = !captureOutput
@@ -653,8 +691,17 @@ internal class TritonSessionClient(private val context: Context) : TerminalSessi
     override fun onColorsChanged(session: TerminalSession) {
         terminalView?.onScreenUpdated()
     }
-    override fun onTerminalCursorStateChange(state: Boolean) = Unit
-    override fun getTerminalCursorStyle(): Int? = null
+    override fun onTerminalCursorStateChange(state: Boolean) = updateCursorBlinker()
+    override fun onTerminalCursorBlinkChange(blinking: Boolean) {
+        cursorBlinkRequested = blinking
+        updateCursorBlinker()
+    }
+    override fun getTerminalCursorBlinkInterval(): Int = (terminalConfig.cursorBlinkInterval * 1000).roundToInt()
+    override fun getTerminalCursorStyle(): Int = when (terminalConfig.cursorShape) {
+        "beam" -> TerminalEmulator.TERMINAL_CURSOR_STYLE_BAR
+        "underline" -> TerminalEmulator.TERMINAL_CURSOR_STYLE_UNDERLINE
+        else -> TerminalEmulator.TERMINAL_CURSOR_STYLE_BLOCK
+    }
     override fun logError(tag: String, message: String) = Unit
     override fun logWarn(tag: String, message: String) = Unit
     override fun logInfo(tag: String, message: String) = Unit
