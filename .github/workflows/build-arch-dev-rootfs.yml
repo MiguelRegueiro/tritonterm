@@ -207,6 +207,13 @@ jobs:
           cp app/src/main/assets/tritonterm-rootfs-release-key.pem "$output_dir/"
           (cd "$output_dir" && sha256sum -- * > SHA256SUMS)
 
+          while IFS= read -r -d '' asset; do
+            if [[ ! -s "$asset" ]]; then
+              printf 'Refusing to upload empty release asset: %s\n' "${asset##*/}" >&2
+              exit 1
+            fi
+          done < <(find "$output_dir" -maxdepth 1 -type f -print0)
+
           if [[ "$RELEASE_CHANNEL" == rc ]]; then
             release_tag="arch-rootfs-${ROOTFS_VERSION}-rc.${GITHUB_RUN_NUMBER}"
             prerelease_flag=(--prerelease)
