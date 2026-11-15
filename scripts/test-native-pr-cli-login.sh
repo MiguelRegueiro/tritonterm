@@ -115,6 +115,6 @@ result=0
 PATH="$PREFIX/bin:/system/bin:/system/xbin" "$TIMEOUT_BIN" 30 \
     "$BIN/libpr-cli.so" "${elio_args[@]}" > "$elio_output" 2>&1 || result=$?
 cat "$elio_output"
-(( result == 0 )) || fail "$result" "Elio did not start through the Android-equivalent PRoot login; output: $elio_output"
-grep -qx 'elio 1.15.0' "$elio_output" || fail 4 "unexpected Elio version through PRoot; output: $elio_output"
+(( result == 0 )) || fail "$result" "elio did not start through the Android-equivalent PRoot login; output: $elio_output"
+grep -qx 'elio 1.15.0' "$elio_output" || fail 4 "unexpected elio version through PRoot; output: $elio_output"
 printf 'TRITONTERM_NATIVE_PR_CLI_ELIO_PASSED\n'
