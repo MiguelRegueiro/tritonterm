@@ -132,10 +132,10 @@ say 'Synchronizing and updating the fresh Arch rootfs before installing developm
 require_pacman_transaction 'pacman -Syu --needed --noconfirm' pacman -Syu --needed --noconfirm
 
 stage='development_packages'
-say 'Installing build tools, fish, Starship, rustup, and narrowly scoped sudo through pacman.'
+say 'Installing build tools, fish, Starship, bat, rustup, and narrowly scoped sudo through pacman.'
 require_pacman_transaction 'install developer packages' pacman -S --needed --noconfirm \
-    base-devel autoconf automake libtool curl ca-certificates git fish starship rustup sudo fakeroot strace hicolor-icon-theme
-for tool in gcc make autoreconf libtoolize curl sha256sum rustup fish starship sudo makepkg bsdtar strace; do
+    base-devel autoconf automake libtool curl ca-certificates git fish starship rustup sudo fakeroot strace hicolor-icon-theme bat
+for tool in gcc make autoreconf libtoolize curl sha256sum rustup fish starship sudo makepkg bsdtar strace bat; do
     command -v "$tool" >/dev/null || die 22 "required command is missing after package installation: ${tool}"
 done
 standalone_rust_packages="$(pacman -Qq | awk '$0 == "rust" || $0 == "cargo" || $0 == "rustfmt"')"
@@ -488,6 +488,7 @@ rm -rf "$rust_smoke"
 run_triton_fish 'rustup show'
 run_triton_fish 'rustc --version'
 run_triton_fish 'cargo --version'
+run_triton_fish 'bat --version'
 run_triton_fish 'fish -ic "functions fish_prompt | string match -q \"*starship*\""'
 run_triton_fish 'env STARSHIP_CONFIG="$HOME/.config/starship.toml" starship prompt >/dev/null'
 run_triton_fish 'bash -lc "rustup show active-toolchain && rustc --version && cargo --version"'
@@ -498,14 +499,15 @@ pacman -Qo /usr/bin/fakeroot
 pacman -Qo /usr/bin/rustup
 pacman -Qo /usr/bin/paru
 pacman -Qo /usr/bin/elio
+pacman -Qo /usr/bin/bat
 [[ "$(getent passwd "$TRITON_USER" | cut -d: -f7)" == /usr/bin/fish ]]
 [[ "$(readlink "$FAKEROOT_CURRENT")" == "$FAKEROOT_VERSION" ]]
 run_triton_fish "string match -q '${FAKEROOT_PREFIX}/bin/fakeroot' (command -v fakeroot)"
 run_triton_fish "test -r '${FAKEROOT_PREFIX}/lib/libfakeroot.so'"
 run_triton_fish 'sudo -n /usr/bin/pacman -Q pacman >/dev/null'
 [[ -x "$triton_home/.rustup/toolchains/stable-aarch64-unknown-linux-gnu/bin/rustc" ]]
-[[ -x /usr/bin/paru && -x /usr/bin/fish && -x /usr/bin/starship ]]
+[[ -x /usr/bin/paru && -x /usr/bin/fish && -x /usr/bin/starship && -x /usr/bin/bat ]]
 [[ -x /usr/bin/elio && -s "$triton_home/.config/elio/theme.toml" ]]
 printf '%s\n' "$VERSION" > "$READY_MARKER"
-say 'Fresh Arch developer environment passed pacman, TCP fakeroot, makepkg, Paru, Fish/Starship, and Rustup checks.'
+say 'Fresh Arch developer environment passed pacman, TCP fakeroot, makepkg, Paru, bat, Fish/Starship, and Rustup checks.'
 printf '%s\n' 'TRITONTERM_ARCH_DEVELOPER_ENVIRONMENT_READY'
