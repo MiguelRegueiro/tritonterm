@@ -11,6 +11,7 @@ internal object TerminalClipboardSupport {
         in KeyEvent.KEYCODE_0..KeyEvent.KEYCODE_9 -> ('0' + (keyCode - KeyEvent.KEYCODE_0)).toString()
         KeyEvent.KEYCODE_INSERT -> "insert"
         KeyEvent.KEYCODE_ESCAPE -> "esc"
+        KeyEvent.KEYCODE_TAB -> "tab"
         KeyEvent.KEYCODE_COMMA -> "comma"
         KeyEvent.KEYCODE_PERIOD -> "period"
         KeyEvent.KEYCODE_MINUS -> "minus"

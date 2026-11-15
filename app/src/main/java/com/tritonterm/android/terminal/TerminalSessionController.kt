@@ -7,6 +7,7 @@ import android.app.ActivityManager
 import android.app.ApplicationExitInfo
 import android.os.Debug
 import android.os.Build
+import android.os.SystemClock
 import android.system.Os
 import android.view.KeyEvent
 import android.view.MotionEvent
@@ -308,6 +309,19 @@ internal object ArchGuestEnvironment {
         mapOf("LANG" to LANG, "TZ" to timezoneId)
 }
 
+/** Give Elio the same focus marker Kitty supplies, without advertising Kitty graphics support. */
+private val ELIO_KITTY_KEYMAP_INIT = """
+    if not functions -q elio; and not test -e ${'$'}HOME/.config/fish/functions/elio.fish
+        function elio --description 'TritonTerm Kitty-compatible Elio key maps'
+            printf '\e]1337;SetUserVar=elio=MQ==\a'
+            command /usr/bin/elio ${'$'}argv
+            set -l elio_status ${'$'}status
+            printf '\e]1337;SetUserVar=elio\a'
+            return ${'$'}elio_status
+        end
+    end
+""".trimIndent()
+
 internal class AndroidShellBackend : TerminalBackend {
     override val label = "local"
     override fun isReady(context: Context) = true
@@ -407,7 +421,10 @@ internal class ArchLinuxArmBackend : TerminalBackend {
                 context.filesDir.absolutePath,
                 // TerminalSession's JNI execvp(cmd, argv) passes this array verbatim;
                 // unlike ProcessBuilder, it does not prepend cmd as argv[0].
-                arrayOf(cli, "login", ArchLinuxArmBootstrap.DISTRO_ALIAS, "--user", loginUser, "/usr/bin/fish", "-l"),
+                arrayOf(
+                    cli, "login", ArchLinuxArmBootstrap.DISTRO_ALIAS, "--user", loginUser,
+                    "/usr/bin/fish", "-l", "--init-command", ELIO_KITTY_KEYMAP_INIT
+                ),
                 environment,
                 2000,
                 client,
@@ -661,6 +678,9 @@ internal class TerminalCallbacks(
     private val session: TerminalSession,
     private val zoom: (Boolean) -> Unit
 ) : TerminalViewClient {
+    private var lastZoomAtMillis = 0L
+    private val zoomRepeatIntervalMillis = 100L
+
     override fun onScale(scale: Float): Float = 1f
     override fun onSingleTapUp(e: MotionEvent) = Unit
     override fun shouldBackButtonBeMappedToEscape() = false
@@ -671,11 +691,25 @@ internal class TerminalCallbacks(
     override fun onKeyDown(keyCode: Int, e: KeyEvent, session: TerminalSession): Boolean {
         if (e.isCtrlPressed) {
             when (keyCode) {
-                KeyEvent.KEYCODE_MINUS -> { zoom(false); return true }
-                KeyEvent.KEYCODE_EQUALS, KeyEvent.KEYCODE_PLUS -> { zoom(true); return true }
+                KeyEvent.KEYCODE_MINUS -> {
+                    applyZoomRepeat(e, false)
+                    return true
+                }
+                KeyEvent.KEYCODE_EQUALS, KeyEvent.KEYCODE_PLUS -> {
+                    applyZoomRepeat(e, true)
+                    return true
+                }
             }
         }
         return false
+    }
+
+    private fun applyZoomRepeat(event: KeyEvent, increase: Boolean) {
+        val now = SystemClock.uptimeMillis()
+        if (event.repeatCount == 0 || now - lastZoomAtMillis >= zoomRepeatIntervalMillis) {
+            lastZoomAtMillis = now
+            zoom(increase)
+        }
     }
     override fun onKeyUp(keyCode: Int, e: KeyEvent) = false
     override fun onLongPress(event: MotionEvent) = false

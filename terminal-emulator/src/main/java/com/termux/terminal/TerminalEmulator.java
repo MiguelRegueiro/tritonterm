@@ -4,8 +4,12 @@ import android.util.Base64;
 
 import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
+import java.util.HashMap;
+import java.util.HashSet;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 import java.util.Stack;
 
 /**
@@ -121,6 +125,8 @@ public final class TerminalEmulator {
     private static final int DECSET_BIT_LEFTRIGHT_MARGIN_MODE = 1 << 11;
     /** Not really DECSET bit... - http://www.vt100.net/docs/vt510-rm/DECSACE */
     private static final int DECSET_BIT_RECTANGULAR_CHANGEATTRIBUTE = 1 << 12;
+    /** DECSET 2026 - buffer screen paints until synchronized output ends. */
+    private static final int DECSET_BIT_SYNCHRONIZED_UPDATE = 1 << 13;
 
 
     private String mTitle;
@@ -165,6 +171,8 @@ public final class TerminalEmulator {
 
     /** The terminal session this emulator is bound to. */
     private final TerminalOutput mSession;
+    /** Kitty OSC 1337 user variables used by conditional key mappings. */
+    private final Map<String, String> mUserVariables = new HashMap<>();
 
     TerminalSessionClient mClient;
 
@@ -302,6 +310,8 @@ public final class TerminalEmulator {
                 return DECSET_BIT_MOUSE_PROTOCOL_SGR;
             case 2004:
                 return DECSET_BIT_BRACKETED_PASTE_MODE;
+            case 2026:
+                return DECSET_BIT_SYNCHRONIZED_UPDATE;
             default:
                 return -1;
             // throw new IllegalArgumentException("Unsupported decset: " + decsetBit);
@@ -1181,10 +1191,21 @@ public final class TerminalEmulator {
             case 2004:
                 // Bracketed paste mode - setting bit is enough.
                 break;
+            case 2026:
+                // The session delays screen invalidation until this mode is reset.
+                break;
             default:
                 unknownParameter(externalBit);
                 break;
         }
+    }
+
+    boolean isSynchronizedUpdateInProgress() {
+        return isDecsetInternalBitSet(DECSET_BIT_SYNCHRONIZED_UPDATE);
+    }
+
+    void endSynchronizedUpdate() {
+        setDecsetinternalBit(DECSET_BIT_SYNCHRONIZED_UPDATE, false);
     }
 
     private void doCsiBiggerThan(int b) {
@@ -2018,6 +2039,9 @@ public final class TerminalEmulator {
                 mColors.reset(TextStyle.COLOR_INDEX_FOREGROUND + (value - 110));
                 mSession.onColorsChanged();
                 break;
+            case 1337:
+                setKittyUserVariable(textParameter);
+                break;
             case 119: // Reset highlight color.
                 break;
             default:
@@ -2025,6 +2049,31 @@ public final class TerminalEmulator {
                 break;
         }
         finishSequence();
+    }
+
+    private void setKittyUserVariable(String parameter) {
+        final String prefix = "SetUserVar=";
+        if (!parameter.startsWith(prefix)) return;
+        String assignment = parameter.substring(prefix.length());
+        int separator = assignment.indexOf('=');
+        String name = separator < 0 ? assignment : assignment.substring(0, separator);
+        if (!name.matches("[A-Za-z_][A-Za-z0-9_]*")) return;
+        if (separator < 0) {
+            mUserVariables.remove(name);
+            return;
+        }
+        try {
+            String value = new String(java.util.Base64.getDecoder().decode(assignment.substring(separator + 1)), StandardCharsets.UTF_8);
+            if (value.isEmpty()) mUserVariables.remove(name);
+            else mUserVariables.put(name, value);
+        } catch (IllegalArgumentException ignored) {
+            // Ignore malformed user-variable payloads without affecting terminal output.
+        }
+    }
+
+    /** Set Kitty OSC 1337 variable names, for Kitty-style conditional key maps. */
+    public Set<String> getUserVariables() {
+        return new HashSet<>(mUserVariables.keySet());
     }
 
     private void blockClear(int sx, int sy, int w) {
@@ -2366,6 +2415,7 @@ public final class TerminalEmulator {
 
     /** Reset terminal state so user can interact with it regardless of present state. */
     public void reset() {
+        mUserVariables.clear();
         setCursorStyle();
         mArgIndex = 0;
         mContinueSequence = false;

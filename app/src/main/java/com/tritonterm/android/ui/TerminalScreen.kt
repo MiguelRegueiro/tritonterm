@@ -463,9 +463,10 @@ internal fun TerminalScreen() {
                                 false
                             } else {
                                 val keyName = TerminalClipboardSupport.keyName(keyCode)
+                                val activeUserVariables = currentTerminalSession.value?.emulator?.userVariables.orEmpty()
                                 val action = keyName?.let { name ->
                                     currentTerminalKeyBindings.value.lastOrNull {
-                                        it.matches(name, event.isCtrlPressed, event.isShiftPressed, event.isAltPressed)
+                                        it.matches(name, event.isCtrlPressed, event.isShiftPressed, event.isAltPressed, activeUserVariables)
                                     }?.action
                                 }
                                 when (action) {
@@ -477,7 +478,9 @@ internal fun TerminalScreen() {
                                         sessionClient.pasteFromClipboard(currentTerminalSession.value)
                                         true
                                     }
-                                    TerminalKeyAction.SEND_ESCAPE, TerminalKeyAction.SEND_CTRL_C -> {
+                                    TerminalKeyAction.SEND_ESCAPE, TerminalKeyAction.SEND_CTRL_C,
+                                    TerminalKeyAction.SEND_KEY_CTRL_C, TerminalKeyAction.SEND_KEY_F13,
+                                    TerminalKeyAction.SEND_KEY_F14 -> {
                                         val bytes = action.terminalInput.orEmpty().toByteArray(StandardCharsets.UTF_8)
                                         currentTerminalSession.value?.write(bytes, 0, bytes.size)
                                         true
@@ -704,6 +707,7 @@ internal fun TerminalScreen() {
                 onCopy = { sessionClient.copySelection() },
                 onPaste = { sessionClient.pasteFromClipboard(session) },
                 keyBindings = terminalKeyBindings,
+                activeUserVariables = { currentTerminalSession.value?.emulator?.userVariables.orEmpty() },
                 // Keep the Termux-style extra-key strip above Android's IME;
                 // only the full custom keyboard is exclusive to built-in mode.
                 compact = useSystemKeyboard,

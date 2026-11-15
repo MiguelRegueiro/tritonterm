@@ -10,7 +10,10 @@ internal enum class TerminalKeyAction(val configText: String, val terminalInput:
     COPY_TO_CLIPBOARD("copy_to_clipboard"),
     PASTE_FROM_CLIPBOARD("paste_from_clipboard"),
     SEND_ESCAPE("send_key esc", "\u001b"),
-    SEND_CTRL_C("send_text all \\x03", "\u0003");
+    SEND_CTRL_C("send_text all \\x03", "\u0003"),
+    SEND_KEY_CTRL_C("send_key ctrl+c", "\u0003"),
+    SEND_KEY_F13("send_key f13", "\u001b[25~"),
+    SEND_KEY_F14("send_key f14", "\u001b[26~");
 
     companion object {
         fun parse(value: String): TerminalKeyAction? = entries.firstOrNull { it.configText == value }
@@ -22,13 +25,21 @@ internal data class TerminalKeyBinding(
     val control: Boolean,
     val shift: Boolean,
     val alt: Boolean,
-    val action: TerminalKeyAction
+    val action: TerminalKeyAction,
+    val focusVariable: String? = null
 ) {
-    fun matches(keyName: String, control: Boolean, shift: Boolean, alt: Boolean): Boolean =
-        key == keyName && this.control == control && this.shift == shift && this.alt == alt
+    fun matches(
+        keyName: String,
+        control: Boolean,
+        shift: Boolean,
+        alt: Boolean,
+        activeUserVariables: Set<String> = emptySet()
+    ): Boolean = key == keyName && this.control == control && this.shift == shift &&
+        this.alt == alt && (focusVariable == null || focusVariable in activeUserVariables)
 
-    fun sameChord(other: TerminalKeyBinding): Boolean =
-        key == other.key && control == other.control && shift == other.shift && alt == other.alt
+    fun sameTarget(other: TerminalKeyBinding): Boolean = key == other.key &&
+        control == other.control && shift == other.shift && alt == other.alt &&
+        focusVariable == other.focusVariable
 
     fun encode(): String {
         val modifiers = buildList {
@@ -37,11 +48,12 @@ internal data class TerminalKeyBinding(
             if (alt) add("alt")
             add(key)
         }
-        return "map ${modifiers.joinToString("+")} ${action.configText}"
+        val focusCondition = focusVariable?.let { "--when-focus-on var:$it " }.orEmpty()
+        return "map $focusCondition${modifiers.joinToString("+")} ${action.configText}"
     }
 
     companion object {
-        fun parse(chord: String, actionText: String): TerminalKeyBinding? {
+        fun parse(chord: String, actionText: String, focusVariable: String? = null): TerminalKeyBinding? {
             val parts = chord.lowercase().split('+')
             if (parts.isEmpty() || parts.any(String::isEmpty)) return null
             val key = parts.last()
@@ -50,19 +62,45 @@ internal data class TerminalKeyBinding(
             if (modifiers.size != modifiers.toSet().size || modifiers.any { it !in setOf("ctrl", "shift", "alt") }) {
                 return null
             }
+            if (focusVariable != null && !validVariableName(focusVariable)) return null
             val action = TerminalKeyAction.parse(actionText) ?: return null
             return TerminalKeyBinding(
                 key = key,
                 control = "ctrl" in modifiers,
                 shift = "shift" in modifiers,
                 alt = "alt" in modifiers,
-                action = action
+                action = action,
+                focusVariable = focusVariable
             )
         }
+
+        fun parseMapFields(fields: List<String>): TerminalKeyBinding? {
+            if (fields.isEmpty()) return null
+            val focusVariable: String?
+            val chordIndex: Int
+            if (fields[0] == "--when-focus-on") {
+                if (fields.size < 4 || !fields[1].startsWith("var:")) return null
+                focusVariable = fields[1].removePrefix("var:")
+                chordIndex = 2
+            } else {
+                focusVariable = null
+                chordIndex = 0
+            }
+            if (fields.size <= chordIndex + 1) return null
+            return parse(
+                fields[chordIndex],
+                fields.drop(chordIndex + 1).joinToString(" "),
+                focusVariable
+            )
+        }
+
+        private fun validVariableName(value: String): Boolean =
+            value.matches(Regex("[A-Za-z_][A-Za-z0-9_]*"))
 
         private val supportedKeys = buildSet {
             add("insert")
             add("esc")
+            add("tab")
             addAll(('a'..'z').map { it.toString() })
             addAll(('0'..'9').map { it.toString() })
             addAll(setOf("comma", "period", "minus", "plus", "space"))
@@ -74,7 +112,11 @@ internal val defaultTerminalKeyBindings = listOf(
     TerminalKeyBinding("c", control = true, shift = false, alt = false, action = TerminalKeyAction.COPY_TO_CLIPBOARD),
     TerminalKeyBinding("v", control = true, shift = false, alt = false, action = TerminalKeyAction.PASTE_FROM_CLIPBOARD),
     TerminalKeyBinding("esc", control = false, shift = false, alt = false, action = TerminalKeyAction.SEND_CTRL_C),
-    TerminalKeyBinding("esc", control = true, shift = false, alt = false, action = TerminalKeyAction.SEND_ESCAPE)
+    TerminalKeyBinding("esc", control = true, shift = false, alt = false, action = TerminalKeyAction.SEND_ESCAPE),
+    TerminalKeyBinding("c", control = true, shift = false, alt = false, action = TerminalKeyAction.SEND_KEY_CTRL_C, focusVariable = "elio"),
+    TerminalKeyBinding("esc", control = false, shift = false, alt = false, action = TerminalKeyAction.SEND_ESCAPE, focusVariable = "elio"),
+    TerminalKeyBinding("tab", control = true, shift = false, alt = false, action = TerminalKeyAction.SEND_KEY_F13, focusVariable = "in_editor"),
+    TerminalKeyBinding("tab", control = true, shift = true, alt = false, action = TerminalKeyAction.SEND_KEY_F14, focusVariable = "in_editor")
 )
 
 internal data class TerminalConfig(
@@ -100,10 +142,11 @@ internal data class TerminalConfig(
 
     fun encode(): String = buildList {
         add("# TritonTerm config. map uses Kitty-style modifier+key chords.")
-        add("# config_version 6")
+        add("# config_version 7")
         add("# font_family: Noto Sans Mono, Hack Nerd Font Mono, or JetBrainsMono Nerd Font")
         add("# font_size: 12 through 112 px")
-        add("# Supported map actions: copy_to_clipboard, paste_from_clipboard, send_key esc, send_text all \\x03")
+        add("# Supported map actions: copy_to_clipboard, paste_from_clipboard, send_key esc, send_key ctrl+c, send_key f13, send_key f14, send_text all \\x03")
+        add("# Conditional maps support Kitty syntax: map --when-focus-on var:name chord action")
         add("font_family $fontFamily")
         add("font_size $fontSize")
         addAll(keyBindings.map(TerminalKeyBinding::encode))
@@ -123,15 +166,16 @@ internal data class TerminalConfig(
             // Move untouched Noto defaults from the old 28 px size to the new default.
             // Explicit font sizes and custom key maps stay unchanged.
             if (text.lineSequence().none { it.trim() == CONFIG_VERSION_MARKER } &&
-                loaded == TerminalConfig(fontFamily = "Noto Sans Mono", fontSize = 28)
+                loaded.fontFamily == "Noto Sans Mono" && loaded.fontSize == 28 &&
+                loaded.keyBindings.isUntouchedDefaultSet()
             ) {
                 val migrated = TerminalConfig()
                 file.writeText(migrated.encode())
                 return migrated
             }
             // Migrate the untouched defaults created before Noto Sans Mono became the default.
-            if (loaded == TerminalConfig("JetBrainsMono Nerd Font", 28) ||
-                loaded == TerminalConfig("Hack Nerd Font Mono", 28)
+            if (loaded.fontFamily in setOf("JetBrainsMono Nerd Font", "Hack Nerd Font Mono") &&
+                loaded.fontSize == 28 && loaded.keyBindings.isUntouchedDefaultSet()
             ) {
                 val migrated = TerminalConfig()
                 file.writeText(migrated.encode())
@@ -152,7 +196,7 @@ internal data class TerminalConfig(
             if (text.lineSequence().none { it.trim() == CONFIG_VERSION_MARKER }) {
                 val presentBindings = text.lineSequence().mapNotNull(::parseMapLine).toList()
                 val missingDefaults = defaultTerminalKeyBindings.filterNot { default ->
-                    presentBindings.any { it.sameChord(default) }
+                    presentBindings.any { it.sameTarget(default) }
                 }
                 val additions = missingDefaults.map(TerminalKeyBinding::encode) + CONFIG_VERSION_MARKER
                 val separator = when {
@@ -167,12 +211,21 @@ internal data class TerminalConfig(
             return loaded
         }
 
-        private const val CONFIG_VERSION_MARKER = "# config_version 6"
+        private const val CONFIG_VERSION_MARKER = "# config_version 7"
+        private val LEGACY_DEFAULT_KEY_BINDINGS = listOf(
+            TerminalKeyBinding("c", true, false, false, TerminalKeyAction.COPY_TO_CLIPBOARD),
+            TerminalKeyBinding("v", true, false, false, TerminalKeyAction.PASTE_FROM_CLIPBOARD),
+            TerminalKeyBinding("esc", false, false, false, TerminalKeyAction.SEND_CTRL_C),
+            TerminalKeyBinding("esc", true, false, false, TerminalKeyAction.SEND_ESCAPE)
+        )
+
+        private fun List<TerminalKeyBinding>.isUntouchedDefaultSet(): Boolean =
+            this == LEGACY_DEFAULT_KEY_BINDINGS || this == defaultTerminalKeyBindings
 
         private fun parseMapLine(line: String): TerminalKeyBinding? {
             val fields = line.trim().split(Regex("\\s+"))
             if (fields.size < 3 || fields[0] != "map") return null
-            return TerminalKeyBinding.parse(fields[1], fields.drop(2).joinToString(" "))
+            return TerminalKeyBinding.parseMapFields(fields.drop(1))
         }
 
         fun parse(text: String): ConfigParseResult {
@@ -194,9 +247,9 @@ internal data class TerminalConfig(
                         if (fields.size < 2) {
                             return ConfigParseResult(null, "Line ${index + 1}: map expects a key chord and supported action.")
                         }
-                        val binding = TerminalKeyBinding.parse(fields[0], fields.drop(1).joinToString(" "))
-                            ?: return ConfigParseResult(null, "Line ${index + 1}: supported maps use ctrl/shift/alt + a key and clipboard or terminal-input actions.")
-                        if (keyBindings.any { it.key == binding.key && it.control == binding.control && it.shift == binding.shift && it.alt == binding.alt }) {
+                        val binding = TerminalKeyBinding.parseMapFields(fields)
+                            ?: return ConfigParseResult(null, "Line ${index + 1}: supported maps use Kitty-style ctrl/shift/alt chords, optional --when-focus-on var:name, and supported actions.")
+                        if (keyBindings.any { it.sameTarget(binding) }) {
                             return ConfigParseResult(null, "Line ${index + 1}: this key chord is already mapped.")
                         }
                         keyBindings += binding

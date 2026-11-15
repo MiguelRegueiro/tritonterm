@@ -450,6 +450,9 @@ public final class TerminalView extends View {
             mRenderer == null ? null : mRenderer.mBoxDrawingTypeface,
             mRenderer == null ? null : mRenderer.mNerdTypeface);
         updateSize();
+        // Font metrics can change while the calculated row and column counts stay the same.
+        // updateSize() only invalidates when the terminal grid changes, so redraw for every zoom step.
+        invalidate();
     }
 
     public void setTypeface(Typeface newTypeface) {
@@ -903,7 +906,7 @@ public final class TerminalView extends View {
         int newColumns = Math.max(4, (int) (viewWidth / mRenderer.mFontWidth));
         int newRows = Math.max(4, (viewHeight - mRenderer.mFontLineSpacingAndAscent) / mRenderer.mFontLineSpacing);
 
-        if (mEmulator == null || (newColumns != mEmulator.mColumns || newRows != mEmulator.mRows)) {
+        if (mEmulator == null || newColumns != mEmulator.mColumns || newRows != mEmulator.mRows) {
             mTermSession.updateSize(newColumns, newRows);
             mEmulator = mTermSession.getEmulator();
             mClient.onEmulatorSet();
@@ -920,6 +923,13 @@ public final class TerminalView extends View {
 
     @Override
     protected void onDraw(Canvas canvas) {
+        // Resizing the PTY grid reflows the current buffer before a full-screen
+        // application has handled SIGWINCH. Do not paint that stale intermediate frame.
+        if (mTermSession != null && mTermSession.isResizeRedrawPending()) {
+            canvas.drawColor(0XFF000000);
+            return;
+        }
+
         if (mEmulator == null) {
             canvas.drawColor(0XFF000000);
         } else {
