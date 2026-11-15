@@ -57,7 +57,7 @@ The prior base-only archive was 829,367,415 bytes (about 790.8 MiB). The older `
 3. Build the APK with the matching rootfs version, release tag, and asset URL.
 4. Install the APK and test the `triton` account, preinstalled tools, and runtime behavior on the phone.
 
-No release asset is currently published. A local debug APK built without release properties deliberately keeps Install disabled and reports that it has no pinned signed image; do not use it for another reinstall.
+For a user installation, use the latest signed APK from the [TritonTerm releases](https://github.com/MiguelRegueiro/tritonterm/releases/latest). It must pin the matching signed rootfs release and must be signed with TritonTerm's Android release key. Debug APKs are for development and may not update over a release-signed installation.
 
 ## Checks built into image provisioning
 

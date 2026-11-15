@@ -1,50 +1,44 @@
-# TritonTerm
+<h1 align="left"><img src="assets/branding/triton-trident.png" height="48" alt="TritonTerm trident" align="absmiddle" />&nbsp; TritonTerm</h1>
 
-An Android terminal with a Kitty-inspired renderer, a touch keyboard, and a private Arch Linux ARM environment on supported devices.
+A mobile terminal for Android, with a touch keyboard and a private Arch Linux ARM development environment.
 
-## Current local environment
+[Download the latest APK](https://github.com/MiguelRegueiro/tritonterm/releases/latest/download/tritonterm.apk) · [Changelog](CHANGELOG.md) · [Documentation](docs/installation.md)
 
-- On ARM64 devices (Android 9+), TritonTerm can download the official Arch Linux ARM generic AArch64 root filesystem after the user explicitly starts setup, then run it using the bundled Android-compatible PRoot runtime.
-- The compressed rootfs is downloaded at runtime; it is not part of the APK. The rootfs, installed packages, and `/root` live in TritonTerm's app-private storage. Android removes them when TritonTerm is uninstalled; APK updates preserve them. The verified archive is deleted after setup checks pass and retained when setup fails or is interrupted.
-- Fresh setup downloads one complete, signed Arch Linux ARM AArch64 development image as a separate versioned asset. It includes the tested userland and tools, so Rust, Paru, and TCP fakeroot are not compiled on the phone. The APK pins a specific image manifest and release tag.
-- The image creates a fixed unprivileged `triton` account (UID/GID 1000) with Fish as its login shell. See [the prebuilt developer environment design](docs/arch-developer-environment.md).
-- The manually dispatched native AArch64 workflow builds, validates, signs, and publishes the rootfs to a GitHub Release in `tritonterm-releases`. It deletes its temporary PRoot test artifact after use, so the rootfs is not retained in Actions artifact storage. Build a matching pinned APK separately after each rootfs release.
-- The initial rootfs download is about 800 MiB and needs additional temporary space while it extracts; allow several gigabytes of free storage for first setup.
-- The runtime uses PRoot, so it is not a VM, cannot provide a separate Linux kernel, and adds syscall/filesystem overhead. It executes ARM64 instructions directly.
-- The Logs dialog provides setup diagnostics and the three isolated Android runtime probes. See [`docs/device-runtime-diagnostics.md`](docs/device-runtime-diagnostics.md) for the phone procedure.
-- The foreground notification represents an active shell or setup task. Recreating the activity detaches and reattaches the terminal view without ending its PTY. Android can still terminate the app process under exceptional memory pressure or force-stop; the next launch records an interrupted-session diagnostic. A visible pacman database lock is never removed automatically because it may belong to a still-running package operation.
-- On unsupported CPU architectures the app currently falls back to Android's `/system/bin/sh`.
+## Features
 
-The Arch rootfs is fetched over HTTPS from an Arch Linux ARM mirror. Its detached OpenPGP signature is checked against the pinned Arch Linux ARM Build System fingerprint before extraction. TritonTerm then gives `pr-cli` the computed SHA-256 so the installer verifies the archive again. Packages installed or upgraded by `pacman` are verified using Arch Linux ARM's package-signing keys, initialized on first launch.
+- **A terminal built for phones** — scrollback, text selection, clipboard, zoom, bundled fonts, and a configurable display.
+- **A practical touch keyboard** — terminal keys and modifiers, plus support for Android's keyboard and shortcut row.
+- **A private Arch Linux ARM environment** — install a signed image on ARM64 devices, then use Fish, Rust, Paru, `bat`, and Elio.
+- **Useful Android integration** — session notifications, shell recovery, searchable diagnostics, and setup checks.
+- **Configurable keys** — edit `tritonterm.conf` with syntax highlighting and Kitty-style key maps.
 
-On first setup and when opening an existing Arch installation, TritonTerm makes a hash-named backup of `/etc/pacman.conf`, comments out `DownloadUser`, and enables `DisableSandboxFilesystem` for Android/PRoot compatibility. It preserves repository, signature, and other settings and leaves `DisableSandboxSyscalls` unchanged.
+## Install
 
-The bundled `pr-cli`, PRoot, and loader are built from the pinned source submodule. Their source revisions, build toolchain, reproduction script, license texts, and SHA-256 hashes are recorded in [`docs/native-runtime.md`](docs/native-runtime.md).
+1. Download and install the [latest TritonTerm APK](https://github.com/MiguelRegueiro/tritonterm/releases/latest/download/tritonterm.apk).
+2. Open TritonTerm and choose **Install Arch**.
+3. Keep the app open while it downloads and verifies the Linux image. The first install needs several gigabytes of free storage.
 
-## Android app
+The Arch environment is stored in app-private data. App updates preserve it; uninstalling TritonTerm removes it. See [installation and storage details](docs/installation.md).
 
-The app is Kotlin/Compose, using Termux's Apache-2.0 terminal-view/emulator libraries for VT parsing, rendering, and PTY handling. The terminal backend is behind a small interface, so the app can evolve independently from the Linux userspace.
+## Documentation
 
-The touch keyboard includes Esc, Tab, Ctrl, Alt, Shift, arrows, Backspace, Enter, F1–F12, and a symbol layer. Super is omitted. Ctrl/Alt/Shift are usable as held modifiers. The Config button currently edits the supported `font_family` and `font_size` settings.
+- [Installation and first launch](docs/installation.md)
+- [Preinstalled developer environment](docs/arch-developer-environment.md)
+- [Arch userland and lifecycle](docs/arch-userland-and-lifecycle.md)
+- [Native PRoot runtime](docs/native-runtime.md)
+- [Runtime diagnostics](docs/device-runtime-diagnostics.md)
+- [Changelog](CHANGELOG.md)
 
 ## Build
 
-With Android SDK platform 36 and Java 17 installed:
+Build and test the debug APK with Android SDK platform 36, Java 17, and Fish installed:
 
 ```sh
 ./scripts/build-apk.sh
 ```
 
-The script creates `dist/tritonterm-debug.apk`.
+The APK is written to `dist/tritonterm-debug.apk`. Release builds require the protected Android signing key; see [build and artifact authentication](docs/arch-developer-environment.md#build-and-artifact-authentication).
 
-## Validation
+## License
 
-See [`docs/arch-userland-and-lifecycle.md`](docs/arch-userland-and-lifecycle.md) for the package-profile rationale, interrupted transaction handling, and on-device acceptance steps. Desktop builds and unit tests do not establish Android background behavior.
-
-## References
-
-- [Android-compatible PRoot runtime](https://github.com/oonid/pr)
-- [Arch Linux ARM generic AArch64 installation](https://archlinuxarm.org/platforms/armv8/generic)
-- [Termux terminal libraries](https://github.com/termux/termux-app/wiki/Termux-Libraries)
-- [Kitty graphics protocol](https://sw.kovidgoyal.net/kitty/graphics-protocol/)
-- Local inspiration: [Triton Connect Android client](/home/regueiro/triton-connect/android-client/app/src/main/java/com/tritonconnect/android/MainActivity.kt) and [regueiro-hyprland Kitty/Fish setup](/home/regueiro/regueiro-hyprland/README.md).
+TritonTerm's Android app is licensed under GPL-3.0-only. Third-party components and the Arch Linux ARM userland retain their own licenses; license texts shipped with the app and image are listed in the linked documentation.
