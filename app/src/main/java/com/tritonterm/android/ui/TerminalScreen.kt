@@ -11,6 +11,7 @@ import android.widget.Toast
 import androidx.core.content.FileProvider
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Arrangement
@@ -57,6 +58,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontFamily
@@ -75,6 +77,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import com.tritonterm.android.config.TerminalConfig
 import com.tritonterm.android.config.TerminalConfigSyntaxHighlighter
+import com.tritonterm.android.R
 import com.tritonterm.android.terminal.TerminalSessionController
 import com.tritonterm.android.terminal.TerminalSessionHost
 import com.tritonterm.android.terminal.TerminalForegroundService
@@ -624,7 +627,7 @@ internal fun TerminalScreen() {
                         "${formatMiB(setupProgress.extractedBytes)} / ${formatMiB(setupProgress.extractionTotal)} · ${installFraction?.times(100)?.toInt() ?: 0}% · ${setupProgress.extractedEntries} entries"
                     else -> "Unpack the verified image into app storage"
                 },
-                if (phaseDone[3]) "Required development tools checked" else "Checking Fish, pacman, Rust and fakeroot",
+                if (phaseDone[3]) "Required development tools checked" else "Testing the shell, developer tools, package database and permissions.",
                 if (phaseDone[4]) "Device-local package signing trust is ready" else "Initialize pacman’s signing keys for this device"
             )
             val phaseProgress = listOf(downloadFraction, verifyFraction, installFraction, null, null)
@@ -640,16 +643,24 @@ internal fun TerminalScreen() {
                 ) {
                     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                            Text("Arch Linux ARM", color = Color(0xFFF1F1F1), fontSize = 23.sp, fontWeight = FontWeight.SemiBold)
-                            Surface(shape = RoundedCornerShape(20.dp), color = Color(0xFF28222A)) {
-                                Text("${ArchRootfsRelease.pinnedVersion()}", color = Color(0xFFDEA016), fontSize = 11.sp,
-                                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp))
+                            Image(
+                                painter = painterResource(R.drawable.triton_trident),
+                                contentDescription = null,
+                                modifier = Modifier.width(22.dp).height(40.dp)
+                            )
+                            Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                                Text("TritonTerm", color = Color(0xFFF1F1F1), fontSize = 23.sp, fontWeight = FontWeight.SemiBold)
+                                Text("Arch Linux ARM", color = Color(0xFFAAAAAA), fontSize = 13.sp)
+                            }
+                            Surface(shape = RoundedCornerShape(20.dp), color = Color(0xFF292929)) {
+                                Text(
+                                    ArchRootfsRelease.pinnedVersion(),
+                                    color = Color(0xFFDEA016),
+                                    fontSize = 11.sp,
+                                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp)
+                                )
                             }
                         }
-                        Text(
-                            if (installState.running) "Setting up your Linux environment" else "A ready-to-use Linux development environment",
-                            color = Color(0xFFAAAAAA), fontSize = 14.sp
-                        )
                     }
 
                     Surface(
