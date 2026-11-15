@@ -59,6 +59,7 @@ internal fun TerminalKeyboard(
     onCopy: () -> Boolean,
     onPaste: () -> Unit,
     keyBindings: List<TerminalKeyBinding>,
+    activeUserVariables: () -> Set<String>,
     compact: Boolean
 ) {
     var layer by remember { mutableStateOf(false) }
@@ -168,15 +169,20 @@ internal fun TerminalKeyboard(
                 } else text
                 val mappedKeyName = when {
                     key.kind == KeyKind.Escape -> "esc"
+                    key.kind == KeyKind.Tab -> "tab"
                     key.kind == KeyKind.Text && adjusted.length == 1 -> TerminalClipboardSupport.keyName(adjusted[0])
                     else -> null
                 }
                 if (mappedKeyName != null) {
-                    val action = keyBindings.lastOrNull { it.matches(mappedKeyName, ctrl, shift, alt) }?.action
+                    val action = keyBindings.lastOrNull {
+                        it.matches(mappedKeyName, ctrl, shift, alt, activeUserVariables())
+                    }?.action
                     when (action) {
                         TerminalKeyAction.COPY_TO_CLIPBOARD -> if (onCopy()) return
                         TerminalKeyAction.PASTE_FROM_CLIPBOARD -> { onPaste(); return }
-                        TerminalKeyAction.SEND_ESCAPE, TerminalKeyAction.SEND_CTRL_C -> {
+                        TerminalKeyAction.SEND_ESCAPE, TerminalKeyAction.SEND_CTRL_C,
+                        TerminalKeyAction.SEND_KEY_CTRL_C, TerminalKeyAction.SEND_KEY_F13,
+                        TerminalKeyAction.SEND_KEY_F14 -> {
                             action.terminalInput?.let(onInput)
                             return
                         }

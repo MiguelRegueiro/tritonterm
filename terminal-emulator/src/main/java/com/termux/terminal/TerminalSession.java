@@ -69,6 +69,21 @@ public final class TerminalSession extends TerminalOutput {
     public String mSessionName;
 
     final Handler mMainThreadHandler = new MainThreadHandler();
+    private static final long SYNCHRONIZED_UPDATE_TIMEOUT_MS = 1000;
+    private boolean mSynchronizedUpdateTimeoutScheduled;
+    private boolean mResizeRedrawPending;
+    private final Runnable mSynchronizedUpdateTimeout = () -> {
+        mSynchronizedUpdateTimeoutScheduled = false;
+        boolean redraw = mResizeRedrawPending;
+        if (mEmulator != null && mEmulator.isSynchronizedUpdateInProgress()) {
+            mEmulator.endSynchronizedUpdate();
+            redraw = true;
+        }
+        if (redraw) {
+            mResizeRedrawPending = false;
+            notifyScreenUpdate();
+        }
+    };
 
     private final String mShellPath;
     private final String mCwd;
@@ -130,9 +145,39 @@ public final class TerminalSession extends TerminalOutput {
         if (mEmulator == null) {
             initializeEmulator(columns, rows);
         } else {
+            // A full-screen TUI has not redrawn its layout for the new grid yet.
+            // Avoid exposing the emulator's reflowed copy of the old frame.
+            if (mEmulator.isAlternateBufferActive()) {
+                mResizeRedrawPending = true;
+                if (!mEmulator.isSynchronizedUpdateInProgress()) {
+                    // Keep the last complete frame hidden until output arrives. If the
+                    // application never responds to SIGWINCH, recover one second after
+                    // the most recent resize instead of leaving the view blank forever.
+                    mMainThreadHandler.removeCallbacks(mSynchronizedUpdateTimeout);
+                    mSynchronizedUpdateTimeoutScheduled = false;
+                    scheduleSynchronizedUpdateTimeout();
+                }
+            }
             JNI.setPtyWindowSize(mTerminalFileDescriptor, rows, columns);
             mEmulator.resize(columns, rows);
         }
+    }
+
+    public boolean isResizeRedrawPending() {
+        return mResizeRedrawPending;
+    }
+
+    private void scheduleSynchronizedUpdateTimeout() {
+        if (!mSynchronizedUpdateTimeoutScheduled) {
+            mSynchronizedUpdateTimeoutScheduled = true;
+            mMainThreadHandler.postDelayed(mSynchronizedUpdateTimeout, SYNCHRONIZED_UPDATE_TIMEOUT_MS);
+        }
+    }
+
+    private void finishDeferredRedraw() {
+        mResizeRedrawPending = false;
+        mMainThreadHandler.removeCallbacks(mSynchronizedUpdateTimeout);
+        mSynchronizedUpdateTimeoutScheduled = false;
     }
 
     /** The terminal title as set through escape sequences or null if none set. */
@@ -252,6 +297,7 @@ public final class TerminalSession extends TerminalOutput {
 
     /** Reset state for terminal emulator state. */
     public void reset() {
+        finishDeferredRedraw();
         mEmulator.reset();
         notifyScreenUpdate();
     }
@@ -368,7 +414,12 @@ public final class TerminalSession extends TerminalOutput {
             int bytesRead = mProcessToTerminalIOQueue.read(mReceiveBuffer, false);
             if (bytesRead > 0) {
                 mEmulator.append(mReceiveBuffer, bytesRead);
-                notifyScreenUpdate();
+                if (mEmulator.isSynchronizedUpdateInProgress()) {
+                    scheduleSynchronizedUpdateTimeout();
+                } else {
+                    finishDeferredRedraw();
+                    notifyScreenUpdate();
+                }
             }
 
             if (msg.what == MSG_PROCESS_EXITED) {
