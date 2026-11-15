@@ -308,7 +308,8 @@ internal object ArchLinuxArmInstaller {
         }, "tritonterm-$phase-$streamName").apply { isDaemon = true; start() }
 
     private fun initializePacmanKeys(context: Context): String? {
-        mutableState.value = mutableState.value.copy(stage = TerminalSetupStage.PREPARING)
+        val progress = TerminalSetupProgress(TerminalSetupStage.PREPARING)
+        mutableState.value = mutableState.value.copy(stage = progress.stage, progress = progress)
         return runCatching { repairPacmanKeyring(context); null }
             .onFailure { failure ->
                 TerminalDiagnostics.record(context, "pacman_keyring", "feature_check_failed", mapOf("error" to failure.toString()))
@@ -338,6 +339,8 @@ internal object ArchLinuxArmInstaller {
     }
 
     private fun verifyDeveloperImage(context: Context): List<String> {
+        val progress = TerminalSetupProgress(TerminalSetupStage.DEVELOPER_TOOLS)
+        mutableState.value = mutableState.value.copy(stage = progress.stage, progress = progress)
         val root = ArchLinuxArmBootstrap.rootfs(context)
         val warnings = mutableListOf<String>()
         recordPermissionModelProbe(context, root)

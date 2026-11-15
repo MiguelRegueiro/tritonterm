@@ -103,19 +103,27 @@ internal object ArchRootfsRelease {
         return Manifest(version, archive, size, hash, baseHash)
     }
 
-    fun verifyArchive(file: File, manifest: Manifest) {
+    fun verifyArchive(file: File, manifest: Manifest, onBytesVerified: (Long) -> Unit = {}) {
         require(file.isFile && file.length() == manifest.size) {
             "Rootfs asset size does not match its signed manifest (expected ${manifest.size}, found ${file.length()})."
         }
         val digest = MessageDigest.getInstance("SHA-256")
+        var verifiedBytes = 0L
+        var lastReportedBytes = 0L
         FileInputStream(file).use { input ->
             val buffer = ByteArray(1024 * 1024)
             while (true) {
                 val count = input.read(buffer)
                 if (count < 0) break
                 digest.update(buffer, 0, count)
+                verifiedBytes += count
+                if (verifiedBytes - lastReportedBytes >= 8L * 1024 * 1024) {
+                    lastReportedBytes = verifiedBytes
+                    onBytesVerified(verifiedBytes)
+                }
             }
         }
+        onBytesVerified(verifiedBytes)
         val actual = digest.digest().joinToString("") { "%02x".format(it) }
         require(actual == manifest.sha256) { "Rootfs asset SHA-256 does not match the signed manifest." }
     }
