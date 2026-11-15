@@ -16,7 +16,6 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.Canvas
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -420,7 +419,7 @@ internal fun TerminalScreen() {
         Row(
             Modifier
                 .fillMaxWidth()
-                .height(40.dp)
+                .height(32.dp)
                 .padding(horizontal = 12.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
@@ -1023,8 +1022,8 @@ private fun TerminalConfigScreen(
         Box(
             Modifier
                 .fillMaxWidth()
-                .height(56.dp)
-                .padding(horizontal = 16.dp, vertical = 8.dp)
+                .height(48.dp)
+                .padding(horizontal = 16.dp)
         ) {
             TextButton(onClick = {
                 requestLeave()
