@@ -7,8 +7,8 @@ output_dir="${3:-}"
 source_index_dir="${4:-}"
 android_version_code="${TRITONTERM_ANDROID_VERSION_CODE:-}"
 android_version_name="${TRITONTERM_ANDROID_VERSION_NAME:-${version}-exp.1}"
-release_tag="arch-rootfs-${version}-exp.1"
-release_base_url="https://github.com/MiguelRegueiro/tritonterm-releases/releases/download/${release_tag}"
+release_tag="${TRITONTERM_ARCH_ROOTFS_RELEASE_TAG:-arch-rootfs-${version}-exp.1}"
+release_base_url="${TRITONTERM_ARCH_ROOTFS_RELEASE_BASE_URL:-https://github.com/MiguelRegueiro/tritonterm-releases/releases/download/${release_tag}}"
 project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 [[ "$version" =~ ^[0-9]{4}\.[0-9]{2}\.[0-9]{2}\.[0-9]+$ ]] || {
