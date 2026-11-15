@@ -224,12 +224,13 @@ chmod 0644 "$ROOTFS/etc/tritonterm/rootfs-release"
 printf '%s\n' 'v1' > "$ROOTFS/etc/tritonterm/proot-userland-metadata-v1"
 chmod 0644 "$ROOTFS/etc/tritonterm/proot-userland-metadata-v1"
 touch "$ROOTFS/root/.tritonterm-userland-profile-v1"
-chroot_guest /usr/bin/pacman -Qo /usr/bin/fakeroot /usr/bin/rustup /usr/bin/paru /usr/bin/elio > "$OUTPUT_DIR/package-ownership-${VERSION}.txt"
+chroot_guest /usr/bin/pacman -Qo /usr/bin/fakeroot /usr/bin/rustup /usr/bin/paru /usr/bin/elio /usr/bin/bat > "$OUTPUT_DIR/package-ownership-${VERSION}.txt"
 chroot_guest /usr/bin/pacman -Q > "$OUTPUT_DIR/packages-${VERSION}.txt"
 report_line "installed_package_count=$(wc -l < "$OUTPUT_DIR/packages-${VERSION}.txt" | tr -d ' ')"
 run_image_contract fixed_account /bin/bash -lc '[[ "$(getent passwd triton | cut -d: -f3-4)" == "1000:1000" && "$(getent passwd triton | cut -d: -f6-7)" == "/home/triton:/usr/bin/fish" && "$(getent group 1000 | cut -d: -f1)" == triton && "$(stat -c %u:%g /home/triton)" == "1000:1000" && -z "$(getent passwd alarm || true)" ]]
 ! grep -qE "usermod[[:space:]]+--login|groupmod[[:space:]]+--new-name" /root/.tritonterm-setup/setup-arch-developer.sh'
 run_image_contract elio_package /usr/bin/su -l triton -s /usr/bin/fish -c 'test "$(elio --version)" = "elio 1.15.0" && test -x /usr/bin/elio && pacman -Q elio-bin'
+run_image_contract bat_package /usr/bin/su -l triton -s /usr/bin/fish -c 'test -x /usr/bin/bat && bat --version && pacman -Q bat'
 run_image_contract elio_theme_permissions /usr/bin/stat -c '%a %u:%g %n' /home/triton/.config/elio/theme.toml
 grep -qx '644 1000:1000 /home/triton/.config/elio/theme.toml' "$OUTPUT_DIR/contract-${VERSION}-elio_theme_permissions.txt" || fail 4 'elio theme must be owned by triton and readable'
 run_image_contract rustup_show /usr/bin/su -l triton -s /usr/bin/fish -c 'rustup show'
@@ -370,7 +371,7 @@ mkdir -p "$verify_dir"
 tar --numeric-owner --xattrs --acls -xzf "$OUTPUT_ARCHIVE" -C "$verify_dir"
 [[ -s "$verify_dir/etc/os-release" && -d "$verify_dir/var/lib/pacman/local" &&
    -x "$verify_dir/usr/bin/fish" && -x "$verify_dir/usr/bin/paru" &&
-   -x "$verify_dir/usr/bin/rustup" && -x "$verify_dir/usr/bin/elio" &&
+   -x "$verify_dir/usr/bin/rustup" && -x "$verify_dir/usr/bin/elio" && -x "$verify_dir/usr/bin/bat" &&
    -s "$verify_dir/home/triton/.config/elio/theme.toml" &&
    -d "$verify_dir/home/triton/.rustup/toolchains" &&
    ! -e "$verify_dir/var/cache/tritonterm/developer-setup.log" ]] ||
