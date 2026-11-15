@@ -10,8 +10,8 @@ val archRootfsReleaseBaseUrl = providers.gradleProperty("tritonterm.archRootfsRe
     .orElse("").get()
 val archRootfsReleaseTag = providers.gradleProperty("tritonterm.archRootfsReleaseTag")
     .orElse("unconfigured").get()
-val androidVersionCode = providers.gradleProperty("tritonterm.androidVersionCode").orElse("1").get().toInt()
-val androidVersionName = providers.gradleProperty("tritonterm.androidVersionName").orElse("0.1.0").get()
+val androidVersionCode = providers.gradleProperty("tritonterm.androidVersionCode").orElse("202611207").get().toInt()
+val androidVersionName = providers.gradleProperty("tritonterm.androidVersionName").orElse("1.0.0").get()
 val androidApplicationIdSuffix = providers.gradleProperty("tritonterm.androidApplicationIdSuffix").orElse("").get()
 require(androidApplicationIdSuffix.isEmpty() ||
     Regex("\\.[A-Za-z][A-Za-z0-9_]*(\\.[A-Za-z][A-Za-z0-9_]*)*").matches(androidApplicationIdSuffix)) {
