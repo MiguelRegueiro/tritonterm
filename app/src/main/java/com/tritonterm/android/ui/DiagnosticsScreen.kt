@@ -135,7 +135,7 @@ internal fun DiagnosticsScreen(
             LazyColumn(
                 modifier = Modifier.weight(1f).fillMaxWidth(),
                 verticalArrangement = Arrangement.spacedBy(8.dp),
-                contentPadding = androidx.compose.foundation.layout.PaddingValues(top = 8.dp, bottom = 20.dp)
+                contentPadding = androidx.compose.foundation.layout.PaddingValues(top = 8.dp, bottom = 64.dp)
             ) {
                 item(key = "troubleshooting") {
                     TroubleshootingTools(

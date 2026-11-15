@@ -133,11 +133,14 @@ internal object TerminalDiagnostics {
                 }
                 val summary = summarizeDiagnosticEvent(phase, status, error ?: output)
                 val timestamp = json.optString("time")
+                val eventInstant = timestamp.takeIf(String::isNotBlank)
+                    ?.let { value -> runCatching { Instant.parse(value) }.getOrNull() }
+                    ?: json.optLong("time_unix_ms", 0L)
+                        .takeIf { it > 0L }
+                        ?.let(Instant::ofEpochMilli)
                 DiagnosticEvent(
-                    id = "$timestamp:$index",
-                    time = runCatching {
-                        Instant.parse(timestamp).atZone(ZoneId.systemDefault()).format(logTimestampFormatter)
-                    }.getOrElse { timestamp.substringAfter('T', timestamp).take(8) },
+                    id = "${timestamp.ifBlank { json.optString("time_unix_ms") }}:$index",
+                    time = eventInstant?.atZone(ZoneId.systemDefault())?.format(logTimestampFormatter) ?: "Unknown time",
                     source = json.optString("source", "unknown"),
                     phase = phase,
                     status = status,
