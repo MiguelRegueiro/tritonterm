@@ -13,6 +13,7 @@ import android.widget.Toast
 import androidx.core.content.FileProvider
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.clickable
@@ -25,6 +26,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.text.selection.SelectionContainer
@@ -37,6 +39,7 @@ import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.systemBarsPadding
 import androidx.compose.foundation.layout.windowInsetsPadding
+import androidx.compose.foundation.layout.width
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
@@ -373,16 +376,44 @@ internal fun TerminalScreen() {
             if (keyboardVisible) showSystemKeyboard() else hideSystemKeyboard()
         }
     }
-    Column(
-        Modifier
-            .fillMaxSize()
-            .systemBarsPadding()
-            // Use the final IME inset while Android animates. The animated
-            // inset changes every frame; Termux TerminalView turns each size
-            // change into a PTY resize, which flickers the cursor and output.
-            .windowInsetsPadding(WindowInsets.imeAnimationTarget)
-            .background(Color.Black)
-    ) {
+    val openDiagnostics: () -> Unit = {
+        diagnosticEvents = runCatching { TerminalDiagnostics.recentEvents(context) }.getOrDefault(emptyList())
+        recorderStatusText = TerminalDiagnostics.recorderStatusText(context)
+        crashRecords = TerminalDiagnostics.guestCrashRecords(context)
+        diagnosticsMessage = ""
+        showDiagnostics = true
+    }
+    if (showConfig) {
+        TerminalConfigScreen(
+            text = configText,
+            onTextChanged = { configText = it },
+            onDismiss = { showConfig = false },
+            onSave = { editedText ->
+                val result = TerminalConfig.parse(editedText)
+                val parsed = result.config
+                if (parsed == null) {
+                    result.error ?: "The config could not be parsed."
+                } else {
+                    configFile.writeText(editedText)
+                    terminalFontSize = parsed.fontSize
+                    terminalFontFamily = parsed.fontFamily
+                    terminalKeyBindings = parsed.keyBindings
+                    showConfig = false
+                    null
+                }
+            }
+        )
+    } else {
+        Column(
+            Modifier
+                .fillMaxSize()
+                .systemBarsPadding()
+                // Use the final IME inset while Android animates. The animated
+                // inset changes every frame; Termux TerminalView turns each size
+                // change into a PTY resize, which flickers the cursor and output.
+                .windowInsetsPadding(WindowInsets.imeAnimationTarget)
+                .background(Color.Black)
+        ) {
         Row(
             Modifier
                 .fillMaxWidth()
@@ -395,13 +426,7 @@ internal fun TerminalScreen() {
                 configText = configFile.readText()
                 showConfig = true
             }) { Text("Config", fontSize = 12.sp) }
-            TextButton(onClick = {
-                    diagnosticEvents = runCatching { TerminalDiagnostics.recentEvents(context) }.getOrDefault(emptyList())
-                    recorderStatusText = TerminalDiagnostics.recorderStatusText(context)
-                    crashRecords = TerminalDiagnostics.guestCrashRecords(context)
-                    diagnosticsMessage = ""
-                    showDiagnostics = true
-            }) { Text("Logs", fontSize = 12.sp) }
+            TextButton(onClick = openDiagnostics) { Text("Logs", fontSize = 12.sp) }
             if (setupReady) {
                 TextButton(
                     onClick = toggleKeyboardMode,
@@ -718,26 +743,6 @@ internal fun TerminalScreen() {
             )
         }
     }
-    if (showConfig) {
-        TerminalConfigDialog(
-            text = configText,
-            onTextChanged = { configText = it },
-            onDismiss = { showConfig = false },
-            onSave = { editedText ->
-                val result = TerminalConfig.parse(editedText)
-                val parsed = result.config
-                if (parsed == null) {
-                    result.error ?: "The config could not be parsed."
-                } else {
-                    configFile.writeText(editedText)
-                    terminalFontSize = parsed.fontSize
-                    terminalFontFamily = parsed.fontFamily
-                    terminalKeyBindings = parsed.keyBindings
-                    showConfig = false
-                    null
-                }
-            }
-        )
     }
     if (showDiagnostics) {
         DiagnosticsScreen(
@@ -979,37 +984,86 @@ private fun StageProgressBar(
 
 
 @Composable
-private fun TerminalConfigDialog(
+private fun TerminalConfigScreen(
     text: String,
     onTextChanged: (String) -> Unit,
     onDismiss: () -> Unit,
     onSave: (String) -> String?
 ) {
     var error by remember { mutableStateOf<String?>(null) }
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("tritonterm.conf") },
-        text = {
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text(
-                    "Options: font_family, font_size, and Kitty-style key maps for clipboard and terminal keys.",
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    fontSize = 13.sp
-                )
-                OutlinedTextField(
-                    value = text,
-                    onValueChange = onTextChanged,
-                    modifier = Modifier.fillMaxWidth().height(300.dp),
-                    textStyle = TextStyle(fontFamily = FontFamily.Monospace, fontSize = 13.sp)
-                )
-                error?.let { Text(it, color = MaterialTheme.colorScheme.error, fontSize = 12.sp) }
-            }
-        },
-        confirmButton = {
-            TextButton(onClick = { error = onSave(text) }) { Text("Save & apply") }
-        },
-        dismissButton = {
-            TextButton(onClick = onDismiss) { Text("Cancel") }
+    var showDiscardConfirmation by remember { mutableStateOf(false) }
+    val originalText = remember { text }
+    val focusManager = androidx.compose.ui.platform.LocalFocusManager.current
+    val requestLeave = {
+        if (text != originalText) {
+            showDiscardConfirmation = true
+        } else {
+            focusManager.clearFocus()
+            onDismiss()
         }
-    )
+    }
+    BackHandler { requestLeave() }
+    Column(
+        Modifier
+            .fillMaxSize()
+            .systemBarsPadding()
+            .imePadding()
+            .background(Color.Black)
+            .padding(horizontal = 16.dp, vertical = 8.dp),
+        verticalArrangement = Arrangement.spacedBy(6.dp)
+    ) {
+        Box(Modifier.fillMaxWidth().height(48.dp)) {
+            TextButton(onClick = {
+                requestLeave()
+            }, modifier = Modifier.align(Alignment.CenterStart)) { Text("← Terminal") }
+            Text(
+                "tritonterm.conf",
+                modifier = Modifier.align(Alignment.Center),
+                style = MaterialTheme.typography.titleMedium,
+                color = MaterialTheme.colorScheme.onSurface
+            )
+        }
+        OutlinedTextField(
+            value = text,
+            onValueChange = onTextChanged,
+            modifier = Modifier.fillMaxWidth().weight(1f),
+            textStyle = TextStyle(fontFamily = FontFamily.Monospace, fontSize = 14.sp),
+            shape = MaterialTheme.shapes.medium
+        )
+        error?.let {
+            Text(it, color = MaterialTheme.colorScheme.error, fontSize = 13.sp)
+        }
+        Row(
+            Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.End,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            TextButton(onClick = {
+                focusManager.clearFocus()
+                onDismiss()
+            }) { Text("Cancel") }
+            Spacer(Modifier.width(8.dp))
+            Button(onClick = {
+                error = onSave(text)
+                if (error == null) focusManager.clearFocus()
+            }) { Text("Save & apply") }
+        }
+    }
+    if (showDiscardConfirmation) {
+        AlertDialog(
+            onDismissRequest = { showDiscardConfirmation = false },
+            title = { Text("Discard unsaved changes?") },
+            text = { Text("Your edits to tritonterm.conf have not been saved.") },
+            confirmButton = {
+                TextButton(onClick = {
+                    showDiscardConfirmation = false
+                    focusManager.clearFocus()
+                    onDismiss()
+                }) { Text("Discard changes", color = MaterialTheme.colorScheme.error) }
+            },
+            dismissButton = {
+                TextButton(onClick = { showDiscardConfirmation = false }) { Text("Keep editing") }
+            }
+        )
+    }
 }
