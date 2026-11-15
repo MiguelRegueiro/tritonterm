@@ -1,0 +1,131 @@
+diff --git a/src/pr-cli/src/login.rs b/src/pr-cli/src/login.rs
+index 7c90655..fc2c580 100644
+--- a/src/pr-cli/src/login.rs
++++ b/src/pr-cli/src/login.rs
+@@ -109,7 +109,10 @@ fn refresh_resolv_conf(rootfs: &Path) {
+     if resolv_conf_is_managed(existing.as_deref()) {
+         let _ = write_resolv_conf(
+             &resolv_conf_path,
+-            &resolv_conf_contents(&network_dns_servers()),
++            &resolv_conf_contents_with_search_domains(
++                &network_dns_servers(),
++                &network_dns_search_domains(),
++            ),
+         );
+     }
+ }
+diff --git a/src/pr-cli/src/shared.rs b/src/pr-cli/src/shared.rs
+index 91c568e..66537e3 100644
+--- a/src/pr-cli/src/shared.rs
++++ b/src/pr-cli/src/shared.rs
+@@ -30,9 +30,42 @@ pub fn network_dns_servers() -> Vec<String> {
+         .unwrap_or_default()
+ }
+ 
++/// TRITONTERM_ANDROID_NETWORK_DNS_V1: consume Android's VPN DNS search suffixes.
++/// Search domains Android assigned to the active network, passed by the app as a comma-separated list.
++pub fn network_dns_search_domains() -> Vec<String> {
++    std::env::var("APP_DNS_SEARCH_DOMAINS")
++        .map(|value| value.split(',').filter_map(valid_search_domain).collect())
++        .unwrap_or_default()
++}
++
++fn valid_search_domain(raw: &str) -> Option<String> {
++    let domain = raw.trim().trim_end_matches('.').to_ascii_lowercase();
++    if domain.is_empty() || domain.len() > 253 || !domain.is_ascii() {
++        return None;
++    }
++    let valid = domain.split('.').all(|label| {
++        !label.is_empty()
++            && label.len() <= 63
++            && label.as_bytes()[0].is_ascii_alphanumeric()
++            && label.as_bytes()[label.len() - 1].is_ascii_alphanumeric()
++            && label
++                .bytes()
++                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
++    });
++    valid.then_some(domain)
++}
++
+ /// At most three nameservers (the musl and glibc limit): up to two from the network, so some
+ /// networks that block public DNS still resolve, then the public servers as fallback.
+ pub fn resolv_conf_contents(network: &[String]) -> String {
++    resolv_conf_contents_with_search_domains(network, &[])
++}
++
++/// Write Android's DNS search suffixes alongside its VPN-aware nameservers.
++pub fn resolv_conf_contents_with_search_domains(
++    network: &[String],
++    search_domains: &[String],
++) -> String {
+     let mut servers: Vec<String> = Vec::new();
+     for raw in network {
+         // A scoped or link-local address (fe80::1%wlan0) cannot be used from resolv.conf.
+@@ -51,6 +84,25 @@ pub fn resolv_conf_contents(network: &[String]) -> String {
+         }
+     }
+     let mut contents = String::from(RESOLV_CONF_MARKER);
++    let mut accepted_domains = Vec::new();
++    let mut search_line_len = "search ".len();
++    for raw in search_domains {
++        let Some(domain) = valid_search_domain(raw) else {
++            continue;
++        };
++        if accepted_domains.contains(&domain) {
++            continue;
++        }
++        let added_len = domain.len() + if accepted_domains.is_empty() { 0 } else { 1 };
++        if search_line_len + added_len > 256 {
++            break;
++        }
++        search_line_len += added_len;
++        accepted_domains.push(domain);
++    }
++    if !accepted_domains.is_empty() {
++        contents.push_str(&format!("search {}\n", accepted_domains.join(" ")));
++    }
+     for server in servers {
+         contents.push_str(&format!("nameserver {}\n", server));
+     }
+@@ -666,6 +718,41 @@ mod tests {
+         );
+     }
+ 
++    #[test]
++    fn resolv_conf_includes_validated_magicdns_search_domains() {
++        let contents = resolv_conf_contents_with_search_domains(
++            &["100.100.100.100".to_string()],
++            &[
++                " home-example.ts.net ".to_string(),
++                "home-example.ts.net".to_string(),
++                "bad;nameserver 1.2.3.4".to_string(),
++                "another.ts.net.".to_string(),
++            ],
++        );
++
++        assert!(contents.contains("\nsearch home-example.ts.net another.ts.net\n"));
++        assert!(contents.find("search ").unwrap() < contents.find("nameserver ").unwrap());
++        assert_eq!(
++            nameservers(&contents),
++            ["100.100.100.100", "8.8.8.8", "8.8.4.4"]
++        );
++    }
++
++    #[test]
++    fn resolv_conf_limits_search_line_to_resolver_size() {
++        let domains = (0..8)
++            .map(|index| format!("domain-{index}.example.ts.net"))
++            .collect::<Vec<_>>();
++        let contents = resolv_conf_contents_with_search_domains(&[], &domains);
++        let search_line = contents
++            .lines()
++            .find(|line| line.starts_with("search "))
++            .unwrap();
++
++        assert!(search_line.len() <= 256);
++        assert!(search_line.contains("domain-0.example.ts.net"));
++    }
++
+     #[test]
+     fn write_resolv_conf_replaces_file_atomically_without_leftovers() {
+         // temp_dir() reads TMPDIR, which other tests change under this lock.
