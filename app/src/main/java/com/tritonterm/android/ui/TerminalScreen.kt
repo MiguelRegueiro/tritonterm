@@ -41,7 +41,6 @@ import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.Button
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
@@ -71,6 +70,9 @@ import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.Surface
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.geometry.CornerRadius
@@ -522,35 +524,41 @@ internal fun TerminalScreen() {
                 )
                 if (terminalProcessFinished) {
                     val exitStatus = currentSession.exitStatus
-                    Column(
+                    Surface(
                         modifier = Modifier
                             .align(Alignment.BottomCenter)
                             .fillMaxWidth()
-                            .background(Color(0xE6212128))
-                            .padding(horizontal = 16.dp, vertical = 12.dp),
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                            .padding(vertical = 8.dp),
+                        shape = RoundedCornerShape(14.dp),
+                        color = Color(0xFF242426),
+                        border = BorderStroke(1.dp, Color(0xFF3A3A3D))
                     ) {
-                        Text(
-                            if (exitStatus < 0) {
-                                "Terminal process ended after signal ${-exitStatus}. Start a new shell to continue."
-                            } else "Terminal process exited with status $exitStatus. Start a new shell to continue.",
-                            color = Color(0xFFE3E3E8),
-                            textAlign = TextAlign.Center,
-                            fontSize = 13.sp
-                        )
-                        Button(onClick = {
-                            runCatching {
-                                TerminalForegroundService.startSession(context)
-                                session = terminalController.restartFinishedSession()
-                                terminalProcessFinished = false
-                            }.onFailure { failure ->
-                                TerminalForegroundService.stop(context)
-                                TerminalSessionHost.markSessionInactive(context)
-                                diagnosticsMessage = "Could not start a new shell: ${failure.message ?: failure.javaClass.simpleName}"
-                                TerminalDiagnostics.record(context, "shell_restart", "failed", mapOf("error" to failure.toString()))
-                            }
-                        }) { Text("Start new shell") }
+                        Row(
+                            modifier = Modifier.fillMaxWidth().padding(start = 14.dp, end = 8.dp, top = 8.dp, bottom = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(12.dp)
+                        ) {
+                            Text(
+                                if (exitStatus < 0) "Shell stopped · signal ${-exitStatus}"
+                                else "Shell exited · status $exitStatus",
+                                modifier = Modifier.weight(1f),
+                                color = Color(0xFFE3E3E8),
+                                fontSize = 13.sp,
+                                maxLines = 2
+                            )
+                            TritonActionButton(label = "New shell", onClick = {
+                                runCatching {
+                                    TerminalForegroundService.startSession(context)
+                                    session = terminalController.restartFinishedSession()
+                                    terminalProcessFinished = false
+                                }.onFailure { failure ->
+                                    TerminalForegroundService.stop(context)
+                                    TerminalSessionHost.markSessionInactive(context)
+                                    diagnosticsMessage = "Could not start a new shell: ${failure.message ?: failure.javaClass.simpleName}"
+                                    TerminalDiagnostics.record(context, "shell_restart", "failed", mapOf("error" to failure.toString()))
+                                }
+                            })
+                        }
                     }
                 }
             }
@@ -671,10 +679,11 @@ internal fun TerminalScreen() {
                         )
                     } else if (!setupReady) {
                         Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                            Button(
+                            TritonActionButton(
+                                label = if (installState.error != null) "Retry setup" else if (reusableArchRootfs) "Continue setup" else "Install Arch",
                                 enabled = !installState.running && ArchRootfsRelease.isConfigured(),
                                 onClick = { ArchLinuxArmInstaller.start(context) }
-                            ) { Text(if (installState.error != null) "Retry setup" else if (reusableArchRootfs) "Continue setup" else "Install Arch") }
+                            )
                         }
                         if (setupError != null) {
                             Text(
@@ -1049,10 +1058,10 @@ private fun TerminalConfigScreen(
                     onDismiss()
                 }) { Text("Cancel") }
                 Spacer(Modifier.width(8.dp))
-                Button(onClick = {
+                TritonActionButton(label = "Save & apply", onClick = {
                     error = onSave(editorValue.text)
                     if (error == null) focusManager.clearFocus()
-                }) { Text("Save & apply") }
+                })
             }
         }
     }

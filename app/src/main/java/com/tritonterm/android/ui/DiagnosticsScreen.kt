@@ -127,9 +127,12 @@ internal fun DiagnosticsScreen(
                     textAlign = TextAlign.Center,
                     color = MaterialTheme.colorScheme.onSurface
                 )
-                Button(onClick = onShareFile, enabled = !sharing) {
-                    Text(if (sharing) "Preparing…" else "Share log file", maxLines = 1)
-                }
+                TritonActionButton(
+                    label = if (sharing) "Preparing…" else "Share log file",
+                    onClick = onShareFile,
+                    enabled = !sharing,
+                    compact = true
+                )
             }
 
             LazyColumn(
