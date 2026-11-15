@@ -1,0 +1,172 @@
+name: Android APK
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      development_build:
+        description: Development build number shown in the app version (for example, 7)
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-publish:
+    if: >-
+      (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) ||
+      (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Check out source and tags
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Validate release tag and changelog entry
+        if: github.event_name == 'push'
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          [[ "$RELEASE_TAG" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]] || {
+            echo "Stable releases require a vMAJOR.MINOR.PATCH tag." >&2
+            exit 1
+          }
+          git fetch origin main
+          git merge-base --is-ancestor HEAD origin/main || {
+            echo "The release tag must point to a commit already on main." >&2
+            exit 1
+          }
+          version="${RELEASE_TAG#v}"
+          awk -v heading="## [$version]" '
+            $0 == heading { found = 1; next }
+            found && /^## / { exit }
+            found { print }
+            END { if (!found) exit 1 }
+          ' CHANGELOG.md > "$RUNNER_TEMP/release-notes.md" || {
+            echo "CHANGELOG.md has no ## [$version] section for this tag." >&2
+            exit 1
+          }
+          [[ -s "$RUNNER_TEMP/release-notes.md" ]] || {
+            echo "The changelog section for $version is empty." >&2
+            exit 1
+          }
+
+      - name: Select the matching Arch rootfs release
+        id: image
+        env:
+          GH_TOKEN: ${{ github.token }}
+          IS_STABLE_RELEASE: ${{ github.event_name == 'push' }}
+        run: |
+          set -euo pipefail
+          releases="$(gh release list --repo MiguelRegueiro/tritonterm-releases --limit 100 \
+            --json tagName,isPrerelease,publishedAt)"
+          if [[ "$IS_STABLE_RELEASE" == true ]]; then
+            rootfs_tag="$(jq -r '[.[] | select(.tagName | test("^arch-rootfs-[0-9].*$")) | select(.isPrerelease == false)] | sort_by(.publishedAt) | last | .tagName // empty' <<< "$releases")"
+            [[ -n "$rootfs_tag" ]] || {
+              echo "No stable Arch rootfs release is published yet." >&2
+              exit 1
+            }
+          else
+            rootfs_tag="$(jq -r '[.[] | select(.tagName | test("^arch-rootfs-[0-9].*-rc\\.[0-9]+$")) | select(.isPrerelease == true)] | sort_by(.publishedAt) | last | .tagName // empty' <<< "$releases")"
+            [[ -n "$rootfs_tag" ]] || {
+              echo "No Arch rootfs RC release is published yet." >&2
+              exit 1
+            }
+          fi
+          rootfs_version="${rootfs_tag#arch-rootfs-}"
+          if [[ "$IS_STABLE_RELEASE" == false ]]; then
+            rootfs_version="${rootfs_version%-rc.*}"
+          fi
+          echo "tag=$rootfs_tag" >> "$GITHUB_OUTPUT"
+          echo "version=$rootfs_version" >> "$GITHUB_OUTPUT"
+
+      - name: Install Fish for the project build checks
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes fish
+
+      - name: Prepare the Android release signing key
+        env:
+          KEYSTORE_BASE64: ${{ secrets.TRITONTERM_ANDROID_KEYSTORE_BASE64 }}
+        run: |
+          set -euo pipefail
+          [[ -n "$KEYSTORE_BASE64" ]] || {
+            echo "Missing repository secret TRITONTERM_ANDROID_KEYSTORE_BASE64." >&2
+            exit 1
+          }
+          keystore="$RUNNER_TEMP/tritonterm-release.jks"
+          printf '%s' "$KEYSTORE_BASE64" | base64 --decode > "$keystore"
+          chmod 0600 "$keystore"
+          echo "TRITONTERM_ANDROID_KEYSTORE=$keystore" >> "$GITHUB_ENV"
+
+      - name: Run unit tests and bootstrap the pinned Gradle toolchain
+        env:
+          TRITONTERM_ARCH_ROOTFS_VERSION: ${{ steps.image.outputs.version }}
+          TRITONTERM_ARCH_ROOTFS_RELEASE_TAG: ${{ steps.image.outputs.tag }}
+          TRITONTERM_ARCH_ROOTFS_RELEASE_BASE_URL: https://github.com/MiguelRegueiro/tritonterm-releases/releases/download/${{ steps.image.outputs.tag }}
+        run: ./scripts/build-apk.sh
+
+      - name: Allocate a monotonically increasing Android version code
+        run: |
+          set -euo pipefail
+          version_code=$((202612000 + GITHUB_RUN_NUMBER))
+          echo "TRITONTERM_ANDROID_VERSION_CODE=$version_code" >> "$GITHUB_ENV"
+
+      - name: Build the signed APK
+        env:
+          TRITONTERM_ANDROID_STORE_PASSWORD: ${{ secrets.TRITONTERM_ANDROID_STORE_PASSWORD }}
+          TRITONTERM_ANDROID_KEY_ALIAS: ${{ secrets.TRITONTERM_ANDROID_KEY_ALIAS }}
+          TRITONTERM_ANDROID_KEY_PASSWORD: ${{ secrets.TRITONTERM_ANDROID_KEY_PASSWORD }}
+          TRITONTERM_ARCH_ROOTFS_VERSION: ${{ steps.image.outputs.version }}
+          TRITONTERM_ARCH_ROOTFS_RELEASE_TAG: ${{ steps.image.outputs.tag }}
+          TRITONTERM_ARCH_ROOTFS_RELEASE_BASE_URL: https://github.com/MiguelRegueiro/tritonterm-releases/releases/download/${{ steps.image.outputs.tag }}
+          TRITONTERM_ANDROID_RELEASE_TAG: ${{ github.ref_name }}
+          TRITONTERM_ANDROID_EXPERIMENTAL_BUILD: ${{ inputs.development_build }}
+        run: |
+          set -euo pipefail
+          if [[ "$GITHUB_EVENT_NAME" == push ]]; then
+            ./scripts/build-stable-apk.sh
+          else
+            ./scripts/build-development-apk.sh
+          fi
+
+      - name: Publish the APK to a GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          IS_STABLE_RELEASE: ${{ github.event_name == 'push' }}
+          ROOTFS_VERSION: ${{ steps.image.outputs.version }}
+          APK_VERSION_CODE: ${{ env.TRITONTERM_ANDROID_VERSION_CODE }}
+          DEVELOPMENT_BUILD: ${{ inputs.development_build }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          if [[ "$IS_STABLE_RELEASE" == true ]]; then
+            version="${RELEASE_TAG#v}"
+            apk="dist/tritonterm-${version}.apk"
+            gh release create "$RELEASE_TAG" "$apk#tritonterm.apk" \
+              --repo "$GITHUB_REPOSITORY" \
+              --title "TritonTerm v$version" \
+              --notes-file "$RUNNER_TEMP/release-notes.md"
+          else
+            version="${ROOTFS_VERSION}-exp.${DEVELOPMENT_BUILD}"
+            apk="dist/tritonterm-${version}.apk"
+            tag="tritonterm-${version}"
+            notes="$RUNNER_TEMP/development-notes.md"
+            cat > "$notes" <<EOF
+          Development APK for Arch Linux ARM $ROOTFS_VERSION (RC release).
+
+          Android version code: $APK_VERSION_CODE
+          This is a development pre-release. The latest stable download remains unchanged.
+          EOF
+            gh release create "$tag" "$apk#tritonterm.apk" \
+              --repo "$GITHUB_REPOSITORY" \
+              --title "TritonTerm development $version" \
+              --notes-file "$notes" \
+              --prerelease
+          fi
