@@ -5,14 +5,11 @@ import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
-import android.net.Uri
 import android.view.KeyEvent
 import android.view.Menu
 import android.view.inputmethod.InputMethodManager
 import android.widget.Toast
 import androidx.core.content.FileProvider
-import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.Canvas
@@ -296,33 +293,8 @@ internal fun TerminalScreen() {
     var recorderStatusText by remember { mutableStateOf("Recorder status unknown.") }
     var diagnosticsMessage by remember { mutableStateOf("") }
     var smokeRunning by remember { mutableStateOf(false) }
-    var exportRunning by remember { mutableStateOf(false) }
+    var sharingLogs by remember { mutableStateOf(false) }
     var smokeResult by remember { mutableStateOf("Not run") }
-    val exportDiagnostics = rememberLauncherForActivityResult(
-        ActivityResultContracts.CreateDocument("application/x-ndjson")
-    ) { uri: Uri? ->
-        TerminalDiagnostics.recordExportDestination(context, uri)
-        if (uri == null) {
-            diagnosticsMessage = "Export cancelled."
-        } else {
-            diagnosticsMessage = "Exporting and verifying diagnostics…"
-            exportRunning = true
-            setupScope.launch {
-                val result = runCatching { withContext(Dispatchers.IO) { TerminalDiagnostics.export(context, uri) } }
-                exportRunning = false
-                diagnosticsMessage = result.fold(
-                    onSuccess = {
-                        "Destination URI ${it.destinationUri}: verified ${it.uriReadbackBytes} bytes " +
-                            "(expected ${it.expectedBytes}, wrote ${it.bytesWritten}); " +
-                            "provider reports ${it.providerReportedBytes?.toString() ?: "size unavailable"} " +
-                            "after ${it.providerMetadataAttempts} metadata checks over ${it.providerMetadataWaitMs} ms." +
-                            (it.providerMetadataError?.let { error -> " Metadata note: $error" } ?: "")
-                    },
-                    onFailure = { "Export failed: ${it.message ?: it.javaClass.simpleName}" }
-                )
-            }
-        }
-    }
     var useSystemKeyboard by remember { mutableStateOf(false) }
     var keyboardVisible by remember { mutableStateOf(true) }
     var pendingBuiltInKeyboard by remember { mutableStateOf(false) }
@@ -748,13 +720,12 @@ internal fun TerminalScreen() {
     }
     if (showDiagnostics) {
         DiagnosticsScreen(
-            recorderStatus = recorderStatusText,
             crashes = crashRecords,
             events = diagnosticEvents,
             message = diagnosticsMessage,
             testResult = smokeResult,
             busy = smokeRunning,
-            exporting = exportRunning,
+            sharing = sharingLogs,
             onDismiss = { showDiagnostics = false },
             onTestSegv = {
                 smokeRunning = true
@@ -825,51 +796,57 @@ internal fun TerminalScreen() {
                     )
                 }
             },
-            onCopyLatest = {
-                val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                runCatching { TerminalDiagnostics.recentEventsText(context) }.onSuccess {
-                    clipboard.setPrimaryClip(ClipData.newPlainText("Recent TritonTerm diagnostics", it))
-                    diagnosticsMessage = "Recent events copied (${it.toByteArray(Charsets.UTF_8).size} bytes)."
-                }.onFailure { diagnosticsMessage = "Copy failed: ${it.message}" }
-            },
-            onCopyCrashes = {
-                val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                val crashes = TerminalDiagnostics.guestCrashRecordsText(context)
-                if (crashes == "No guest SIGSEGV records captured.") diagnosticsMessage = crashes
-                else {
-                    clipboard.setPrimaryClip(ClipData.newPlainText("Guest SIGSEGV records", crashes))
-                    diagnosticsMessage = "Guest crash records copied (${crashes.toByteArray(Charsets.UTF_8).size} bytes)."
+            onShareFile = {
+                if (!sharingLogs) {
+                    sharingLogs = true
+                    diagnosticsMessage = "Preparing log file…"
+                    setupScope.launch {
+                        val fileResult = runCatching {
+                            withContext(Dispatchers.IO) { TerminalDiagnostics.createShareableDiagnosticsFile(context) }
+                        }
+                        sharingLogs = false
+                        fileResult.fold(
+                            onSuccess = { file ->
+                                runCatching {
+                                    val uri = FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
+                                    val intent = Intent(Intent.ACTION_SEND).apply {
+                                        type = "application/x-ndjson"
+                                        putExtra(Intent.EXTRA_STREAM, uri)
+                                        clipData = ClipData.newUri(context.contentResolver, "TritonTerm log file", uri)
+                                        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                                    }
+                                    context.startActivity(Intent.createChooser(intent, "Share log file"))
+                                }.onSuccess {
+                                    diagnosticsMessage = "Log file ready · ${file.length()} bytes."
+                                }.onFailure {
+                                    diagnosticsMessage = "Could not share log file: ${it.message ?: it.javaClass.simpleName}"
+                                }
+                            },
+                            onFailure = {
+                                diagnosticsMessage = "Could not prepare log file: ${it.message ?: it.javaClass.simpleName}"
+                            }
+                        )
+                    }
                 }
             },
-            onShare = {
-                runCatching { TerminalDiagnostics.recentExportText(context) }.onSuccess { text ->
-                    val intent = Intent(Intent.ACTION_SEND).apply {
-                        type = "application/x-ndjson"
-                        putExtra(Intent.EXTRA_TEXT, text)
-                    }
-                    context.startActivity(Intent.createChooser(intent, "Share recent diagnostics"))
-                    diagnosticsMessage = "Opened Android's share sheet for recent diagnostics."
-                }.onFailure { diagnosticsMessage = "Share failed: ${it.message}" }
-            },
-            onShareFile = {
-                runCatching {
-                    val file = TerminalDiagnostics.createShareableDiagnosticsFile(context)
-                    val uri = FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
-                    val intent = Intent(Intent.ACTION_SEND).apply {
-                        type = "application/x-ndjson"
-                        putExtra(Intent.EXTRA_STREAM, uri)
-                        clipData = ClipData.newUri(context.contentResolver, "TritonTerm diagnostics", uri)
-                        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                    }
-                    context.startActivity(Intent.createChooser(intent, "Share diagnostics file"))
-                    diagnosticsMessage = "Prepared ${file.length()} bytes and opened Android's share sheet."
-                }.onFailure { diagnosticsMessage = "Could not prepare diagnostics file: ${it.message}" }
-            },
-            onCopyMessage = {
+            onCopyLog = { rawLog ->
                 val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                clipboard.setPrimaryClip(ClipData.newPlainText("Diagnostics export details", diagnosticsMessage))
+                clipboard.setPrimaryClip(ClipData.newPlainText("TritonTerm log entry", rawLog))
+                Toast.makeText(context, "Log entry copied", Toast.LENGTH_SHORT).show()
             },
-            onExport = { if (!exportRunning) exportDiagnostics.launch("tritonterm-diagnostics.jsonl") }
+            onClear = {
+                diagnosticsMessage = "Clearing logs…"
+                setupScope.launch {
+                    val result = runCatching { withContext(Dispatchers.IO) { TerminalDiagnostics.clear(context) } }
+                    diagnosticEvents = runCatching { TerminalDiagnostics.recentEvents(context) }.getOrDefault(emptyList())
+                    recorderStatusText = TerminalDiagnostics.recorderStatusText(context)
+                    crashRecords = TerminalDiagnostics.guestCrashRecords(context)
+                    diagnosticsMessage = result.fold(
+                        onSuccess = { "Logs cleared. New activity will be recorded as usual." },
+                        onFailure = { "Could not clear logs: ${it.message ?: it.javaClass.simpleName}" }
+                    )
+                }
+            },
         )
     }
     if (showFeatureWarnings) {
