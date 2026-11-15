@@ -14,12 +14,14 @@ import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.imePadding
@@ -326,6 +328,14 @@ internal fun TerminalScreen() {
             view.post { inputMethodManager.showSoftInput(view, InputMethodManager.SHOW_IMPLICIT) }
         }
     }
+    LaunchedEffect(useSystemKeyboard, keyboardVisible) {
+        if (useSystemKeyboard && keyboardVisible) {
+            // Let Compose move the terminal into its system-keyboard layout before
+            // asking Android to attach the IME to its view.
+            delay(120)
+            showSystemKeyboard()
+        }
+    }
     val toggleKeyboardMode: () -> Unit = {
         if (useSystemKeyboard) {
             // Let the Android IME finish dismissing before showing our own
@@ -342,14 +352,13 @@ internal fun TerminalScreen() {
             pendingBuiltInKeyboard = false
             useSystemKeyboard = true
             keyboardVisible = true
-            showSystemKeyboard()
         }
     }
     val toggleKeyboardVisibility: () -> Unit = {
         if (pendingBuiltInKeyboard) pendingBuiltInKeyboard = false
         keyboardVisible = !keyboardVisible
         if (useSystemKeyboard) {
-            if (keyboardVisible) showSystemKeyboard() else hideSystemKeyboard()
+            if (!keyboardVisible) hideSystemKeyboard()
         }
     }
     val openDiagnostics: () -> Unit = {
@@ -437,23 +446,22 @@ internal fun TerminalScreen() {
         }
 
         val currentSession = session
-        if (currentSession != null && setupReady) {
-            if (installState.featureWarnings.isNotEmpty()) {
-                Row(
-                    modifier = Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 2.dp),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Text(
-                        "Some image checks failed (${installState.featureWarnings.size}); terminal is available.",
-                        color = Color(0xFFFFCC80), fontSize = 11.sp, maxLines = 1
-                    )
-                    TextButton(onClick = { showFeatureWarnings = true }) { Text("Details") }
-                }
-            }
-            Box(
-                modifier = Modifier.weight(1f).fillMaxWidth()
+        if (currentSession != null && setupReady && installState.featureWarnings.isNotEmpty()) {
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 2.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
             ) {
+                Text(
+                    "Some image checks failed (${installState.featureWarnings.size}); terminal is available.",
+                    color = Color(0xFFFFCC80), fontSize = 11.sp, maxLines = 1
+                )
+                TextButton(onClick = { showFeatureWarnings = true }) { Text("Details") }
+            }
+        }
+        val terminalPane: @Composable (Modifier) -> Unit = { paneModifier ->
+        if (currentSession != null && setupReady) {
+            Box(modifier = paneModifier.fillMaxSize()) {
                 AndroidView(
                     modifier = Modifier.fillMaxSize(),
                     factory = { viewContext ->
@@ -568,7 +576,7 @@ internal fun TerminalScreen() {
             }
         } else {
             Box(
-                modifier = Modifier.weight(1f).fillMaxWidth().background(Color.Black),
+                modifier = paneModifier.fillMaxSize().background(Color.Black),
                 contentAlignment = Alignment.Center
             ) {
                 Column(
@@ -701,20 +709,11 @@ internal fun TerminalScreen() {
                 }
             }
         }
+        }
 
-        if (setupReady && keyboardVisible) {
+        val keyboardContent: @Composable (Modifier, Boolean) -> Unit = { keyboardModifier, landscapeLayout ->
             TerminalKeyboard(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 8.dp)
-                    .offset {
-                        // Keep the extra keys aligned with the live IME edge,
-                        // while the terminal itself uses the stable target inset.
-                        IntOffset(
-                            x = 0,
-                            y = imeTargetInsets.getBottom(this) - animatedImeInsets.getBottom(this)
-                        )
-                    },
+                modifier = keyboardModifier,
                 onZoom = zoomTerminal,
                 onCopy = { sessionClient.copySelection() },
                 onPaste = { sessionClient.pasteFromClipboard(session) },
@@ -723,11 +722,48 @@ internal fun TerminalScreen() {
                 // Keep the Termux-style extra-key strip above Android's IME;
                 // only the full custom keyboard is exclusive to built-in mode.
                 compact = useSystemKeyboard,
+                landscapeLayout = landscapeLayout,
                 onInput = { input ->
                     val bytes = input.toByteArray(StandardCharsets.UTF_8)
                     session?.write(bytes, 0, bytes.size)
                 }
             )
+        }
+
+        BoxWithConstraints(Modifier.weight(1f).fillMaxWidth()) {
+            val sideBySide = maxWidth > maxHeight && setupReady && keyboardVisible && !useSystemKeyboard
+            if (sideBySide) {
+                Row(
+                    modifier = Modifier.fillMaxSize(),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    terminalPane(Modifier.weight(0.56f).fillMaxHeight())
+                    keyboardContent(
+                        Modifier.weight(0.44f).fillMaxHeight().padding(start = 2.dp, end = 8.dp, top = 4.dp, bottom = 4.dp),
+                        true
+                    )
+                }
+            } else {
+                Column(Modifier.fillMaxSize()) {
+                    terminalPane(Modifier.weight(1f).fillMaxWidth())
+                    if (setupReady && keyboardVisible) {
+                        keyboardContent(
+                            Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 8.dp)
+                                .offset {
+                                    // Keep the extra keys aligned with the live IME edge,
+                                    // while the terminal itself uses the stable target inset.
+                                    IntOffset(
+                                        x = 0,
+                                        y = imeTargetInsets.getBottom(this) - animatedImeInsets.getBottom(this)
+                                    )
+                                },
+                            false
+                        )
+                    }
+                }
+            }
         }
     }
     }

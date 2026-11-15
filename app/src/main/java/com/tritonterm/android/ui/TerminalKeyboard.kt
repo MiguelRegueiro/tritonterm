@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
@@ -60,7 +61,8 @@ internal fun TerminalKeyboard(
     onPaste: () -> Unit,
     keyBindings: List<TerminalKeyBinding>,
     activeUserVariables: () -> Set<String>,
-    compact: Boolean
+    compact: Boolean,
+    landscapeLayout: Boolean = false
 ) {
     var layer by remember { mutableStateOf(false) }
     var ctrl by remember { mutableStateOf(false) }
@@ -197,36 +199,55 @@ internal fun TerminalKeyboard(
         }
     }
 
-    Column(modifier.fillMaxWidth().padding(bottom = if (compact) 4.dp else 16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-        if (compact) {
-            KeyRow(compactNavigationKeys, 38.dp, onClick = ::emit, onHoldChanged = ::setHeld, active = emptySet())
-            KeyRow(
-                compactShellKeys,
-                38.dp,
-                onClick = ::emit,
-                onHoldChanged = ::setHeld,
-                active = buildSet { if (ctrl) add("Ctrl"); if (alt) add("Alt") }
-            )
-        } else {
-            KeyRow(utility, 38.dp, onClick = ::emit, onHoldChanged = ::setHeld, active = setOfNotNull(if (caps) "Caps" else null))
-            KeyRow(commonKeys, 38.dp, onClick = ::emit, onHoldChanged = ::setHeld, active = emptySet(), caps = caps, shift = shift)
-            KeyRow(digits, 50.dp, onClick = ::emit, onHoldChanged = ::setHeld, active = emptySet(), caps = caps, shift = shift)
-            if (layer) {
-                symbolRows.forEach { row -> KeyRow(row, 50.dp, onClick = ::emit, onHoldChanged = ::setHeld, active = emptySet(), caps = caps, shift = shift) }
+    BoxWithConstraints(modifier.fillMaxWidth()) {
+        val rowCount = if (compact) 2 else 7
+        val bottomPadding = when {
+            compact -> 4.dp
+            landscapeLayout -> 4.dp
+            else -> 16.dp
+        }
+        val landscapeKeyHeight = if (landscapeLayout && maxHeight != Dp.Infinity) {
+            ((maxHeight - bottomPadding - KeyboardKeySpacing * (rowCount - 1)) / rowCount)
+                .coerceIn(28.dp, 50.dp)
+        } else 50.dp
+        val regularRowHeight = if (landscapeLayout) landscapeKeyHeight else 50.dp
+        val utilityRowHeight = if (landscapeLayout) landscapeKeyHeight else 38.dp
+
+        Column(
+            modifier = (if (landscapeLayout) Modifier.fillMaxSize() else Modifier.fillMaxWidth())
+                .padding(bottom = bottomPadding),
+            verticalArrangement = Arrangement.spacedBy(KeyboardKeySpacing)
+        ) {
+            if (compact) {
+                KeyRow(compactNavigationKeys, 38.dp, onClick = ::emit, onHoldChanged = ::setHeld, active = emptySet())
+                KeyRow(
+                    compactShellKeys,
+                    38.dp,
+                    onClick = ::emit,
+                    onHoldChanged = ::setHeld,
+                    active = buildSet { if (ctrl) add("Ctrl"); if (alt) add("Alt") }
+                )
             } else {
-                KeyRow(qRow, 50.dp, onClick = ::emit, onHoldChanged = ::setHeld, active = emptySet(), caps = caps, shift = shift)
-                KeyRow(aRow, 50.dp, onClick = ::emit, onHoldChanged = ::setHeld, active = emptySet(), caps = caps, shift = shift)
-                KeyRow(zRow, 50.dp, onClick = ::emit, onHoldChanged = ::setHeld, active = if (shift) setOf("⇧") else emptySet(), caps = caps, shift = shift)
+                KeyRow(utility, utilityRowHeight, onClick = ::emit, onHoldChanged = ::setHeld, active = setOfNotNull(if (caps) "Caps" else null))
+                KeyRow(commonKeys, utilityRowHeight, onClick = ::emit, onHoldChanged = ::setHeld, active = emptySet(), caps = caps, shift = shift)
+                KeyRow(digits, regularRowHeight, onClick = ::emit, onHoldChanged = ::setHeld, active = emptySet(), caps = caps, shift = shift)
+                if (layer) {
+                    symbolRows.forEach { row -> KeyRow(row, regularRowHeight, onClick = ::emit, onHoldChanged = ::setHeld, active = emptySet(), caps = caps, shift = shift) }
+                } else {
+                    KeyRow(qRow, regularRowHeight, onClick = ::emit, onHoldChanged = ::setHeld, active = emptySet(), caps = caps, shift = shift)
+                    KeyRow(aRow, regularRowHeight, onClick = ::emit, onHoldChanged = ::setHeld, active = emptySet(), caps = caps, shift = shift)
+                    KeyRow(zRow, regularRowHeight, onClick = ::emit, onHoldChanged = ::setHeld, active = if (shift) setOf("⇧") else emptySet(), caps = caps, shift = shift)
+                }
+                KeyRow(
+                    modifiers,
+                    regularRowHeight,
+                    onClick = ::emit,
+                    onHoldChanged = ::setHeld,
+                    active = buildSet { if (ctrl) add("Ctrl"); if (alt) add("Alt") },
+                    caps = caps,
+                    shift = shift
+                )
             }
-            KeyRow(
-                modifiers,
-                50.dp,
-                onClick = ::emit,
-                onHoldChanged = ::setHeld,
-                active = buildSet { if (ctrl) add("Ctrl"); if (alt) add("Alt") },
-                caps = caps,
-                shift = shift
-            )
         }
     }
 }
