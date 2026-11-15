@@ -380,7 +380,7 @@ internal class ArchLinuxArmBackend : TerminalBackend {
             "TERM=xterm-256color",
             "LANG=${ArchGuestEnvironment.LANG}",
             "TZ=${ArchGuestEnvironment.timezoneId()}"
-        )
+        ) + ArchGuestNetworkDns.environment(context)
         File(context.filesDir, "home").mkdirs()
         val rustDiagnostic = File(context.filesDir, "home/.tritonterm-diagnose-arch-rust.sh")
         context.assets.open("diagnose-arch-rust.sh").use { source ->
