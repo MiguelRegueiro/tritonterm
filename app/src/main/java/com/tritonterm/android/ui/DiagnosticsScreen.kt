@@ -1,5 +1,6 @@
 package com.tritonterm.android.ui
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.clickable
@@ -58,8 +59,6 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.compose.ui.window.Dialog
-import androidx.compose.ui.window.DialogProperties
 import com.tritonterm.android.terminal.DiagnosticEvent
 import com.tritonterm.android.terminal.GuestCrashRecord
 import kotlinx.coroutines.delay
@@ -100,21 +99,18 @@ internal fun DiagnosticsScreen(
     }
     val visibleEventGroups = visibleEvents.groupBy { it.time.substringBefore(' ') }
 
-    Dialog(
-        onDismissRequest = onDismiss,
-        properties = DialogProperties(usePlatformDefaultWidth = false)
+    BackHandler(onBack = onDismiss)
+    Surface(
+        modifier = Modifier.fillMaxSize(),
+        color = Color.Black
     ) {
-        Surface(
-            modifier = Modifier.fillMaxSize(),
-            color = Color.Black
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .windowInsetsPadding(WindowInsets.safeDrawing)
+                .imePadding()
+                .padding(horizontal = 16.dp)
         ) {
-            Column(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .windowInsetsPadding(WindowInsets.safeDrawing)
-                    .imePadding()
-                    .padding(horizontal = 16.dp)
-            ) {
             Row(
                 modifier = Modifier.fillMaxWidth().height(48.dp),
                 verticalAlignment = Alignment.CenterVertically
@@ -268,7 +264,6 @@ internal fun DiagnosticsScreen(
                     }
                 }
 
-            }
             }
         }
     }
