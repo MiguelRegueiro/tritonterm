@@ -26,6 +26,7 @@ The Arch environment is stored in app-private data. App updates preserve it; uni
 - [Preinstalled developer environment](docs/arch-developer-environment.md)
 - [Arch userland and lifecycle](docs/arch-userland-and-lifecycle.md)
 - [Native PRoot runtime](docs/native-runtime.md)
+- [Terminal input and prompt latency investigation](docs/terminal-input-performance-investigation.md)
 - [Runtime diagnostics](docs/device-runtime-diagnostics.md)
 - [Changelog](CHANGELOG.md)
 

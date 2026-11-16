@@ -1,0 +1,281 @@
+--- a/src/proot/src/syscall/seccomp.c
++++ b/src/proot/src/syscall/seccomp.c
+@@ -94,7 +94,7 @@
+  * about the given @syscall made by a tracee, with the given @flag.
+  * This function returns -errno if an error occurred, otherwise 0.
+  */
+-static int add_trace_syscall(struct sock_fprog *program, word_t syscall, int flag)
++static int add_trace_syscall(struct sock_fprog *program, word_t syscall, int flag, bool passthrough)
+ {
+ 	int status;
+ 
+@@ -109,7 +109,7 @@
+ 		BPF_JUMP(BPF_JMP + BPF_JEQ + BPF_K, syscall, 0, 1),
+ 
+ 		/* Notify the tracer.  */
+-		BPF_STMT(BPF_RET + BPF_K, SECCOMP_RET_TRACE + flag)
++		BPF_STMT(BPF_RET + BPF_K, passthrough ? SECCOMP_RET_ALLOW : SECCOMP_RET_TRACE + flag)
+ 	};
+ 
+ 	DEBUG_FILTER("FILTER:     trace if syscall == %ld\n", syscall);
+@@ -127,13 +127,13 @@
+  * sanity check.  This function returns -errno if an error occurred,
+  * otherwise 0.
+  */
+-static int end_arch_section(struct sock_fprog *program, size_t nb_traced_syscalls)
++static int end_arch_section(struct sock_fprog *program, size_t nb_traced_syscalls, bool passthrough)
+ {
+ 	int status;
+ 
+ 	#define LENGTH_END_SECTION 1
+ 	struct sock_filter statements[LENGTH_END_SECTION] = {
+-		BPF_STMT(BPF_RET + BPF_K, SECCOMP_RET_ALLOW)
++		BPF_STMT(BPF_RET + BPF_K, passthrough ? SECCOMP_RET_TRACE + FILTER_SYSEXIT : SECCOMP_RET_ALLOW)
+ 	};
+ 
+ 	DEBUG_FILTER("FILTER:     allow\n");
+@@ -250,7 +250,7 @@
+  *
+  * This function returns -errno if an error occurred, otherwise 0.
+  */
+-static int set_seccomp_filters(const FilteredSysnum *sysnums)
++static int set_seccomp_filters(const FilteredSysnum *sysnums, bool passthrough)
+ {
+ 	SeccompArch seccomp_archs[] = SECCOMP_ARCHS;
+ 	size_t nb_archs = sizeof(seccomp_archs) / sizeof(SeccompArch);
+@@ -292,14 +292,14 @@
+ 					continue;
+ 
+ 				/* Filter: trace if handled syscall */
+-				status = add_trace_syscall(&program, syscall, sysnums[k].flags);
++				status = add_trace_syscall(&program, syscall, sysnums[k].flags, passthrough);
+ 				if (status < 0)
+ 					goto end;
+ 			}
+ 		}
+ 
+ 		/* Filter: allow untraced syscalls for this architecture */
+-		status = end_arch_section(&program, nb_traced_syscalls);
++		status = end_arch_section(&program, nb_traced_syscalls, passthrough);
+ 		if (status < 0)
+ 			goto end;
+ 	}
+@@ -504,11 +504,42 @@
+ 		}
+ 	}
+ 
+-	status = set_seccomp_filters(filtered_sysnums);
++	status = set_seccomp_filters(filtered_sysnums, false);
+ 	if (status < 0)
+ 		return status;
+ 
+ 	return 0;
++}
++
++int enable_syscall_passthrough(void)
++{
++	static const FilteredSysnum safe_sysnums[] = {
++		{ PR_read, 0 },
++		{ PR_write, 0 },
++		{ PR_readv, 0 },
++		{ PR_writev, 0 },
++		{ PR_pread64, 0 },
++		{ PR_pwrite64, 0 },
++		{ PR_close, 0 },
++		{ PR_lseek, 0 },
++		{ PR_mmap, 0 },
++		{ PR_mmap2, 0 },
++		{ PR_munmap, 0 },
++		{ PR_mprotect, 0 },
++		{ PR_mremap, 0 },
++		{ PR_madvise, 0 },
++		{ PR_sched_yield, 0 },
++		{ PR_nanosleep, 0 },
++		{ PR_clock_nanosleep, 0 },
++		{ PR_clock_gettime, 0 },
++		{ PR_gettimeofday, 0 },
++		{ PR_getrandom, 0 },
++#if defined(ARCH_ARM64)
++		{ PR_futex, 0 },
++#endif
++		FILTERED_SYSNUM_END,
++	};
++	return set_seccomp_filters(safe_sysnums, true);
+ }
+ 
+ #else
+@@ -521,4 +552,9 @@
+ 	return 0;
+ }
+ 
++int enable_syscall_passthrough(void)
++{
++	return -1;
++}
++
+ #endif /* defined(HAVE_SECCOMP_FILTER) */
+--- a/src/proot/src/syscall/seccomp.h
++++ b/src/proot/src/syscall/seccomp.h
+@@ -44,5 +44,6 @@
+ #define FILTER_SYSEXIT  0x1
+ 
+ extern int enable_syscall_filtering(const Tracee *tracee);
++extern int enable_syscall_passthrough(void);
+ 
+ #endif /* SECCOMP_H */
+--- a/src/proot/src/tracee/event.c
++++ b/src/proot/src/tracee/event.c
+@@ -239,9 +239,8 @@
+ 		 * does the same thing. */
+ 		kill(getpid(), SIGSTOP);
+ 
+-		/* Seccomp disabled: Android zygote seccomp filter conflicts
+-		 * with proot's BPF filter, causing SIGSYS on app processes. */
+-		(void) tracee;
++		if (getenv("PROOT_FAST_IO") != NULL && strcmp(getenv("PROOT_FAST_IO"), "1") == 0)
++			(void) enable_syscall_passthrough();
+ 
+ 		/* Now process is ptraced, so the current rootfs is already the
+ 		 * guest rootfs.  Note: Valgrind can't handle execve(2) on
+@@ -535,14 +534,15 @@
+ 	 * seccomp) is not cleared due to an event that would happen
+ 	 * before the exit stage, eg. PTRACE_EVENT_EXEC for the exit
+ 	 * stage of execve(2).  */
+-	sysexit_necessary = tracee->sysexit_pending
++	sysexit_necessary = !IS_IN_SYSENTER(tracee) || tracee->sysexit_pending
+ 				|| tracee->chain.syscalls != NULL
+ 				|| tracee->restore_original_regs_after_seccomp_event;
+ 	/* Don't overwrite restart_how if it is explicitly set
+ 	 * elsewhere, i.e in the ptrace emulation when single
+ 	 * stepping.  */
+ 	if (tracee->restart_how == 0) {
+-		tracee->restart_how = PTRACE_SYSCALL;
++		tracee->restart_how = tracee->seccomp == ENABLED && !sysexit_necessary
++			? PTRACE_CONT : PTRACE_SYSCALL;
+ 	}
+ 
+ 	/* Not a signal-stop by default.  */
+@@ -798,20 +798,23 @@
+ 			siginfo_t siginfo = {};
+ 			ptrace(PTRACE_GETSIGINFO, tracee->pid, NULL, &siginfo);
+ 			if (siginfo.si_code == SYS_SECCOMP) {
++				tracee->seccomp_already_handled_enter = false;
+ 				/* Signal cannot happen when we're inside syscall,
+ 				 * tracee would have to exit from syscall first.
+ 				 * Execute exit handler now if seccomp triggered sysexit skip.  */
+ 				if (!IS_IN_SYSENTER(tracee)) {
+ 					VERBOSE(tracee, 1, "Handling syscall exit from SIGSYS");
+ 					translate_syscall(tracee);
++					tracee->restore_sysarg1_after_sigsys = true;
+ 				}
+ 
+ 				if (tracee->skip_next_seccomp_signal || (word_t) siginfo.si_syscall == SYSCALL_AVOIDER) {
+ 					VERBOSE(tracee, 4, "suppressed SIGSYS after void syscall");
+ 					tracee->skip_next_seccomp_signal = false;
++					tracee->restore_sysarg1_after_sigsys = false;
+ 					signal = 0;
+ 				} else {
+-					signal = handle_seccomp_event(tracee);
++					signal = handle_seccomp_event(tracee, siginfo.si_syscall);
+ 				}
+ 			} else {
+ 				VERBOSE(tracee, 1, "non-seccomp SIGSYS");
+--- a/src/proot/src/tracee/tracee.h
++++ b/src/proot/src/tracee/tracee.h
+@@ -172,6 +172,7 @@
+ 	/* True if next SIGSYS caused by seccomp should be silently dropped
+ 	 * without affecting state of any registers.  */
+ 	bool skip_next_seccomp_signal;
++	bool restore_sysarg1_after_sigsys;
+ 
+ 	/* Context used to collect all the temporary dynamic memory
+ 	 * allocations.  */
+--- a/src/proot/src/tracee/seccomp.c
++++ b/src/proot/src/tracee/seccomp.c
+@@ -89,7 +89,7 @@
+ 		(void) truncate(path, 0);
+ }
+ 
+-int handle_seccomp_event(Tracee* tracee)
++int handle_seccomp_event(Tracee* tracee, int syscall)
+ {
+ 	int ret;
+ 
+@@ -106,18 +106,21 @@
+ 		VERBOSE(tracee, 1, "Couldn't fetch regs on seccomp SIGSYS");
+ 		return SIGSYS;
+ 	}
+-
+-	/* Save regs so they can be restored at end of replaced call.  */
++#if defined(ARCH_X86_64)
++	tracee->_regs[CURRENT].orig_rax = syscall;
++#elif defined(ARCH_X86)
++	tracee->_regs[CURRENT].orig_eax = syscall;
++#else
++	(void) syscall;
++#endif
++	if (tracee->restore_sysarg1_after_sigsys) {
++		tracee->restore_sysarg1_after_sigsys = false;
++		if (get_sysnum(tracee, ORIGINAL) == get_sysnum(tracee, CURRENT))
++			poke_reg(tracee, SYSARG_1, peek_reg(tracee, ORIGINAL, SYSARG_1));
++	}
++
+ 	save_current_regs(tracee, ORIGINAL_SECCOMP_REWRITE);
+-
+-	/* X86 uses orig_rax when selecting syscall,
+-	 * however at this point we are after syscall has been rejected
+-	 * and orig_rax was reset to -1.  */
+-#if defined(ARCH_X86_64)
+-	tracee->_regs[CURRENT].orig_rax = tracee->_regs[CURRENT].rax;
+-#elif defined(ARCH_X86)
+-	tracee->_regs[CURRENT].orig_eax = tracee->_regs[CURRENT].eax;
+-#endif
++	memcpy(&tracee->_regs[ORIGINAL], &tracee->_regs[CURRENT], sizeof(tracee->_regs[CURRENT]));
+ 
+ 	print_current_regs(tracee, 3, "seccomp SIGSYS");
+ 
+--- a/src/proot/src/tracee/seccomp.h
++++ b/src/proot/src/tracee/seccomp.h
+@@ -18,6 +18,6 @@
+ 
+ void restart_syscall_after_seccomp(Tracee* tracee);
+ void set_result_after_seccomp(Tracee *tracee, word_t result);
+-int handle_seccomp_event(Tracee* tracee);
++int handle_seccomp_event(Tracee* tracee, int syscall);
+ void trim_sigsys_log(void);
+ void fix_and_restart_enosys_syscall(Tracee* tracee);
+--- a/src/proot/src/ptrace/ptrace.c
++++ b/src/proot/src/ptrace/ptrace.c
+@@ -201,6 +201,10 @@
+ 		 * call.
+ 		 *
+ 		 * -- man 2 ptrace.  */
++		if (ptracee->seccomp == ENABLED) {
++			ptracee->seccomp = DISABLED;
++			ptracee->restart_how = PTRACE_SYSCALL;
++		}
+ 		kill(pid, SIGSTOP);
+ 
+ 		return 0;
+--- a/src/proot/src/extension/fake_id0/helper_functions.c
++++ b/src/proot/src/extension/fake_id0/helper_functions.c
+@@ -384,6 +384,11 @@
+ 	FILE *fp;
+ 	char parent[PATH_MAX];
+ 	char *cursor;
++	fp = fopen(path, "w");
++	if (fp != NULL)
++		goto write_record;
++	if (errno != ENOENT)
++		return -1;
+ 	get_dir_path(path, parent);
+ 	for (cursor = parent + 1; *cursor != '\0'; cursor++) {
+ 		if (*cursor == '/') {
+@@ -402,6 +407,7 @@
+ 		//Errno is set
+ 		return -1;
+ 
++write_record:
+ 	/** In syscalls that don't have the ability to create a file (chmod v open)
+ 	 *  for example, the umask isn't used in determining the permissions of the
+ 	 *  the file.

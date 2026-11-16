@@ -112,4 +112,6 @@ apply_patch_or_check_marker "$PROJECT_ROOT/scripts/patches/pr-cli-network-dns.pa
     'TRITONTERM_ANDROID_NETWORK_DNS_V1' 'src/pr-cli/src/shared.rs'
 apply_patch_or_check_marker "$PROJECT_ROOT/scripts/patches/tritonterm-arch-guest-mounts.patch" \
     'TRITONTERM_ANDROID_MOUNT_TABLE_FILTER_V1' 'src/pr-cli/src/shared.rs'
+apply_patch_or_check_marker "$PROJECT_ROOT/scripts/patches/proot-fast-io.patch" \
+    'enable_syscall_passthrough' 'src/proot/src/syscall/seccomp.c'
 printf 'TRITONTERM_PINNED_PROOT_PATCHES_READY %s\n' "$EXPECTED_PR_COMMIT"

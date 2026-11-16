@@ -2,6 +2,14 @@
 
 ## PRoot runtime
 
+For the current Enter-repeat, prompt-latency, and scrolling investigation, see
+the [terminal input and prompt latency handoff](terminal-input-performance-investigation.md).
+
+Interactive sessions enable conservative I/O syscall passthrough through
+`scripts/patches/proot-fast-io.patch`. Filesystem, ownership, and process
+translation retain their required stops; the Arch image and metadata format
+are preserved.
+
 The bundled executables are built from the pinned [`oonid/pr` source](../third_party/oonid-pr), not downloaded as release assets or copied from a temporary directory.
 
 - Upstream base commit: `7029b1fe8fa84d64339cabe38f9c5be2ea2ae7ac`

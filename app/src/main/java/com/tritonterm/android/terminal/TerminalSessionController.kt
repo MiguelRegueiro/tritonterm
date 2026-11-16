@@ -415,6 +415,7 @@ internal class ArchLinuxArmBackend : TerminalBackend {
             "TMPDIR=${cache.absolutePath}",
             "PROOT_TMP_DIR=${cache.absolutePath}",
             "PROOT_NO_SECCOMP=1",
+            "PROOT_FAST_IO=1",
             // The pinned Arch PRoot build uses this flag to read archive UID/GID
             // and mode records from the sibling metadata tree. Without it,
             // guest commands such as id and setuid sudo see Android inode data.
