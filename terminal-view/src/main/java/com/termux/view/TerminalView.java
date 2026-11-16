@@ -6,10 +6,13 @@ import android.content.ClipData;
 import android.content.ClipboardManager;
 import android.content.Context;
 import android.graphics.Canvas;
+import android.graphics.Color;
+import android.graphics.Paint;
 import android.graphics.Typeface;
 import android.os.Build;
 import android.os.Handler;
 import android.os.Looper;
+import android.os.SystemClock;
 import android.text.Editable;
 import android.text.InputType;
 import android.text.TextUtils;
@@ -28,7 +31,7 @@ import android.view.autofill.AutofillValue;
 import android.view.inputmethod.BaseInputConnection;
 import android.view.inputmethod.EditorInfo;
 import android.view.inputmethod.InputConnection;
-import android.widget.Scroller;
+import android.widget.OverScroller;
 
 import androidx.annotation.RequiresApi;
 
@@ -77,10 +80,31 @@ public final class TerminalView extends View {
     /** Keep track of the time when a touch event leading to sending mouse scroll events started. */
     private long mMouseStartDownTime = -1;
 
-    final Scroller mScroller;
+    final OverScroller mScroller;
 
     /** What was left in from scrolling movement. */
     float mScrollRemainder;
+
+    private final Paint mScrollIndicatorPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private final Handler mScrollIndicatorHandler = new Handler(Looper.getMainLooper());
+    private boolean mScrollIndicatorVisible;
+    private long mScrollIndicatorHideAt;
+    private static final long SCROLL_INDICATOR_HOLD_MS = 450;
+    private static final long SCROLL_INDICATOR_FADE_MS = 250;
+    private final Runnable mFadeScrollIndicator = new Runnable() {
+        @Override
+        public void run() {
+            if (!mScrollIndicatorVisible) return;
+            long now = SystemClock.uptimeMillis();
+            if (now >= mScrollIndicatorHideAt + SCROLL_INDICATOR_FADE_MS) {
+                mScrollIndicatorVisible = false;
+                invalidate();
+            } else {
+                invalidate();
+                mScrollIndicatorHandler.postDelayed(this, 16);
+            }
+        }
+    };
 
     /** If non-zero, this is the last unicode code point received if that was a combining character. */
     int mCombiningAccent;
@@ -133,6 +157,7 @@ public final class TerminalView extends View {
                     sendMouseEventCode(e, TerminalEmulator.MOUSE_LEFT_BUTTON_MOVED, true);
                 } else {
                     scrolledWithFinger = true;
+                    if (distanceY != 0f) showScrollIndicator();
                     distanceY += mScrollRemainder;
                     int deltaRows = (int) (distanceY / mRenderer.mFontLineSpacing);
                     mScrollRemainder = distanceY - deltaRows * mRenderer.mFontLineSpacing;
@@ -157,28 +182,41 @@ public final class TerminalView extends View {
 
                 final boolean mouseTrackingAtStartOfFling = mEmulator.isMouseTrackingActive();
                 float SCALE = 0.25f;
+                final float lineSpacing = Math.max(1f, mRenderer.mFontLineSpacing);
+                final int startY;
+                int minY;
+                int maxY;
                 if (mouseTrackingAtStartOfFling) {
-                    mScroller.fling(0, 0, 0, -(int) (velocityY * SCALE), 0, 0, -mEmulator.mRows / 2, mEmulator.mRows / 2);
+                    startY = 0;
+                    minY = Math.round(-mEmulator.mRows / 2f * lineSpacing);
+                    maxY = Math.round(mEmulator.mRows / 2f * lineSpacing);
                 } else {
-                    mScroller.fling(0, mTopRow, 0, -(int) (velocityY * SCALE), 0, 0, -mEmulator.getScreen().getActiveTranscriptRows(), 0);
+                    // GestureDetector and OverScroller both use pixel coordinates. Convert the
+                    // terminal's row viewport into pixels for the fling, then map each frame back
+                    // to rows. Scaling the velocity keeps terminal history from flying too far.
+                    startY = Math.round(mTopRow * lineSpacing);
+                    minY = Math.round(-mEmulator.getScreen().getActiveTranscriptRows() * lineSpacing);
+                    maxY = 0;
                 }
+                mScroller.fling(0, startY, 0, -(int) (velocityY * SCALE), 0, 0, minY, maxY);
 
-                post(new Runnable() {
-                    private int mLastY = 0;
+                postOnAnimation(new Runnable() {
+                    private int mLastRow = Math.round(startY / lineSpacing);
 
                     @Override
                     public void run() {
-                        if (mouseTrackingAtStartOfFling != mEmulator.isMouseTrackingActive()) {
+                        if (mEmulator == null || mouseTrackingAtStartOfFling != mEmulator.isMouseTrackingActive()) {
                             mScroller.abortAnimation();
                             return;
                         }
                         if (mScroller.isFinished()) return;
                         boolean more = mScroller.computeScrollOffset();
                         int newY = mScroller.getCurrY();
-                        int diff = mouseTrackingAtStartOfFling ? (newY - mLastY) : (newY - mTopRow);
+                        int newRow = Math.round(newY / lineSpacing);
+                        int diff = newRow - mLastRow;
                         doScroll(e2, diff);
-                        mLastY = newY;
-                        if (more) post(this);
+                        mLastRow = newRow;
+                        if (more) postOnAnimation(this);
                     }
                 });
 
@@ -187,6 +225,8 @@ public final class TerminalView extends View {
 
             @Override
             public boolean onDown(float x, float y) {
+                // A new drag should take control immediately instead of competing with a fling.
+                if (!mScroller.isFinished()) mScroller.forceFinished(true);
                 // Why is true not returned here?
                 // https://developer.android.com/training/gestures/detector.html#detect-a-subset-of-supported-gestures
                 // Although setting this to true still does not solve the following errors when long pressing in terminal view text area
@@ -212,7 +252,10 @@ public final class TerminalView extends View {
                 }
             }
         });
-        mScroller = new Scroller(context);
+        mScroller = new OverScroller(context);
+        // TerminalView draws its terminal content directly; Android's view scrollbar is not
+        // consistently rendered for this custom canvas, so use a transient canvas indicator.
+        setVerticalScrollBarEnabled(false);
         AccessibilityManager am = (AccessibilityManager) context.getSystemService(Context.ACCESSIBILITY_SERVICE);
         mAccessibilityEnabled = am.isEnabled();
     }
@@ -252,9 +295,6 @@ public final class TerminalView extends View {
         mCombiningAccent = 0;
 
         updateSize();
-
-        // Wait with enabling the scrollbar until we have a terminal to get scroll position from.
-        setVerticalScrollBarEnabled(true);
 
         return true;
     }
@@ -413,28 +453,30 @@ public final class TerminalView extends View {
         if (mTopRow < -rowsInHistory) mTopRow = -rowsInHistory;
 
         boolean skipScrolling = false;
-        if (isSelectingText()) {
-            // Do not scroll when selecting text.
-            int rowShift = mEmulator.getScrollCounter();
+        int rowShift = mEmulator.getScrollCounter();
+        // Keep the visible rows anchored while new output arrives. Only follow output when the
+        // user is already at the live bottom; redraws must not snap a scrollback view back down.
+        if (isSelectingText() || mTopRow != 0) {
             if (-mTopRow + rowShift > rowsInHistory) {
                 // .. unless we're hitting the end of history transcript, in which
                 // case we abort text selection and scroll to end.
-                stopTextSelectionMode();
+                if (isSelectingText()) {
+                    stopTextSelectionMode();
+                } else {
+                    mTopRow = -rowsInHistory;
+                    skipScrolling = true;
+                }
             } else {
                 skipScrolling = true;
-                mTopRow -= rowShift;
-                decrementYTextSelectionCursors(rowShift);
+                if (rowShift != 0) {
+                    mTopRow -= rowShift;
+                    if (isSelectingText()) decrementYTextSelectionCursors(rowShift);
+                }
             }
         }
 
         if (!skipScrolling && mTopRow != 0) {
             // Scroll down if not already there.
-            if (mTopRow < -3) {
-                // Awaken scroll bars only if scrolling a noticeable amount
-                // - we do not want visible scroll bars during normal typing
-                // of one row at a time.
-                awakenScrollBars();
-            }
             mTopRow = 0;
         }
 
@@ -540,8 +582,14 @@ public final class TerminalView extends View {
 
     /** Perform a scroll, either from dragging the screen or by scrolling a mouse wheel. */
     void doScroll(MotionEvent event, int rowsDown) {
+        if (rowsDown == 0 || mEmulator == null) return;
         boolean up = rowsDown < 0;
         int amount = Math.abs(rowsDown);
+        if (!mEmulator.isMouseTrackingActive() && !mEmulator.isAlternateBufferActive()) {
+            int historyRows = mEmulator.getScreen().getActiveTranscriptRows();
+            setTopRow(Math.min(0, Math.max(-historyRows, mTopRow + rowsDown)));
+            return;
+        }
         for (int i = 0; i < amount; i++) {
             if (mEmulator.isMouseTrackingActive()) {
                 sendMouseEventCode(event, up ? TerminalEmulator.MOUSE_WHEELUP_BUTTON : TerminalEmulator.MOUSE_WHEELDOWN_BUTTON, true);
@@ -549,9 +597,6 @@ public final class TerminalView extends View {
                 // Send up and down key events for scrolling, which is what some terminals do to make scroll work in
                 // e.g. less, which shifts to the alt screen without mouse handling.
                 handleKeyCode(up ? KeyEvent.KEYCODE_DPAD_UP : KeyEvent.KEYCODE_DPAD_DOWN, 0);
-            } else {
-                mTopRow = Math.min(0, Math.max(-(mEmulator.getScreen().getActiveTranscriptRows()), mTopRow + (up ? -1 : 1)));
-                if (!awakenScrollBars()) invalidate();
             }
         }
     }
@@ -963,7 +1008,47 @@ public final class TerminalView extends View {
 
             // render the text selection handles
             renderTextSelection();
+
+            renderScrollIndicator(canvas);
+
         }
+    }
+
+    private void showScrollIndicator() {
+        if (mEmulator == null || mEmulator.getScreen().getActiveTranscriptRows() <= 0) return;
+        mScrollIndicatorVisible = true;
+        mScrollIndicatorHideAt = SystemClock.uptimeMillis() + SCROLL_INDICATOR_HOLD_MS;
+        mScrollIndicatorHandler.removeCallbacks(mFadeScrollIndicator);
+        mScrollIndicatorHandler.postDelayed(mFadeScrollIndicator, SCROLL_INDICATOR_HOLD_MS);
+        invalidate();
+    }
+
+    /** Draw a temporary right-edge thumb while the user scrolls, then fade it away. */
+    private void renderScrollIndicator(Canvas canvas) {
+        if (!mScrollIndicatorVisible || mEmulator == null || getWidth() <= 0 || getHeight() <= 0) return;
+
+        int historyRows = mEmulator.getScreen().getActiveTranscriptRows();
+        if (historyRows <= 0) return;
+
+        float density = getResources().getDisplayMetrics().density;
+        float width = 3f * density;
+        float inset = 2f * density;
+        float trackHeight = getHeight() - inset * 2f;
+        if (trackHeight <= 0f) return;
+
+        int visibleRows = Math.max(1, mEmulator.mRows);
+        int totalRows = historyRows + visibleRows;
+        float thumbHeight = Math.min(trackHeight,
+            Math.max(24f * density, trackHeight * visibleRows / (float) totalRows));
+        float offsetFromTop = Math.max(0, Math.min(historyRows, historyRows + mTopRow));
+        float thumbTop = inset + (trackHeight - thumbHeight) * offsetFromTop / Math.max(1, historyRows);
+        float right = getWidth() - inset;
+        long now = SystemClock.uptimeMillis();
+        float alpha = now <= mScrollIndicatorHideAt ? 1f :
+            Math.max(0f, 1f - (now - mScrollIndicatorHideAt) / (float) SCROLL_INDICATOR_FADE_MS);
+        mScrollIndicatorPaint.setColor(Color.argb(Math.round(210f * alpha), 192, 198, 226));
+        canvas.drawRoundRect(right - width, thumbTop, right, thumbTop + thumbHeight,
+            width / 2f, width / 2f, mScrollIndicatorPaint);
     }
 
     public TerminalSession getCurrentSession() {
@@ -998,7 +1083,14 @@ public final class TerminalView extends View {
     }
 
     public void setTopRow(int mTopRow) {
-        this.mTopRow = mTopRow;
+        if (mEmulator == null) {
+            this.mTopRow = 0;
+            return;
+        }
+        int historyRows = mEmulator.getScreen().getActiveTranscriptRows();
+        this.mTopRow = Math.max(-historyRows, Math.min(0, mTopRow));
+        showScrollIndicator();
+        invalidate();
     }
 
 
