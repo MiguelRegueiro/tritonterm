@@ -114,4 +114,8 @@ apply_patch_or_check_marker "$PROJECT_ROOT/scripts/patches/tritonterm-arch-guest
     'TRITONTERM_ANDROID_MOUNT_TABLE_FILTER_V1' 'src/pr-cli/src/shared.rs'
 apply_patch_or_check_marker "$PROJECT_ROOT/scripts/patches/proot-fast-io.patch" \
     'enable_syscall_passthrough' 'src/proot/src/syscall/seccomp.c'
+apply_patch_or_check_marker "$PROJECT_ROOT/scripts/patches/proot-bound-owner.patch" \
+    'if(status == 0 && get_meta_path(tracee, path, meta_path) == 0)' 'src/proot/src/extension/fake_id0/stat.c'
+apply_patch_or_check_marker "$PROJECT_ROOT/scripts/patches/proot-metadata-reads.patch" \
+    'bool reuse_translated_path' 'src/proot/src/tracee/statx.c'
 printf 'TRITONTERM_PINNED_PROOT_PATCHES_READY %s\n' "$EXPECTED_PR_COMMIT"

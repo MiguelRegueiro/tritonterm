@@ -4,6 +4,56 @@ This note records the current evidence about delayed repeated Enter presses and
 choppy interaction in TritonTerm. It is a handoff for future investigation; no
 performance fix has been established yet.
 
+## Latest-build follow-up
+
+The user confirmed that the delayed Enter and Cargo behavior persists with the
+latest performance APK. An unchanged `cargo run` reported approximately 3–10
+seconds before `Running`. The later prompt durations include time spent in the
+interactive program and cannot be used as launch-time measurements. Plain-I/O
+microbenchmark improvements have not established a fix for this workload.
+
+Yazi also exposed a separate ownership defect: its cache under the host-bound
+`/tmp` appeared owned by the Android app UID instead of guest UID 1000. USERLAND
+`stat` returned early for bound paths, bypassing the existing guest ownership
+mapping. The fix keeps metadata-sidecar handling confined to rootfs paths while
+applying the normal UID/GID fallback to bindings. The regression test uses a
+guest UID different from the host UID and checks stat, fstat, fstatat and statx,
+including relative and descriptor-based queries. Permissions and file contents
+remain unchanged. The old runtime fails this check and the updated runtime
+passes with both tracing modes.
+
+The visible `Gi=...` fragments are unsupported Kitty graphics APC payloads
+escaping into screen text. The emulator now discards APC strings through their
+terminator without buffering their payload. Tests cover chunk boundaries,
+cancellation, reset and large payloads. This is protocol handling, not a claim
+of graphics rendering support or a fix for prompt latency.
+
+The remaining latency needs matching measurements of an offline no-change
+Cargo build and direct executable startup inside the same installed guest.
+These ownership/protocol fixes preserve the rootfs image and installed files.
+
+The user then measured `cargo build --offline` at 7.22 seconds (Cargo reported
+7.08 seconds), with about 0.52 seconds user CPU and 0.99 seconds system CPU.
+`./target/debug/elio --version` completed in 69.55 milliseconds. This locates
+the demonstrated delay before executable launch, in Cargo's no-change build
+work. These CPU figures do not include the parent PRoot tracer, and do not
+alone distinguish tracing, storage and scheduling waits. They also do not
+measure interactive TUI startup or explain Fish's Enter backlog.
+
+Two bounded metadata optimizations have passed host tests without persistent caches:
+successful native statx exits reuse the host path already translated at entry;
+failed and synthesized syscall exits retain the original translation path.
+Ownership-record reads use a small supplied stdio buffer and stop after parsing
+the three fields, avoiding unnecessary default-buffer work and trailing EOF
+scanning. Guest identity, modes and metadata layout remain unchanged.
+The targeted statx tests exercise native success, native failure, SIGSYS,
+synthesized exits, fd paths and errors against the actual handler. They cover
+97.62% of its executable lines. The broader suite checks path/symlink/bind
+semantics, permissions, Rust spawning and debugger attachment. Metadata timing
+samples vary substantially with host load and are not a measured phone Cargo
+speedup. The next phone check is a syscall-count summary for the same offline
+no-change build; tracing timings must not be compared to the untraced run.
+
 ## Symptom and device tests
 
 - Holding Enter in the normal Fish + Starship session can leave several prompts

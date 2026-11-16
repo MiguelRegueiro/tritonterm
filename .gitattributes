@@ -1,1 +1,1 @@
-scripts/patches/*.patch whitespace=-blank-at-eol
+scripts/patches/*.patch whitespace=-blank-at-eol,-space-before-tab

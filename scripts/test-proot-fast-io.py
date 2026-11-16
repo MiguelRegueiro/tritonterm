@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import pty
+import re
 import select
 import shutil
 import statistics
@@ -54,6 +55,10 @@ def build(output):
         "cc", "-O0", "--coverage", "-ffunction-sections", "-fdata-sections", "-include", compat,
         f"-I{native}", f"-I{talloc}", PROJECT / "tests/proot_fast_io_unit.c", native / "syscall/sysnum.c",
         "-Wl,--gc-sections", f"-L{library}", "-ltalloc", "-o", output / "unit"]))
+    (output / "statx-unit-build.log").write_text(run([
+        "cc", "-std=gnu11", "-O0", "-Wall", "-Wextra", "-Werror", "--coverage",
+        "-ffunction-sections", "-fdata-sections", f"-I{native}", f"-I{talloc}",
+        PROJECT / "tests/proot_statx_path_unit.c", "-Wl,--gc-sections", "-o", output / "statx-unit"]))
     run(["cc", "-std=c11", "-O2", "-Wall", "-Wextra", "-Werror", "-pthread",
          PROJECT / "tests/proot_fast_io_workload.c", "-o", output / "workload"])
     return native / "proot"
@@ -99,10 +104,10 @@ def prompt_benchmark(command, environment, shell):
         wait_for(31)
         return round((time.monotonic() - start) * 1000, 3)
     finally:
-        process.terminate()
         try:
+            os.write(master, b"exit\n")
             process.wait(timeout=5)
-        except subprocess.TimeoutExpired:
+        except (OSError, subprocess.TimeoutExpired):
             process.kill()
             process.wait(timeout=5)
         os.close(master)
@@ -112,11 +117,13 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--skip-build", action="store_true")
+    parser.add_argument("--compare-proot", type=Path, help="Compare metadata timings against a previous host runtime")
     options = parser.parse_args()
     output = options.output.resolve()
     output.mkdir(parents=True, exist_ok=True)
     proot = output / "src/proot" if options.skip_build else build(output)
     print(run([output / "unit"]), end="", flush=True)
+    print(run([output / "statx-unit"]), end="", flush=True)
     root = output / "rootfs"
     root.mkdir(exist_ok=True)
     for name in ("tmp", "work", "usr", "bin", "lib", "lib64", "etc", "proc", "dev"):
@@ -125,7 +132,11 @@ def main():
     for name in ("usr", "bin", "lib", "lib64", "etc", "proc", "dev"):
         if Path("/" + name).exists():
             command += ["-b", "/" + name]
-    command += ["-b", f"{output}:/work"]
+    command += ["-b", f"{output}:/work", "-b", str(output)]
+    bound_cache = output / "bound-cache"
+    bound_cache.mkdir(exist_ok=True)
+    bound_owner = bound_cache.stat()
+    command += ["-b", f"{bound_cache}:/bound-cache"]
     toolchain = Path(run(["rustc", "--print", "sysroot"]).strip())
     command += ["-b", f"{toolchain}:/toolchain"]
     crate = output / "rust-smoke"
@@ -138,6 +149,13 @@ def main():
                            HOME="/work", PS1="PERFPROMPT>", LANG="C.UTF-8",
                            RUSTC="/toolchain/bin/rustc", CARGO_HOME="/work/cargo-home",
                            RUSTUP_HOME="/work/rustup-home", PATH="/usr/bin:/bin")
+        bound_command = command.copy()
+        bound_command[bound_command.index("-i") + 1] = f"{os.getuid() + 10000}:{os.getgid() + 10000}"
+        log = run(bound_command + ["/work/workload", "--bound-cache", "/bound-cache"],
+                  env=environment, timeout=60)
+        assert bound_cache.stat().st_uid == bound_owner.st_uid
+        assert bound_cache.stat().st_gid == bound_owner.st_gid
+        print(f"fast={fast}: " + log.strip(), flush=True)
         for trap in (False, True):
             arguments = command + ["/work/workload"] + (["--trap-guest"] if trap else [])
             label = f"fast={fast} trap={trap}"
@@ -164,12 +182,27 @@ def main():
             log = run(command + ["/work/workload", "--bench"], env=environment, timeout=60)
             times.append(float(log.split("elapsed_ms=")[1].strip()))
         results[f"fast{fast}_io_ms"] = times
+        metadata = run(command + ["/work/workload", "--metadata-bench"], env=environment, timeout=60)
+        match = re.search(r"BENCH metadata iterations=(\d+) statx_ms=([\d.]+) stat_ms=([\d.]+)", metadata)
+        assert match, metadata
+        results[f"fast{fast}_metadata_ms"] = {"statx": float(match[2]), "stat": float(match[3])}
         for shell in ("bash", "fish"):
             if shutil.which(shell):
                 results[f"fast{fast}_{shell}_30_enters_ms"] = [
                     prompt_benchmark(command, environment, shell) for _ in range(3)]
     results["io_speedup"] = round(statistics.median(results["fast0_io_ms"]) /
                                   statistics.median(results["fast1_io_ms"]), 2)
+    if options.compare_proot:
+        comparison = {"previous": [], "updated": []}
+        for _ in range(3):
+            for label, binary in (("previous", options.compare_proot.resolve()), ("updated", proot)):
+                benchmark = command.copy()
+                benchmark[0] = str(binary)
+                log = run(benchmark + ["/work/workload", "--metadata-bench"], env=environment, timeout=60)
+                match = re.search(r"BENCH metadata iterations=(\d+) statx_ms=([\d.]+) stat_ms=([\d.]+)", log)
+                assert match, log
+                comparison[label].append({"statx": float(match[2]), "stat": float(match[3])})
+        results["metadata_comparison_ms"] = comparison
     (output / "results.json").write_text(json.dumps(results, indent=2) + "\n")
     print(json.dumps(results, indent=2), flush=True)
 

@@ -125,6 +125,18 @@ static void test_metadata(void)
     assert(read_meta_file(path, &mode, &uid, &gid, &config) == 0);
     assert(mode == 04750 && uid == 0 && gid == 0);
     assert(metadata_mkdir_calls == 0);
+    FILE *record = fopen(path, "w");
+    assert(record != NULL);
+    assert(fputs("  2750\t1234\n5678\n\n\t", record) >= 0);
+    assert(fclose(record) == 0);
+    assert(read_meta_file(path, &mode, &uid, &gid, &config) == 0);
+    assert(mode == 02750 && uid == 1234 && gid == 5678);
+    record = fopen(path, "w");
+    assert(record != NULL);
+    assert(fputs("640\n321\n654", record) >= 0);
+    assert(fclose(record) == 0);
+    assert(read_meta_file(path, &mode, &uid, &gid, &config) == 0);
+    assert(mode == 0640 && uid == 321 && gid == 654);
     assert(unlink(path) == 0);
     assert(read_meta_file(path, &mode, &uid, &gid, &config) == 0);
     assert(mode == 0755 && uid == 1000 && gid == 1000);

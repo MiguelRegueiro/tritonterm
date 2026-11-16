@@ -1,0 +1,21 @@
+--- a/src/proot/src/extension/fake_id0/stat.c
++++ b/src/proot/src/extension/fake_id0/stat.c
+@@ -99,8 +99,6 @@
+ 
+ 	if(status < 0) 
+ 		return status;
+-	if(status == 1) 
+-		return 0;
+ 
+ 	/* Get the address of the 'stat' structure.  */
+ 	if (sysnum == PR_fstatat64 || sysnum == PR_newfstatat)
+@@ -112,8 +110,7 @@
+ 	 *  relevant data in the stat structure.
+ 	 */
+ 	
+-	status = get_meta_path(tracee, path, meta_path);
+-	if(status == 0) {
++	if(status == 0 && get_meta_path(tracee, path, meta_path) == 0) {
+ 		status = path_exists(meta_path);
+ 		if(status == 0) {
+ 			read_meta_file(meta_path, &mode, &uid, &gid, config);

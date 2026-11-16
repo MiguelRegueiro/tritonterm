@@ -1,3 +1,3 @@
 65fd1cbbd07d525e1a362845cbd3ce2080d904db32d54ff487e1748c34808891  app/src/main/jniLibs/arm64-v8a/libpr-cli.so
 e427c4fac91d18a197e6624e5907b408b1868f86de9022f06e8f39448b991fe1  app/src/main/jniLibs/arm64-v8a/libproot-loader.so
-2e2d5a18b2e0b40de0fd5e4a3ff350dc3867861b199a7be9313607ca59d04bcb  app/src/main/jniLibs/arm64-v8a/libproot.so
+cdef072035fffa7668973df804196d9e5d1d8c909497294bd5a21ce2e76a999f  app/src/main/jniLibs/arm64-v8a/libproot.so

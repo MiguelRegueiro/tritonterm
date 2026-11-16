@@ -83,6 +83,8 @@ public final class TerminalEmulator {
     private static final int ESC_CSI_SINGLE_QUOTE = 18;
     /** Escape processing: CSI ! */
     private static final int ESC_CSI_EXCLAMATION = 19;
+    private static final int ESC_APC = 20;
+    private static final int ESC_APC_ESC = 21;
 
     /** The number of parameter arguments. This name comes from the ANSI standard for terminal escape codes. */
     private static final int MAX_ESCAPE_PARAMETERS = 16;
@@ -572,6 +574,14 @@ public final class TerminalEmulator {
     }
 
     public void processCodePoint(int b) {
+        if (mEscapeState == ESC_APC || mEscapeState == ESC_APC_ESC) {
+            if (b == 24 || b == 26 || (mEscapeState == ESC_APC_ESC && b == '\\')) {
+                finishSequence();
+            } else {
+                mEscapeState = b == 27 ? ESC_APC_ESC : ESC_APC;
+            }
+            return;
+        }
         switch (b) {
             case 0: // Null character (NUL, ^@). Do nothing.
                 break;
@@ -1423,6 +1433,9 @@ public final class TerminalEmulator {
             case 'P': // Device control string
                 mOSCOrDeviceControlArgs.setLength(0);
                 continueSequence(ESC_P);
+                break;
+            case '_':
+                continueSequence(ESC_APC);
                 break;
             case '[':
                 continueSequence(ESC_CSI);

@@ -128,6 +128,45 @@ static void test_processes(void)
     puts("PASS fork_exec_wait_signals");
 }
 
+static void test_statx_variants(void)
+{
+#ifdef SYS_statx
+    int directory = open(".", O_RDONLY | O_DIRECTORY);
+    int file = open("payload", O_RDONLY);
+    CHECK(directory >= 0 && file >= 0);
+    struct statx expected, info;
+    CHECK(syscall(SYS_statx, directory, "payload", 0, STATX_BASIC_STATS, &expected) == 0);
+    CHECK((expected.stx_mode & S_IFMT) == S_IFREG);
+    CHECK((expected.stx_mode & 0777) == 0600 && expected.stx_size == 4096);
+    CHECK(syscall(SYS_statx, directory, "symlink", 0, STATX_BASIC_STATS, &info) == 0);
+    CHECK(info.stx_ino == expected.stx_ino && info.stx_size == expected.stx_size);
+    CHECK(info.stx_mode == expected.stx_mode);
+    CHECK(info.stx_uid == expected.stx_uid && info.stx_gid == expected.stx_gid);
+    CHECK(syscall(SYS_statx, directory, "symlink", AT_SYMLINK_NOFOLLOW,
+                  STATX_BASIC_STATS, &info) == 0);
+    CHECK((info.stx_mode & S_IFMT) == S_IFLNK);
+    CHECK(syscall(SYS_statx, file, "", AT_EMPTY_PATH, STATX_BASIC_STATS, &info) == 0);
+    CHECK(info.stx_ino == expected.stx_ino && info.stx_size == expected.stx_size);
+    CHECK(info.stx_mode == expected.stx_mode);
+    CHECK(info.stx_uid == expected.stx_uid && info.stx_gid == expected.stx_gid);
+    char path[PATH_MAX];
+    CHECK(getcwd(path, sizeof(path)) != NULL);
+    size_t length = strlen(path);
+    CHECK(length + sizeof("/symlink") < sizeof(path));
+    memcpy(path + length, "/symlink", sizeof("/symlink"));
+    CHECK(syscall(SYS_statx, AT_FDCWD, path, 0, STATX_BASIC_STATS, &info) == 0);
+    CHECK(info.stx_ino == expected.stx_ino && info.stx_mode == expected.stx_mode);
+    CHECK(syscall(SYS_statx, AT_FDCWD, path, AT_SYMLINK_NOFOLLOW,
+                  STATX_BASIC_STATS, &info) == 0);
+    CHECK((info.stx_mode & S_IFMT) == S_IFLNK);
+    errno = 0;
+    CHECK(syscall(SYS_statx, directory, "missing", 0, STATX_BASIC_STATS, &info) == -1);
+    CHECK(errno == ENOENT);
+    CHECK(close(file) == 0 && close(directory) == 0);
+    puts("PASS statx_relative_symlink_empty_path");
+#endif
+}
+
 static void test_files(void)
 {
     char initial[PATH_MAX];
@@ -176,6 +215,7 @@ static void test_files(void)
     CHECK((extended.stx_mode & 0777) == 0600);
 #endif
     CHECK(symlink("payload", "symlink") == 0);
+    test_statx_variants();
     ssize_t count = readlink("symlink", buffer, sizeof(buffer));
     CHECK(count == 7 && memcmp(buffer, "payload", 7) == 0);
     CHECK(rename("payload", "renamed") == 0);
@@ -273,6 +313,72 @@ static int benchmark(void)
     return 0;
 }
 
+static double elapsed_ms(const struct timespec *start, const struct timespec *end)
+{
+    return (double) (end->tv_sec - start->tv_sec) * 1000.0 +
+           (double) (end->tv_nsec - start->tv_nsec) / 1000000.0;
+}
+
+static int metadata_benchmark(unsigned iterations)
+{
+    char directory[] = "/tmp/tritonterm-metadata-bench.XXXXXX";
+    CHECK(mkdtemp(directory) != NULL);
+    char path[PATH_MAX];
+    CHECK(strlen(directory) + sizeof("/a/b/c/d/e/file") < sizeof(path));
+    strcpy(path, directory);
+    for (unsigned i = 0; i < 5; i++) {
+        size_t length = strlen(path);
+        path[length] = '/';
+        path[length + 1] = (char) ('a' + i);
+        path[length + 2] = '\0';
+        CHECK(mkdir(path, 0700) == 0);
+    }
+    strcat(path, "/file");
+    int fd = open(path, O_CREAT | O_EXCL | O_WRONLY, 0600);
+    CHECK(fd >= 0);
+    const char payload[] = "metadata benchmark";
+    CHECK(write(fd, payload, sizeof(payload)) == (ssize_t) sizeof(payload));
+    CHECK(close(fd) == 0);
+    CHECK(chmod(path, 0640) == 0);
+    uid_t uid = getuid();
+    gid_t gid = getgid();
+    struct timespec start, end;
+    double statx_ms = 0.0;
+#ifdef SYS_statx
+    struct statx extended;
+    CHECK(clock_gettime(CLOCK_MONOTONIC, &start) == 0);
+    for (unsigned i = 0; i < iterations; i++) {
+        CHECK(syscall(SYS_statx, AT_FDCWD, path, 0, STATX_BASIC_STATS, &extended) == 0);
+        CHECK(extended.stx_size == sizeof(payload));
+        CHECK((extended.stx_mode & 07777) == 0640);
+        CHECK(extended.stx_uid == uid && extended.stx_gid == gid);
+    }
+    CHECK(clock_gettime(CLOCK_MONOTONIC, &end) == 0);
+    statx_ms = elapsed_ms(&start, &end);
+#endif
+    struct stat info;
+    CHECK(clock_gettime(CLOCK_MONOTONIC, &start) == 0);
+    for (unsigned i = 0; i < iterations; i++) {
+        CHECK(stat(path, &info) == 0);
+        CHECK(info.st_size == (off_t) sizeof(payload));
+        CHECK((info.st_mode & 07777) == 0640);
+        CHECK(info.st_uid == uid && info.st_gid == gid);
+    }
+    CHECK(clock_gettime(CLOCK_MONOTONIC, &end) == 0);
+    double stat_ms = elapsed_ms(&start, &end);
+    CHECK(unlink(path) == 0);
+    *strrchr(path, '/') = '\0';
+    for (unsigned i = 0; i < 5; i++) {
+        CHECK(rmdir(path) == 0);
+        *strrchr(path, '/') = '\0';
+    }
+    CHECK(strcmp(path, directory) == 0);
+    CHECK(rmdir(directory) == 0);
+    printf("BENCH metadata iterations=%u statx_ms=%.3f stat_ms=%.3f\n",
+           iterations, statx_ms, stat_ms);
+    return 0;
+}
+
 static int test_ptrace(int attach)
 {
     int ready[2], gate[2];
@@ -332,16 +438,113 @@ static int test_ptrace(int attach)
     return 0;
 }
 
+static void check_cache_owner(const struct stat *info, mode_t mode)
+{
+    CHECK(info->st_uid == getuid());
+    CHECK(info->st_gid == getgid());
+    CHECK((info->st_mode & 07777) == mode);
+}
+
+static void check_cache_metadata(const char *path, int parent, const char *name,
+                                 int fd, mode_t mode)
+{
+    struct stat info;
+    CHECK(stat(path, &info) == 0);
+    check_cache_owner(&info, mode);
+    CHECK(lstat(path, &info) == 0);
+    check_cache_owner(&info, mode);
+    CHECK(fstat(fd, &info) == 0);
+    check_cache_owner(&info, mode);
+    CHECK(fstatat(parent, name, &info, 0) == 0);
+    check_cache_owner(&info, mode);
+#ifdef SYS_newfstatat
+    CHECK(syscall(SYS_newfstatat, AT_FDCWD, path, &info, 0) == 0);
+    check_cache_owner(&info, mode);
+    CHECK(syscall(SYS_newfstatat, parent, name, &info, 0) == 0);
+    check_cache_owner(&info, mode);
+#endif
+#ifdef SYS_statx
+    struct statx extended;
+    CHECK(syscall(SYS_statx, AT_FDCWD, path, 0, STATX_BASIC_STATS, &extended) == 0);
+    CHECK(extended.stx_uid == getuid() && extended.stx_gid == getgid());
+    CHECK((extended.stx_mode & 07777) == mode);
+    CHECK(syscall(SYS_statx, parent, name, 0, STATX_BASIC_STATS, &extended) == 0);
+    CHECK(extended.stx_uid == getuid() && extended.stx_gid == getgid());
+    CHECK((extended.stx_mode & 07777) == mode);
+    CHECK(syscall(SYS_statx, fd, "", AT_EMPTY_PATH, STATX_BASIC_STATS, &extended) == 0);
+    CHECK(extended.stx_uid == getuid() && extended.stx_gid == getgid());
+    CHECK((extended.stx_mode & 07777) == mode);
+#endif
+}
+
+static int test_bound_cache(const char *directory)
+{
+    CHECK(directory[0] == '/');
+    int parent = open(directory, O_RDONLY | O_DIRECTORY);
+    CHECK(parent >= 0);
+    struct stat before, after;
+    CHECK(stat(directory, &before) == 0);
+    CHECK(before.st_uid == getuid() && before.st_gid == getgid());
+    CHECK(fstat(parent, &after) == 0);
+    CHECK(after.st_uid == getuid() && after.st_gid == getgid());
+    CHECK(after.st_mode == before.st_mode);
+
+    char cache[PATH_MAX];
+    int length = snprintf(cache, sizeof(cache), "%s/yazi-%u.XXXXXX", directory, (unsigned) getuid());
+    CHECK(length > 0 && (size_t) length < sizeof(cache));
+    CHECK(mkdtemp(cache) != NULL);
+    const char *name = strrchr(cache, '/') + 1;
+    int cache_fd = open(cache, O_RDONLY | O_DIRECTORY);
+    CHECK(cache_fd >= 0);
+    check_cache_metadata(cache, parent, name, cache_fd, 0700);
+
+    char payload_path[PATH_MAX];
+    length = snprintf(payload_path, sizeof(payload_path), "%s/payload", cache);
+    CHECK(length > 0 && (size_t) length < sizeof(payload_path));
+    int payload = openat(cache_fd, "payload", O_CREAT | O_EXCL | O_RDWR, 0600);
+    CHECK(payload >= 0);
+    const char contents[] = "cache payload unchanged";
+    CHECK(write(payload, contents, sizeof(contents)) == (ssize_t) sizeof(contents));
+    check_cache_metadata(payload_path, cache_fd, "payload", payload, 0600);
+    char bytes[sizeof(contents)];
+    CHECK(pread(payload, bytes, sizeof(bytes), 0) == (ssize_t) sizeof(bytes));
+    CHECK(memcmp(bytes, contents, sizeof(bytes)) == 0);
+    CHECK(close(payload) == 0);
+    CHECK(unlinkat(cache_fd, "payload", 0) == 0);
+    CHECK(close(cache_fd) == 0);
+    CHECK(rmdir(cache) == 0);
+    CHECK(fstat(parent, &after) == 0);
+    CHECK(after.st_uid == before.st_uid && after.st_gid == before.st_gid);
+    CHECK(after.st_mode == before.st_mode);
+    CHECK(close(parent) == 0);
+    printf("PASS bound_cache_ownership uid=%u gid=%u directory_mode=0700 payload_mode=0600\n",
+           (unsigned) getuid(), (unsigned) getgid());
+    return 0;
+}
+
 int main(int argc, char **argv)
 {
     if (argc == 2 && strcmp(argv[1], "--child") == 0)
         return 23;
     if (argc == 2 && strcmp(argv[1], "--bench") == 0)
         return benchmark();
+    if ((argc == 2 || argc == 3) && strcmp(argv[1], "--metadata-bench") == 0) {
+        unsigned long iterations = 10000;
+        if (argc == 3) {
+            char *end;
+            errno = 0;
+            iterations = strtoul(argv[2], &end, 10);
+            CHECK(errno == 0 && end != argv[2] && *end == '\0');
+        }
+        CHECK(iterations > 0 && iterations <= 100000);
+        return metadata_benchmark((unsigned) iterations);
+    }
     if (argc == 2 && strcmp(argv[1], "--ptrace-attach") == 0)
         return test_ptrace(1);
     if (argc == 2 && strcmp(argv[1], "--ptrace-traceme") == 0)
         return test_ptrace(0);
+    if (argc == 3 && strcmp(argv[1], "--bound-cache") == 0)
+        return test_bound_cache(argv[2]);
     if (argc >= 3 && strcmp(argv[1], "--trap-launch") == 0) {
         install_traps();
         execvp(argv[2], argv + 2);
