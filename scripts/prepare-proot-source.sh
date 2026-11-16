@@ -118,4 +118,8 @@ apply_patch_or_check_marker "$PROJECT_ROOT/scripts/patches/proot-bound-owner.pat
     'if(status == 0 && get_meta_path(tracee, path, meta_path) == 0)' 'src/proot/src/extension/fake_id0/stat.c'
 apply_patch_or_check_marker "$PROJECT_ROOT/scripts/patches/proot-metadata-reads.patch" \
     'bool reuse_translated_path' 'src/proot/src/tracee/statx.c'
+apply_patch_or_check_marker "$PROJECT_ROOT/scripts/patches/proot-fstat-buffer.patch" \
+    'static int handle_fstat_readlink_exit' 'src/proot/src/extension/fake_id0/fake_id0.c'
+apply_patch_or_check_marker "$PROJECT_ROOT/scripts/patches/proot-statx-missing.patch" \
+    'bool native_exit' 'src/proot/src/tracee/statx.c'
 printf 'TRITONTERM_PINNED_PROOT_PATCHES_READY %s\n' "$EXPECTED_PR_COMMIT"

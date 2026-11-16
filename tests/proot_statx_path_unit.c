@@ -211,6 +211,39 @@ static void test_fallback_paths(void)
     assert(handle_statx_syscall(&tracee, false) == 0);
     assert(translations == 1 && !observed_deref);
     assert((output.stx_mode & S_IFMT) == S_IFLNK);
+
+    const int fallback_errors[] = {-EACCES, -EPERM};
+    for (unsigned i = 0; i < sizeof(fallback_errors) / sizeof(fallback_errors[0]); i++) {
+        tracee = reset_case();
+        registers[CURRENT][SYSARG_RESULT] = (word_t) fallback_errors[i];
+        assert(handle_statx_syscall(&tracee, false) == 0);
+        assert(translations == 1 && writes == 1 && output.stx_size == 3);
+    }
+}
+
+static void test_native_missing_paths(void)
+{
+    const int errors[] = {-ENOENT, -ENOTDIR};
+    for (unsigned i = 0; i < sizeof(errors) / sizeof(errors[0]); i++) {
+        Tracee tracee = reset_case();
+        registers[CURRENT][SYSARG_RESULT] = (word_t) errors[i];
+        string_error = -EFAULT;
+        translation_error = -EIO;
+        assert(handle_statx_syscall(&tracee, false) == errors[i]);
+        assert(observed_string == 0 && translations == 0 && fd_lookups == 0);
+        assert(reads == 0 && writes == 0 && notifications == 0);
+
+        tracee = reset_case();
+        registers[CURRENT][SYSARG_RESULT] = (word_t) errors[i];
+        assert(handle_statx_syscall(&tracee, true) == 0);
+        assert(translations == 1 && writes == 1 && output.stx_size == 3);
+
+        tracee = reset_case();
+        registers[CURRENT][SYSARG_RESULT] = (word_t) errors[i];
+        tracee.restore_sysarg1_after_sigsys = true;
+        assert(handle_statx_syscall(&tracee, false) == 0);
+        assert(translations == 1 && writes == 1 && output.stx_size == 3);
+    }
 }
 
 static void test_empty_path(void)
@@ -249,7 +282,7 @@ static void test_empty_path(void)
 static void test_errors(void)
 {
     Tracee tracee = reset_case();
-    registers[CURRENT][SYSARG_RESULT] = (word_t) -ENOENT;
+    registers[CURRENT][SYSARG_RESULT] = (word_t) -ENOSYS;
     translation_error = -ENOENT;
     assert(handle_statx_syscall(&tracee, false) == -ENOENT);
     assert(translations == 1 && notifications == 0);
@@ -306,6 +339,7 @@ int main(void)
     assert(chmod(fixture, 0640) == 0 && symlink("file", link_fixture) == 0);
     test_native_success();
     test_fallback_paths();
+    test_native_missing_paths();
     test_empty_path();
     test_errors();
     assert(unlink(link_fixture) == 0 && unlink(fixture) == 0 && rmdir(directory) == 0);

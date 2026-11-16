@@ -51,8 +51,124 @@ synthesized exits, fd paths and errors against the actual handler. They cover
 97.62% of its executable lines. The broader suite checks path/symlink/bind
 semantics, permissions, Rust spawning and debugger attachment. Metadata timing
 samples vary substantially with host load and are not a measured phone Cargo
-speedup. The next phone check is a syscall-count summary for the same offline
-no-change build; tracing timings must not be compared to the untraced run.
+speedup.
+
+After exp.24 was published, the requested `strace -f -c cargo build --offline`
+attempt failed: PRoot reported an unsupported `PTRACE_???` request and strace
+counted only one failed `execve`. Cargo did not run under that trace, so its
+summary contains no usable workload counts. The warning does not identify the
+numeric request; the source's unsupported requests must not be treated as a
+confirmed identification of this one. A subsequent normal `cargo run` reported
+7.72 seconds before `Running`, so the demonstrated delay remains unresolved.
+
+The next diagnostic is Cargo's built-in profiler:
+`env CARGO_LOG_PROFILE=true cargo build --offline`. It writes a
+`trace-*.json` file in the working directory without nesting a ptrace tracer.
+The command was verified on host Cargo 1.99.1 with a fresh no-change build.
+Cargo documents this mechanism in its
+[profiling guide](https://doc.crates.io/contrib/tests/profiling.html).
+The trace can distinguish Cargo phases, but cannot by itself separate PRoot
+CPU work from storage or scheduler waits inside those phases. Profiling can
+also add overhead; its elapsed time is not a replacement performance baseline.
+
+### Phone Cargo profiles
+
+The user supplied three Cargo profiler JSON files in a local archive. They
+contain identical counts of 70,747 events: 13,683 span entries, 13,683 span
+exits, 43,380 instant events and one thread-name record. Entries/exits were
+paired per thread; the sum of exclusive span durations matches the outer
+`main` span. These are elapsed times inside instrumented Cargo, not CPU times.
+
+| Phase | First run | Second run | Third run |
+| --- | ---: | ---: | ---: |
+| Entire Cargo `main` span | 8.928 s | 3.058 s | 2.465 s |
+| Dependency resolution (`resolve`, 3 spans) | 1.653 s | 0.916 s | 0.626 s |
+| Cached package loading (`download_accessible`) | 2.116 s | 0.866 s | 0.707 s |
+| Fingerprint preparation (`prepare_target`, 358 spans) | 4.046 s | 0.644 s | 0.545 s |
+| Job queue execution (`execute`) | 0.233 s | 0.245 s | 0.254 s |
+
+Each run reads 282 manifests. Their total `read_manifest` span time is
+0.770, 0.493 and 0.400 seconds respectively; this is nested inside other
+phases and must not be added to the table's package-loading time. The
+`download_accessible` name is Cargo's internal package-loading scope; this
+offline run does not establish network downloads or a network timeout.
+
+The single longest first-run fingerprint preparation span falls from 3.486
+seconds to 0.485 and 0.405 seconds. Its 1,764 interior instant events come
+from fingerprint calculation and filesystem freshness checking. Across all
+fingerprint preparation spans, the decrease accounts for about 3.50 seconds
+of the 6.46-second difference between first and third runs. No package names,
+file paths or log arguments were captured, so the particular expensive
+dependency cannot be identified from these files.
+
+This narrows the observed Cargo delay to dependency loading/resolution and
+existing-artifact freshness checks. It supports investigating PRoot's
+path/metadata operations with a representative dependency-heavy workload;
+the one-crate smoke benchmark is not representative of this project.
+Repeated runs getting faster is consistent with warmed filesystem and
+metadata caches, but the traces do not isolate that from CPU frequency,
+scheduling, tracer overhead or profiler I/O. There is no fixed multi-second
+wait visible at a single startup boundary. These Cargo-only traces do not
+measure Fish prompt processing or establish a fix for Enter backlog.
+
+### Runtime changes after the Cargo profiles
+
+Two further bounded changes target work in the tracer without caching guest
+paths, ownership records or file-existence results:
+
+- The USERLAND fstat-to-readlink chain reads exactly the returned path length
+  and writes its missing NUL terminator into the existing tracee buffer. It
+  previously copied an entire 4 KiB local buffer back. Deleted-file and pipe
+  handling still use the original descriptor. Bounds and memory errors are
+  checked before chaining another syscall.
+- Native statx exits returning `ENOENT` or `ENOTDIR` return that existing error
+  directly. Entry translation has already applied binds and link handling.
+  PRoot previously translated the same path again and called host stat to
+  rediscover the error. SIGSYS and synthesized exits retain their fallback,
+  as do permission and unsupported-syscall errors.
+
+`scripts/benchmark-proot-cargo.py` generates 280 path dependencies with 39 build
+scripts in the guest rootfs, seeds guest ownership metadata, and compares
+runtime binaries in alternating order. Its default guest UID/GID differ from
+the host. `--memory-fallback` installs a host-only seccomp filter denying
+process_vm_readv/writev and verifies those denials before launching PRoot.
+This exercises the ptrace memory fallback without a phone or VM; it does not
+reproduce all Android restrictions. `--check-rebuild` edits a leaf source,
+checks that the leaf and dependent executable rebuild, and runs the executable.
+
+Seven samples per runtime/memory mode produced these median host wall times:
+
+| Memory access | Previous runtime | Updated runtime |
+| --- | ---: | ---: |
+| Bulk process-memory access available | 738.851 ms | 660.779 ms |
+| Ptrace memory fallback | 1389.009 ms | 1216.793 ms |
+
+Total child CPU medians, including the tracer and its reaped children, were
+711.243 versus 634.644 ms and 1348.966 versus 1182.296 ms respectively. Samples
+varied substantially with host load; these medians are not phone speedup
+predictions or controlled cold-cache measurements. The fstat-only change did
+not materially improve the larger Cargo workload before the statx change.
+
+An isolated fstat loop with the ptrace fallback took median 547.976 versus
+125.300 ms for 2000 calls. With bulk access available, a separate seven-sample
+5000-call comparison was approximately unchanged: 188.361 versus 190.761 ms.
+The isolated fallback improvement must not be presented as a Cargo speedup.
+
+The complete host suite passed with bulk memory access available and denied,
+with syscall filtering both enabled and disabled. It covers ownership, modes,
+Rust spawning/linking, debugger attachment, renamed/deleted/pipe descriptors,
+and statx missing-file creation/removal transitions and dangling links. The
+fstat helper has 100% targeted line/branch coverage; the actual statx handler
+has 85/87 executable lines and 60/72 branch outcomes covered. Both new patches
+also apply to a pinned source checkout and prepare idempotently. The ARM64
+runtime was rebuilt for packaging; the Arch image and metadata format are
+unchanged.
+
+As a control, the same synthetic 30-Enter minimal-Fish PTY test took roughly
+927 ms directly on the host without PRoot, versus roughly 965 ms under PRoot.
+It therefore has a substantial shell/test-protocol baseline and cannot be
+used alone to assign the phone's held-Enter backlog to PRoot. No shell timing
+variables or input-repeat behavior were changed by these runtime fixes.
 
 ## Symptom and device tests
 

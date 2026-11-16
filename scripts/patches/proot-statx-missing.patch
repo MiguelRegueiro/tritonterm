@@ -1,0 +1,32 @@
+--- a/src/proot/src/tracee/statx.c
++++ b/src/proot/src/tracee/statx.c
+@@ -6,6 +6,10 @@
+ #include "tracee/mem.h"
+ 
+ int handle_statx_syscall(Tracee *tracee, bool from_sigsys) {
++	int syscall_result = (int) peek_reg(tracee, CURRENT, SYSARG_RESULT);
++	bool native_exit = !from_sigsys && !tracee->restore_sysarg1_after_sigsys;
++	if (native_exit && (syscall_result == -ENOENT || syscall_result == -ENOTDIR))
++		return syscall_result;
+ 	RegVersion regVersion = from_sigsys ? CURRENT : ORIGINAL;
+ 	struct statx_syscall_state state = {};
+ 	char guest_path[PATH_MAX] = {};
+@@ -16,8 +20,7 @@
+ 	word_t flags = peek_reg(tracee, regVersion, SYSARG_3);
+ 	bool do_lstat = ((flags & AT_SYMLINK_NOFOLLOW) != 0);
+ 	word_t mask = peek_reg(tracee, regVersion, SYSARG_4);
+-	bool reuse_translated_path = !from_sigsys && !tracee->restore_sysarg1_after_sigsys &&
+-		peek_reg(tracee, CURRENT, SYSARG_RESULT) == 0;
++	bool reuse_translated_path = native_exit && syscall_result == 0;
+ 	int status = read_string(tracee, guest_path,
+ 		peek_reg(tracee, reuse_translated_path ? MODIFIED : regVersion, SYSARG_2), PATH_MAX);
+ 	if (status < 0) {
+@@ -47,7 +50,7 @@
+ 		return status;
+ 	}
+ 
+-	if (from_sigsys || peek_reg(tracee, CURRENT, SYSARG_RESULT) != 0) {
++	if (from_sigsys || syscall_result != 0) {
+ 		/* Call [l]stat() on translated path */
+ 		if (do_fstat) {
+ 			char link[32] = {}; /* 32 > sizeof("/proc//cwd") + sizeof(#ULONG_MAX) */

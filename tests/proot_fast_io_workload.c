@@ -162,9 +162,64 @@ static void test_statx_variants(void)
     errno = 0;
     CHECK(syscall(SYS_statx, directory, "missing", 0, STATX_BASIC_STATS, &info) == -1);
     CHECK(errno == ENOENT);
+    errno = 0;
+    CHECK(syscall(SYS_statx, directory, "payload/child", 0, STATX_BASIC_STATS, &info) == -1);
+    CHECK(errno == ENOTDIR);
+    CHECK(symlinkat("missing-target", directory, "dangling") == 0);
+    errno = 0;
+    CHECK(syscall(SYS_statx, directory, "dangling", 0, STATX_BASIC_STATS, &info) == -1);
+    CHECK(errno == ENOENT);
+    CHECK(syscall(SYS_statx, directory, "dangling", AT_SYMLINK_NOFOLLOW,
+                  STATX_BASIC_STATS, &info) == 0);
+    CHECK((info.stx_mode & S_IFMT) == S_IFLNK);
+    CHECK(unlinkat(directory, "dangling", 0) == 0);
+    errno = 0;
+    CHECK(syscall(SYS_statx, directory, "transient", 0, STATX_BASIC_STATS, &info) == -1);
+    CHECK(errno == ENOENT);
+    int transient = openat(directory, "transient", O_CREAT | O_EXCL | O_WRONLY, 0600);
+    CHECK(transient >= 0 && write(transient, "x", 1) == 1);
+    CHECK(syscall(SYS_statx, directory, "transient", 0, STATX_BASIC_STATS, &info) == 0);
+    CHECK((info.stx_mode & S_IFMT) == S_IFREG && info.stx_size == 1);
+    CHECK(close(transient) == 0 && unlinkat(directory, "transient", 0) == 0);
+    errno = 0;
+    CHECK(syscall(SYS_statx, directory, "transient", 0, STATX_BASIC_STATS, &info) == -1);
+    CHECK(errno == ENOENT);
     CHECK(close(file) == 0 && close(directory) == 0);
-    puts("PASS statx_relative_symlink_empty_path");
+    puts("PASS statx_relative_symlink_empty_path_missing_transitions");
 #endif
+}
+
+static void test_fd_variants(void)
+{
+    const char contents[] = "descriptor payload";
+    int fd = open("fd-original", O_CREAT | O_EXCL | O_RDWR, 0600);
+    CHECK(fd >= 0);
+    CHECK(write(fd, contents, sizeof(contents)) == (ssize_t) sizeof(contents));
+    CHECK(chmod("fd-original", 0640) == 0);
+    CHECK(rename("fd-original", "fd-renamed") == 0);
+    struct stat info;
+    CHECK(fstat(fd, &info) == 0);
+    CHECK(S_ISREG(info.st_mode) && info.st_size == (off_t) sizeof(contents));
+    CHECK((info.st_mode & 0777) == 0640);
+    CHECK(info.st_uid == getuid() && info.st_gid == getgid());
+    CHECK(unlink("fd-renamed") == 0);
+    CHECK(fstat(fd, &info) == 0);
+    CHECK(S_ISREG(info.st_mode) && info.st_size == (off_t) sizeof(contents));
+    CHECK(info.st_uid == getuid() && info.st_gid == getgid());
+    char bytes[sizeof(contents)];
+    CHECK(pread(fd, bytes, sizeof(bytes), 0) == (ssize_t) sizeof(bytes));
+    CHECK(memcmp(bytes, contents, sizeof(bytes)) == 0);
+    CHECK(close(fd) == 0);
+
+    int pipe_fds[2];
+    CHECK(pipe(pipe_fds) == 0);
+    CHECK(fstat(pipe_fds[0], &info) == 0 && S_ISFIFO(info.st_mode));
+    CHECK(info.st_uid == getuid() && info.st_gid == getgid());
+    CHECK(fstat(pipe_fds[1], &info) == 0 && S_ISFIFO(info.st_mode));
+    CHECK(write(pipe_fds[1], "x", 1) == 1);
+    CHECK(read(pipe_fds[0], bytes, 1) == 1 && bytes[0] == 'x');
+    CHECK(close(pipe_fds[0]) == 0 && close(pipe_fds[1]) == 0);
+    puts("PASS fstat_renamed_deleted_pipe");
 }
 
 static void test_files(void)
@@ -177,6 +232,7 @@ static void test_files(void)
     char current[PATH_MAX];
     CHECK(getcwd(current, sizeof(current)) != NULL);
     CHECK(strcmp(current, directory) == 0);
+    test_fd_variants();
 
     int fd = open("payload", O_CREAT | O_RDWR | O_EXCL, 0640);
     CHECK(fd >= 0);
@@ -379,6 +435,37 @@ static int metadata_benchmark(unsigned iterations)
     return 0;
 }
 
+static int fstat_benchmark(unsigned iterations)
+{
+    char directory[] = "/tmp/tritonterm-fstat-bench.XXXXXX";
+    CHECK(mkdtemp(directory) != NULL);
+    char path[PATH_MAX];
+    int length = snprintf(path, sizeof(path), "%s/file", directory);
+    CHECK(length > 0 && (size_t) length < sizeof(path));
+    int fd = open(path, O_CREAT | O_EXCL | O_RDWR, 0600);
+    CHECK(fd >= 0);
+    const char payload[] = "fstat benchmark";
+    CHECK(write(fd, payload, sizeof(payload)) == (ssize_t) sizeof(payload));
+    CHECK(chmod(path, 0640) == 0);
+    uid_t uid = getuid();
+    gid_t gid = getgid();
+    struct timespec start, end;
+    struct stat info;
+    CHECK(clock_gettime(CLOCK_MONOTONIC, &start) == 0);
+    for (unsigned i = 0; i < iterations; i++) {
+        CHECK(fstat(fd, &info) == 0);
+        CHECK(info.st_size == (off_t) sizeof(payload));
+        CHECK((info.st_mode & 07777) == 0640);
+        CHECK(info.st_uid == uid && info.st_gid == gid);
+    }
+    CHECK(clock_gettime(CLOCK_MONOTONIC, &end) == 0);
+    CHECK(close(fd) == 0);
+    CHECK(unlink(path) == 0);
+    CHECK(rmdir(directory) == 0);
+    printf("BENCH fstat iterations=%u elapsed_ms=%.3f\n", iterations, elapsed_ms(&start, &end));
+    return 0;
+}
+
 static int test_ptrace(int attach)
 {
     int ready[2], gate[2];
@@ -528,7 +615,8 @@ int main(int argc, char **argv)
         return 23;
     if (argc == 2 && strcmp(argv[1], "--bench") == 0)
         return benchmark();
-    if ((argc == 2 || argc == 3) && strcmp(argv[1], "--metadata-bench") == 0) {
+    if ((argc == 2 || argc == 3) &&
+        (strcmp(argv[1], "--metadata-bench") == 0 || strcmp(argv[1], "--fstat-bench") == 0)) {
         unsigned long iterations = 10000;
         if (argc == 3) {
             char *end;
@@ -537,7 +625,8 @@ int main(int argc, char **argv)
             CHECK(errno == 0 && end != argv[2] && *end == '\0');
         }
         CHECK(iterations > 0 && iterations <= 100000);
-        return metadata_benchmark((unsigned) iterations);
+        return strcmp(argv[1], "--fstat-bench") == 0
+            ? fstat_benchmark((unsigned) iterations) : metadata_benchmark((unsigned) iterations);
     }
     if (argc == 2 && strcmp(argv[1], "--ptrace-attach") == 0)
         return test_ptrace(1);

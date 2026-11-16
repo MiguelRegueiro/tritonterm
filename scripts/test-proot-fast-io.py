@@ -59,6 +59,11 @@ def build(output):
         "cc", "-std=gnu11", "-O0", "-Wall", "-Wextra", "-Werror", "--coverage",
         "-ffunction-sections", "-fdata-sections", f"-I{native}", f"-I{talloc}",
         PROJECT / "tests/proot_statx_path_unit.c", "-Wl,--gc-sections", "-o", output / "statx-unit"]))
+    (output / "fstat-unit-build.log").write_text(run([
+        "cc", "-std=gnu11", "-O0", "-DUSERLAND", "-Wall", "-Wextra", "-Werror", "--coverage",
+        "-ffunction-sections", "-fdata-sections", f"-I{native}", f"-I{talloc}",
+        f"-I{library / 'include'}", PROJECT / "tests/proot_fstat_path_unit.c",
+        "-Wl,--gc-sections", "-o", output / "fstat-unit"]))
     run(["cc", "-std=c11", "-O2", "-Wall", "-Wextra", "-Werror", "-pthread",
          PROJECT / "tests/proot_fast_io_workload.c", "-o", output / "workload"])
     return native / "proot"
@@ -118,17 +123,25 @@ def main():
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--skip-build", action="store_true")
     parser.add_argument("--compare-proot", type=Path, help="Compare metadata timings against a previous host runtime")
+    parser.add_argument("--memory-fallback", action="store_true",
+                        help="Deny process_vm reads/writes to test the ptrace memory fallback")
     options = parser.parse_args()
     output = options.output.resolve()
     output.mkdir(parents=True, exist_ok=True)
     proot = output / "src/proot" if options.skip_build else build(output)
     print(run([output / "unit"]), end="", flush=True)
     print(run([output / "statx-unit"]), end="", flush=True)
+    print(run([output / "fstat-unit"]), end="", flush=True)
     root = output / "rootfs"
     root.mkdir(exist_ok=True)
     for name in ("tmp", "work", "usr", "bin", "lib", "lib64", "etc", "proc", "dev"):
         (root / name).mkdir(exist_ok=True)
     command = [str(proot), "-r", str(root), "-i", "1000:1000", "-w", "/work"]
+    if options.memory_fallback:
+        wrapper = output / "memory-fallback"
+        run(["cc", "-std=c11", "-O2", "-Wall", "-Wextra", "-Werror",
+             PROJECT / "tests/proot_memory_fallback.c", "-o", wrapper])
+        command.insert(0, str(wrapper))
     for name in ("usr", "bin", "lib", "lib64", "etc", "proc", "dev"):
         if Path("/" + name).exists():
             command += ["-b", "/" + name]
@@ -156,12 +169,15 @@ def main():
         assert bound_cache.stat().st_uid == bound_owner.st_uid
         assert bound_cache.stat().st_gid == bound_owner.st_gid
         print(f"fast={fast}: " + log.strip(), flush=True)
-        for trap in (False, True):
-            arguments = command + ["/work/workload"] + (["--trap-guest"] if trap else [])
-            label = f"fast={fast} trap={trap}"
-            log = run(arguments, env=environment, timeout=60)
-            (output / f"workload-fast{fast}-trap{int(trap)}.log").write_text(log)
-            print(label + ": " + log.strip(), flush=True)
+        for identity in ("1000:1000", "0:0"):
+            for trap in (False, True):
+                arguments = command.copy()
+                arguments[arguments.index("-i") + 1] = identity
+                arguments += ["/work/workload"] + (["--trap-guest"] if trap else [])
+                label = f"fast={fast} identity={identity} trap={trap}"
+                log = run(arguments, env=environment, timeout=60)
+                (output / f"workload-fast{fast}-uid{identity.split(':')[0]}-trap{int(trap)}.log").write_text(log)
+                print(label + ": " + log.strip(), flush=True)
         for debugger_mode in ("--ptrace-attach", "--ptrace-traceme"):
             log = run(command + ["/work/workload", debugger_mode], env=environment, timeout=60)
             print(f"fast={fast}: " + log.strip(), flush=True)
@@ -186,6 +202,8 @@ def main():
         match = re.search(r"BENCH metadata iterations=(\d+) statx_ms=([\d.]+) stat_ms=([\d.]+)", metadata)
         assert match, metadata
         results[f"fast{fast}_metadata_ms"] = {"statx": float(match[2]), "stat": float(match[3])}
+        fstat = run(command + ["/work/workload", "--fstat-bench"], env=environment, timeout=60)
+        results[f"fast{fast}_fstat_ms"] = float(fstat.split("elapsed_ms=")[1].strip())
         for shell in ("bash", "fish"):
             if shutil.which(shell):
                 results[f"fast{fast}_{shell}_30_enters_ms"] = [
@@ -197,7 +215,7 @@ def main():
         for _ in range(3):
             for label, binary in (("previous", options.compare_proot.resolve()), ("updated", proot)):
                 benchmark = command.copy()
-                benchmark[0] = str(binary)
+                benchmark[1 if options.memory_fallback else 0] = str(binary)
                 log = run(benchmark + ["/work/workload", "--metadata-bench"], env=environment, timeout=60)
                 match = re.search(r"BENCH metadata iterations=(\d+) statx_ms=([\d.]+) stat_ms=([\d.]+)", log)
                 assert match, log
