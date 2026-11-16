@@ -684,6 +684,7 @@ internal class TritonSessionClient(private val context: Context) : TerminalSessi
         val emulator = session?.emulator ?: return false
         // TerminalEmulator.paste preserves UTF-8 text and wraps it in bracketed-paste
         // delimiters when the guest has enabled DECSET 2004.
+        terminalView?.scrollToBottom()
         emulator.paste(text)
         return true
     }

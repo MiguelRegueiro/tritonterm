@@ -96,6 +96,7 @@ import com.tritonterm.android.terminal.TerminalCallbacks
 import com.tritonterm.android.terminal.TerminalClipboardSupport
 import com.tritonterm.android.config.TerminalKeyAction
 import com.termux.terminal.TerminalSession
+import com.termux.terminal.TerminalTrace
 import com.termux.view.TerminalView
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.CancellationException
@@ -511,6 +512,7 @@ internal fun TerminalScreen() {
                                     TerminalKeyAction.SEND_KEY_CTRL_C, TerminalKeyAction.SEND_KEY_F13,
                                     TerminalKeyAction.SEND_KEY_F14 -> {
                                         val bytes = action.terminalInput.orEmpty().toByteArray(StandardCharsets.UTF_8)
+                                        terminalViewHolder[0]?.scrollToBottom()
                                         currentTerminalSession.value?.write(bytes, 0, bytes.size)
                                         true
                                     }
@@ -806,8 +808,14 @@ internal fun TerminalScreen() {
                 compact = useSystemKeyboard,
                 landscapeLayout = landscapeLayout,
                 onInput = { input ->
-                    val bytes = input.toByteArray(StandardCharsets.UTF_8)
-                    session?.write(bytes, 0, bytes.size)
+                    val trace = TerminalTrace.beginSection("TTerm keyboard delivery")
+                    try {
+                        val bytes = input.toByteArray(StandardCharsets.UTF_8)
+                        if (bytes.isNotEmpty()) terminalViewHolder[0]?.scrollToBottom()
+                        session?.write(bytes, 0, bytes.size)
+                    } finally {
+                        TerminalTrace.endSection(trace)
+                    }
                 }
             )
         }

@@ -90,8 +90,16 @@ public final class TerminalRenderer {
     /** Render the terminal to a canvas with at a specified row scroll, and an optional rectangular selection. */
     public final void render(TerminalEmulator mEmulator, Canvas canvas, int topRow,
                              int selectionY1, int selectionY2, int selectionX1, int selectionX2) {
+        render(mEmulator, canvas, topRow, selectionY1, selectionY2, selectionX1, selectionX2, 0f);
+    }
+
+    /** Render at a fractional pixel offset for smooth terminal scrollback gestures. */
+    public final void render(TerminalEmulator mEmulator, Canvas canvas, int topRow,
+                             int selectionY1, int selectionY2, int selectionX1, int selectionX2,
+                             float verticalOffset) {
         final boolean reverseVideo = mEmulator.isReverseVideo();
-        final int endRow = topRow + mEmulator.mRows;
+        final int firstRow = topRow + (verticalOffset > 0f ? -1 : 0);
+        final int endRow = topRow + mEmulator.mRows + (verticalOffset < 0f ? 1 : 0);
         final int columns = mEmulator.mColumns;
         final int cursorCol = mEmulator.getCursorCol();
         final int cursorRow = mEmulator.getCursorRow();
@@ -103,11 +111,11 @@ public final class TerminalRenderer {
         if (reverseVideo)
             canvas.drawColor(palette[TextStyle.COLOR_INDEX_FOREGROUND], PorterDuff.Mode.SRC);
 
-        float heightOffset = mFontLineSpacingAndAscent;
+        float heightOffset = mFontLineSpacingAndAscent + (firstRow - topRow) * mFontLineSpacing;
         Typeface measuredTypeface = mTypeface;
         boolean measuredFakeBold = false;
         float measuredTextSkew = 0f;
-        for (int row = topRow; row < endRow; row++) {
+        for (int row = firstRow; row < endRow; row++) {
             mTextPaint.setTypeface(mTypeface);
             heightOffset += mFontLineSpacing;
 

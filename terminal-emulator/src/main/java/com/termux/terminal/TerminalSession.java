@@ -210,12 +210,18 @@ public final class TerminalSession extends TerminalOutput {
                     while (true) {
                         int read = termIn.read(buffer);
                         if (read == -1) return;
-                        if (!mProcessToTerminalIOQueue.write(buffer, 0, read)) return;
-                        // There may already be an input notification waiting on the main thread.
-                        // Coalesce reads so a busy PTY cannot flood the UI queue with one redraw
-                        // request per 4 KiB read.
-                        if (!mMainThreadHandler.hasMessages(MSG_NEW_INPUT)) {
-                            mMainThreadHandler.sendEmptyMessage(MSG_NEW_INPUT);
+                        TerminalTrace.instant("TTerm PTY read");
+                        boolean trace = TerminalTrace.beginSection("TTerm PTY read enqueue");
+                        try {
+                            if (!mProcessToTerminalIOQueue.write(buffer, 0, read)) return;
+                            // There may already be an input notification waiting on the main thread.
+                            // Coalesce reads so a busy PTY cannot flood the UI queue with one redraw
+                            // request per 4 KiB read.
+                            if (!mMainThreadHandler.hasMessages(MSG_NEW_INPUT)) {
+                                mMainThreadHandler.sendEmptyMessage(MSG_NEW_INPUT);
+                            }
+                        } finally {
+                            TerminalTrace.endSection(trace);
                         }
                     }
                 } catch (Exception e) {
@@ -232,7 +238,12 @@ public final class TerminalSession extends TerminalOutput {
                     while (true) {
                         int bytesToWrite = mTerminalToProcessIOQueue.read(buffer, true);
                         if (bytesToWrite == -1) return;
-                        termOut.write(buffer, 0, bytesToWrite);
+                        boolean trace = TerminalTrace.beginSection("TTerm PTY write");
+                        try {
+                            termOut.write(buffer, 0, bytesToWrite);
+                        } finally {
+                            TerminalTrace.endSection(trace);
+                        }
                     }
                 } catch (IOException e) {
                     // Ignore.
@@ -253,7 +264,12 @@ public final class TerminalSession extends TerminalOutput {
     /** Write data to the shell process. */
     @Override
     public void write(byte[] data, int offset, int count) {
-        if (mShellPid > 0) mTerminalToProcessIOQueue.write(data, offset, count);
+        boolean trace = TerminalTrace.beginSection("TTerm input enqueue");
+        try {
+            if (mShellPid > 0) mTerminalToProcessIOQueue.write(data, offset, count);
+        } finally {
+            TerminalTrace.endSection(trace);
+        }
     }
 
     /** Write the Unicode code point to the terminal encoded in UTF-8. */
@@ -419,43 +435,49 @@ public final class TerminalSession extends TerminalOutput {
 
         @Override
         public void handleMessage(Message msg) {
-            int totalBytesRead = 0;
-            int bytesRead;
-            int byteBudget = msg.what == MSG_PROCESS_EXITED ? Integer.MAX_VALUE : MAX_BYTES_PER_MESSAGE;
-            while (totalBytesRead < byteBudget
-                && (bytesRead = mProcessToTerminalIOQueue.read(mReceiveBuffer, false)) > 0) {
-                mEmulator.append(mReceiveBuffer, bytesRead);
-                totalBytesRead += bytesRead;
-            }
-
-            if (totalBytesRead > 0) {
-                if (mEmulator.isSynchronizedUpdateInProgress()) {
-                    scheduleSynchronizedUpdateTimeout();
-                } else {
-                    finishDeferredRedraw();
-                    notifyScreenUpdate();
-                }
-            }
-
-            // If the budget was exhausted, keep draining on a later main-thread turn so a
-            // continuous stream cannot monopolize input and gesture handling.
-            if (msg.what != MSG_PROCESS_EXITED && totalBytesRead >= MAX_BYTES_PER_MESSAGE
-                && !mMainThreadHandler.hasMessages(MSG_NEW_INPUT)) {
-                mMainThreadHandler.sendEmptyMessage(MSG_NEW_INPUT);
-            }
-
-            if (msg.what == MSG_PROCESS_EXITED) {
-                int exitCode = (Integer) msg.obj;
-                cleanupResources(exitCode);
-
-                String exitDescription = processCompletionMessage(mShowProcessCompletionMessage, exitCode);
-                if (exitDescription != null) {
-                    byte[] bytesToWrite = exitDescription.getBytes(StandardCharsets.UTF_8);
-                    mEmulator.append(bytesToWrite, bytesToWrite.length);
-                    notifyScreenUpdate();
+            boolean trace = TerminalTrace.beginSection("TTerm PTY parse and update");
+            try {
+                int totalBytesRead = 0;
+                int bytesRead;
+                boolean processExited = msg.what == MSG_PROCESS_EXITED;
+                int byteBudget = processExited ? Integer.MAX_VALUE : MAX_BYTES_PER_MESSAGE;
+                while (totalBytesRead < byteBudget
+                    && (bytesRead = mProcessToTerminalIOQueue.read(mReceiveBuffer, false)) > 0) {
+                    mEmulator.append(mReceiveBuffer, bytesRead);
+                    totalBytesRead += bytesRead;
                 }
 
-                mClient.onSessionFinished(TerminalSession.this);
+                if (totalBytesRead > 0) {
+                    if (mEmulator.isSynchronizedUpdateInProgress()) {
+                        scheduleSynchronizedUpdateTimeout();
+                    } else {
+                        finishDeferredRedraw();
+                        notifyScreenUpdate();
+                    }
+                }
+
+                // If the byte budget was exhausted, keep draining on a later main-thread turn so a
+                // continuous stream cannot monopolize input and gesture handling.
+                if (!processExited && totalBytesRead >= MAX_BYTES_PER_MESSAGE
+                    && !mMainThreadHandler.hasMessages(MSG_NEW_INPUT)) {
+                    mMainThreadHandler.sendEmptyMessage(MSG_NEW_INPUT);
+                }
+
+                if (processExited) {
+                    int exitCode = (Integer) msg.obj;
+                    cleanupResources(exitCode);
+
+                    String exitDescription = processCompletionMessage(mShowProcessCompletionMessage, exitCode);
+                    if (exitDescription != null) {
+                        byte[] bytesToWrite = exitDescription.getBytes(StandardCharsets.UTF_8);
+                        mEmulator.append(bytesToWrite, bytesToWrite.length);
+                        notifyScreenUpdate();
+                    }
+
+                    mClient.onSessionFinished(TerminalSession.this);
+                }
+            } finally {
+                TerminalTrace.endSection(trace);
             }
         }
 
