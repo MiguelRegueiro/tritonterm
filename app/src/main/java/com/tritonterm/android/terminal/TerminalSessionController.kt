@@ -557,31 +557,36 @@ internal class TritonSessionClient(private val context: Context) : TerminalSessi
                 mapOf("pid" to livePid, "scope" to "PTY_managed_top_level_process_pr_cli_execs_into_proot")
             )
         }
-        val screenText = runCatching {
-            changedSession.emulator?.screen?.transcriptText?.takeLast(4096).orEmpty()
-        }.getOrDefault("")
-        if (setupReady && screenText.isNotBlank() && !shellOutputRecorded) {
-            shellOutputRecorded = true
-            TerminalDiagnostics.record(context, "shell_startup", "terminal_output_received")
-        }
-        if (!setupReady) captureSetupOutput(screenText)
-        recordMarker(screenText, "__TRITONTERM_INSTALLER_LAUNCH__", "installer_launch", "started")
-        recordMarkerExit(screenText, "__TRITONTERM_INSTALLER_EXIT:(\\d+)__", "installer_process")
-        recordMarker(screenText, "__TRITONTERM_PACMAN_INIT_START__", "pacman_key_init", "started")
-        recordMarkerExit(screenText, "__TRITONTERM_PACMAN_INIT_EXIT:(\\d+)__", "pacman_key_init")
-        recordMarker(screenText, "__TRITONTERM_PACMAN_POPULATE_START__", "pacman_key_populate", "started")
-        recordMarkerExit(screenText, "__TRITONTERM_PACMAN_POPULATE_EXIT:(\\d+)__", "pacman_key_populate")
-        recordMarker(screenText, "__TRITONTERM_PACMAN_KEYRING_REUSED__", "pacman_keyring", "reused")
-        when {
-            screenText.contains("__TRITONTERM_STAGE_INSTALLING__") ->
-                setupObserver?.invoke(TerminalSetupStage.INSTALLING)
-            screenText.contains("__TRITONTERM_STAGE_INITIALIZING__") ->
-                setupObserver?.invoke(TerminalSetupStage.INITIALIZING)
-            screenText.contains("__TRITONTERM_SHELL_START__") -> {
-                setupReady = true
-                TerminalDiagnostics.record(context, "shell_startup", "exec_requested")
-                setupObserver?.invoke(TerminalSetupStage.READY)
-                setupObserver = null
+        // Startup markers and captured setup output are only relevant until the shell is
+        // ready. Avoid building the full scrollback transcript on every ordinary terminal
+        // redraw; it can contain thousands of rows.
+        if (!setupReady || !shellOutputRecorded) {
+            val screenText = runCatching {
+                changedSession.emulator?.screen?.transcriptText?.takeLast(4096).orEmpty()
+            }.getOrDefault("")
+            if (setupReady && screenText.isNotBlank() && !shellOutputRecorded) {
+                shellOutputRecorded = true
+                TerminalDiagnostics.record(context, "shell_startup", "terminal_output_received")
+            }
+            if (!setupReady) captureSetupOutput(screenText)
+            recordMarker(screenText, "__TRITONTERM_INSTALLER_LAUNCH__", "installer_launch", "started")
+            recordMarkerExit(screenText, "__TRITONTERM_INSTALLER_EXIT:(\\d+)__", "installer_process")
+            recordMarker(screenText, "__TRITONTERM_PACMAN_INIT_START__", "pacman_key_init", "started")
+            recordMarkerExit(screenText, "__TRITONTERM_PACMAN_INIT_EXIT:(\\d+)__", "pacman_key_init")
+            recordMarker(screenText, "__TRITONTERM_PACMAN_POPULATE_START__", "pacman_key_populate", "started")
+            recordMarkerExit(screenText, "__TRITONTERM_PACMAN_POPULATE_EXIT:(\\d+)__", "pacman_key_populate")
+            recordMarker(screenText, "__TRITONTERM_PACMAN_KEYRING_REUSED__", "pacman_keyring", "reused")
+            when {
+                screenText.contains("__TRITONTERM_STAGE_INSTALLING__") ->
+                    setupObserver?.invoke(TerminalSetupStage.INSTALLING)
+                screenText.contains("__TRITONTERM_STAGE_INITIALIZING__") ->
+                    setupObserver?.invoke(TerminalSetupStage.INITIALIZING)
+                screenText.contains("__TRITONTERM_SHELL_START__") -> {
+                    setupReady = true
+                    TerminalDiagnostics.record(context, "shell_startup", "exec_requested")
+                    setupObserver?.invoke(TerminalSetupStage.READY)
+                    setupObserver = null
+                }
             }
         }
         terminalView?.onScreenUpdated()

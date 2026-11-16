@@ -12,7 +12,6 @@ import com.termux.terminal.TextStyle;
 import com.termux.terminal.WcWidth;
 
 import java.util.ArrayList;
-import java.util.List;
 
 /**
  * Renderer of a {@link TerminalEmulator} into a {@link Canvas}.
@@ -34,6 +33,8 @@ public final class TerminalRenderer {
     private final Paint mTextPaint = new Paint();
     /** Measurement paint is isolated from drawTextRun's bold/italic/typeface state. */
     private final Paint mMeasurePaint = new Paint();
+    /** Reused per-row text runs avoid allocating short-lived objects for every frame. */
+    private final ArrayList<TextRun> mTextRuns = new ArrayList<>(128);
     private float mCursorBeamThickness = 1.5f;
     private float mCursorUnderlineThickness = 2f;
 
@@ -103,6 +104,9 @@ public final class TerminalRenderer {
             canvas.drawColor(palette[TextStyle.COLOR_INDEX_FOREGROUND], PorterDuff.Mode.SRC);
 
         float heightOffset = mFontLineSpacingAndAscent;
+        Typeface measuredTypeface = mTypeface;
+        boolean measuredFakeBold = false;
+        float measuredTextSkew = 0f;
         for (int row = topRow; row < endRow; row++) {
             mTextPaint.setTypeface(mTypeface);
             heightOffset += mFontLineSpacing;
@@ -127,7 +131,7 @@ public final class TerminalRenderer {
             int currentCharIndex = 0;
             float measuredWidthForRun = 0.f;
             Typeface lastRunTypeface = mTypeface;
-            List<TextRun> runs = new ArrayList<>();
+            int runCount = 0;
 
             for (int column = 0; column < columns; ) {
                 final char charAtIndex = line[currentCharIndex];
@@ -140,22 +144,30 @@ public final class TerminalRenderer {
                 final boolean insideSelection = column >= selx1 && column <= selx2;
                 final long style = lineObject.getStyle(column);
 
-                // drawTextRun changes mTextPaint's typeface and synthetic style. Keep
-                // measurement independent so a bold Nerd Font icon cannot leak its
-                // metrics into the selected filename run that follows it.
-                mMeasurePaint.setTypeface(codePointTypeface);
                 final int effect = TextStyle.decodeEffect(style);
-                mMeasurePaint.setFakeBoldText((effect &
-                    (TextStyle.CHARACTER_ATTRIBUTE_BOLD | TextStyle.CHARACTER_ATTRIBUTE_BLINK)) != 0);
-                mMeasurePaint.setTextSkewX((effect & TextStyle.CHARACTER_ATTRIBUTE_ITALIC) != 0 ? -0.35f : 0.f);
-
-                // Check if the measured text width for this code point is not the same as that expected by wcwidth().
-                // This could happen for some fonts which are not truly monospace, or for more exotic characters such as
-                // smileys which android font renders as wide.
-                // If this is detected, we draw this code point scaled to match what wcwidth() expects.
-                final float measuredCodePointWidth = (codePoint < asciiMeasures.length &&
-                    (effect & METRIC_AFFECTING_EFFECTS) == 0) ? asciiMeasures[codePoint] :
-                    mMeasurePaint.measureText(line, currentCharIndex, charsForCodePoint);
+                final float measuredCodePointWidth;
+                if (codePoint < asciiMeasures.length && (effect & METRIC_AFFECTING_EFFECTS) == 0) {
+                    measuredCodePointWidth = asciiMeasures[codePoint];
+                } else {
+                    // Measurement stays separate from drawing Paint state. Avoid resetting
+                    // Paint attributes when adjacent special glyphs share the same style.
+                    boolean fakeBold = (effect &
+                        (TextStyle.CHARACTER_ATTRIBUTE_BOLD | TextStyle.CHARACTER_ATTRIBUTE_BLINK)) != 0;
+                    float textSkew = (effect & TextStyle.CHARACTER_ATTRIBUTE_ITALIC) != 0 ? -0.35f : 0.f;
+                    if (measuredTypeface != codePointTypeface) {
+                        mMeasurePaint.setTypeface(codePointTypeface);
+                        measuredTypeface = codePointTypeface;
+                    }
+                    if (measuredFakeBold != fakeBold) {
+                        mMeasurePaint.setFakeBoldText(fakeBold);
+                        measuredFakeBold = fakeBold;
+                    }
+                    if (measuredTextSkew != textSkew) {
+                        mMeasurePaint.setTextSkewX(textSkew);
+                        measuredTextSkew = textSkew;
+                    }
+                    measuredCodePointWidth = mMeasurePaint.measureText(line, currentCharIndex, charsForCodePoint);
+                }
                 final boolean fontWidthMismatch = Math.abs(measuredCodePointWidth / mFontWidth - codePointWcWidth) > 0.01;
 
                 if (style != lastRunStyle || insideCursor != lastRunInsideCursor || insideSelection != lastRunInsideSelection ||
@@ -170,9 +182,9 @@ public final class TerminalRenderer {
                         if (lastRunInsideCursor && cursorShape == TerminalEmulator.TERMINAL_CURSOR_STYLE_BLOCK) {
                             invertCursorTextColor = true;
                         }
-                        runs.add(new TextRun(lastRunStartColumn, columnWidthSinceLastRun, lastRunStartIndex,
+                        addTextRun(runCount++, lastRunStartColumn, columnWidthSinceLastRun, lastRunStartIndex,
                             charsSinceLastRun, measuredWidthForRun, cursorColor, mEmulator.getCursorTextColor(), cursorShape, lastRunStyle,
-                            reverseVideo || invertCursorTextColor || lastRunInsideSelection, lastRunTypeface));
+                            reverseVideo || invertCursorTextColor || lastRunInsideSelection, lastRunTypeface);
                     }
                     measuredWidthForRun = 0.f;
                     lastRunStyle = style;
@@ -200,19 +212,31 @@ public final class TerminalRenderer {
             if (lastRunInsideCursor && cursorShape == TerminalEmulator.TERMINAL_CURSOR_STYLE_BLOCK) {
                 invertCursorTextColor = true;
             }
-            runs.add(new TextRun(lastRunStartColumn, columnWidthSinceLastRun, lastRunStartIndex, charsSinceLastRun,
+            addTextRun(runCount++, lastRunStartColumn, columnWidthSinceLastRun, lastRunStartIndex, charsSinceLastRun,
                 measuredWidthForRun, cursorColor, mEmulator.getCursorTextColor(), cursorShape, lastRunStyle,
-                reverseVideo || invertCursorTextColor || lastRunInsideSelection, lastRunTypeface));
+                reverseVideo || invertCursorTextColor || lastRunInsideSelection, lastRunTypeface);
 
             // Draw every cell background before any glyph. Nerd Font symbols may
             // intentionally overhang their advance into the following spacer cell;
             // painting that cell's selection background afterward clipped the icon.
-            for (TextRun run : runs) {
-                drawTextRun(canvas, line, palette, heightOffset, run, false);
+            for (int runIndex = 0; runIndex < runCount; runIndex++) {
+                drawTextRun(canvas, line, palette, heightOffset, mTextRuns.get(runIndex), false);
             }
-            for (TextRun run : runs) {
-                drawTextRun(canvas, line, palette, heightOffset, run, true);
+            for (int runIndex = 0; runIndex < runCount; runIndex++) {
+                drawTextRun(canvas, line, palette, heightOffset, mTextRuns.get(runIndex), true);
             }
+        }
+    }
+
+    private void addTextRun(int index, int startColumn, int widthColumns, int startCharIndex, int widthChars,
+                            float measuredWidth, int cursorColor, int cursorTextColor, int cursorStyle,
+                            long textStyle, boolean reverseVideo, Typeface typeface) {
+        if (index == mTextRuns.size()) {
+            mTextRuns.add(new TextRun(startColumn, widthColumns, startCharIndex, widthChars, measuredWidth,
+                cursorColor, cursorTextColor, cursorStyle, textStyle, reverseVideo, typeface));
+        } else {
+            mTextRuns.get(index).set(startColumn, widthColumns, startCharIndex, widthChars, measuredWidth,
+                cursorColor, cursorTextColor, cursorStyle, textStyle, reverseVideo, typeface);
         }
     }
 
@@ -341,20 +365,26 @@ public final class TerminalRenderer {
     }
 
     private static final class TextRun {
-        final int startColumn;
-        final int widthColumns;
-        final int startCharIndex;
-        final int widthChars;
-        final float measuredWidth;
-        final int cursorColor;
-        final int cursorTextColor;
-        final int cursorStyle;
-        final long textStyle;
-        final boolean reverseVideo;
-        final Typeface typeface;
+        int startColumn;
+        int widthColumns;
+        int startCharIndex;
+        int widthChars;
+        float measuredWidth;
+        int cursorColor;
+        int cursorTextColor;
+        int cursorStyle;
+        long textStyle;
+        boolean reverseVideo;
+        Typeface typeface;
 
         TextRun(int startColumn, int widthColumns, int startCharIndex, int widthChars, float measuredWidth,
                 int cursorColor, int cursorTextColor, int cursorStyle, long textStyle, boolean reverseVideo, Typeface typeface) {
+            set(startColumn, widthColumns, startCharIndex, widthChars, measuredWidth,
+                cursorColor, cursorTextColor, cursorStyle, textStyle, reverseVideo, typeface);
+        }
+
+        void set(int startColumn, int widthColumns, int startCharIndex, int widthChars, float measuredWidth,
+                 int cursorColor, int cursorTextColor, int cursorStyle, long textStyle, boolean reverseVideo, Typeface typeface) {
             this.startColumn = startColumn;
             this.widthColumns = widthColumns;
             this.startCharIndex = startCharIndex;

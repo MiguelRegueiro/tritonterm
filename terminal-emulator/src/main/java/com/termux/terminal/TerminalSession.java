@@ -41,7 +41,9 @@ public final class TerminalSession extends TerminalOutput {
      * A queue written to from a separate thread when the process outputs, and read by main thread to process by
      * terminal emulator.
      */
-    final ByteQueue mProcessToTerminalIOQueue = new ByteQueue(4096);
+    // Buffer short PTY bursts while the main thread is parsing and drawing. Match Termux's
+    // 64 KiB receive queue; the handler still limits each UI-thread parse turn separately.
+    final ByteQueue mProcessToTerminalIOQueue = new ByteQueue(64 * 1024);
     /**
      * A queue written to from the main thread due to user interaction, and read by another thread which forwards by
      * writing to the {@link #mTerminalFileDescriptor}.
@@ -209,7 +211,12 @@ public final class TerminalSession extends TerminalOutput {
                         int read = termIn.read(buffer);
                         if (read == -1) return;
                         if (!mProcessToTerminalIOQueue.write(buffer, 0, read)) return;
-                        mMainThreadHandler.sendEmptyMessage(MSG_NEW_INPUT);
+                        // There may already be an input notification waiting on the main thread.
+                        // Coalesce reads so a busy PTY cannot flood the UI queue with one redraw
+                        // request per 4 KiB read.
+                        if (!mMainThreadHandler.hasMessages(MSG_NEW_INPUT)) {
+                            mMainThreadHandler.sendEmptyMessage(MSG_NEW_INPUT);
+                        }
                     }
                 } catch (Exception e) {
                     // Ignore, just shutting down.
@@ -408,18 +415,33 @@ public final class TerminalSession extends TerminalOutput {
     class MainThreadHandler extends Handler {
 
         final byte[] mReceiveBuffer = new byte[4 * 1024];
+        private static final int MAX_BYTES_PER_MESSAGE = 16 * 1024;
 
         @Override
         public void handleMessage(Message msg) {
-            int bytesRead = mProcessToTerminalIOQueue.read(mReceiveBuffer, false);
-            if (bytesRead > 0) {
+            int totalBytesRead = 0;
+            int bytesRead;
+            int byteBudget = msg.what == MSG_PROCESS_EXITED ? Integer.MAX_VALUE : MAX_BYTES_PER_MESSAGE;
+            while (totalBytesRead < byteBudget
+                && (bytesRead = mProcessToTerminalIOQueue.read(mReceiveBuffer, false)) > 0) {
                 mEmulator.append(mReceiveBuffer, bytesRead);
+                totalBytesRead += bytesRead;
+            }
+
+            if (totalBytesRead > 0) {
                 if (mEmulator.isSynchronizedUpdateInProgress()) {
                     scheduleSynchronizedUpdateTimeout();
                 } else {
                     finishDeferredRedraw();
                     notifyScreenUpdate();
                 }
+            }
+
+            // If the budget was exhausted, keep draining on a later main-thread turn so a
+            // continuous stream cannot monopolize input and gesture handling.
+            if (msg.what != MSG_PROCESS_EXITED && totalBytesRead >= MAX_BYTES_PER_MESSAGE
+                && !mMainThreadHandler.hasMessages(MSG_NEW_INPUT)) {
+                mMainThreadHandler.sendEmptyMessage(MSG_NEW_INPUT);
             }
 
             if (msg.what == MSG_PROCESS_EXITED) {
