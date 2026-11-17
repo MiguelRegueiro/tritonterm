@@ -1,0 +1,87 @@
+--- a/src/proot/src/extension/fake_id0/helper_functions.c
++++ b/src/proot/src/extension/fake_id0/helper_functions.c
+@@ -354,27 +354,38 @@
+  *  functionality of PRoot, with the addition of setting the mode to 755.
+  */
+ 
+-int read_meta_file(char path[PATH_MAX], mode_t *mode, uid_t *owner, gid_t *group, Config *config)
++bool read_meta_file_if_present(char path[PATH_MAX], mode_t *mode, uid_t *owner, gid_t *group)
+ {
+ 	proot_perf_add(PROOT_PERF_METADATA_READ_ATTEMPTS, 1);
+ 	FILE *fp;
+ 	int lcl_mode;
++	uid_t lcl_owner;
++	gid_t lcl_group;
++	int fields;
+ 	char buffer[128];
++
+ 	fp = fopen(path, "r");
+-	if(!fp) {
+-		/* If the metafile doesn't exist, allow overly permissive behavior. */
++	if (fp == NULL)
++		return false;
++	proot_perf_add(PROOT_PERF_METADATA_READ_OPENED, 1);
++	setvbuf(fp, buffer, _IOFBF, sizeof(buffer));
++	fields = fscanf(fp, "%d %u %u", &lcl_mode, &lcl_owner, &lcl_group);
++	fclose(fp);
++	if (fields != 3)
++		return false;
++	*mode = (mode_t)otod(lcl_mode);
++	*owner = lcl_owner;
++	*group = lcl_group;
++	return true;
++}
++
++int read_meta_file(char path[PATH_MAX], mode_t *mode, uid_t *owner, gid_t *group, Config *config)
++{
++	if (!read_meta_file_if_present(path, mode, owner, group)) {
+ 		*owner = config->euid;
+ 		*group = config->egid;
+ 		*mode = otod(755);
+-		return 0;
+-
+ 	}
+-	proot_perf_add(PROOT_PERF_METADATA_READ_OPENED, 1);
+-	setvbuf(fp, buffer, _IOFBF, sizeof(buffer));
+-	fscanf(fp, "%d %d %d", &lcl_mode, owner, group);
+-	lcl_mode = otod(lcl_mode);
+-	*mode = (mode_t)lcl_mode;
+-	fclose(fp);
+ 	return 0;
+ }
+ 
+--- a/src/proot/src/extension/fake_id0/helper_functions.h
++++ b/src/proot/src/extension/fake_id0/helper_functions.h
+@@ -18,6 +18,8 @@
+ 
+ int get_meta_path(Tracee *tracee, char orig_path[PATH_MAX], char meta_path[PATH_MAX]);
+ 
++bool read_meta_file_if_present(char path[PATH_MAX], mode_t *mode, uid_t *owner, gid_t *group);
++
+ int read_meta_file(char path[PATH_MAX], mode_t *mode, uid_t *owner, gid_t *group, Config *config);
+ 
+ int write_meta_file(char path[PATH_MAX], mode_t mode, uid_t owner, gid_t group, bool is_creat, Config *config);
+--- a/src/proot/src/extension/fake_id0/stat.c
++++ b/src/proot/src/extension/fake_id0/stat.c
+@@ -111,9 +111,7 @@
+ 	 */
+ 	
+ 	if(status == 0 && get_meta_path(tracee, path, meta_path) == 0) {
+-		status = path_exists(meta_path);
+-		if(status == 0) {
+-			read_meta_file(meta_path, &mode, &uid, &gid, config);
++		if (read_meta_file_if_present(meta_path, &mode, &uid, &gid)) {
+ 
+ 			/** Get the file type and sticky/set-id bits of the original 
+ 			 *  file and add them to the mode found in the meta_file.
+@@ -170,9 +168,8 @@
+ 	 * with fstat/newfstatat when Android host inodes cannot represent guest
+ 	 * ownership or setuid bits. */
+ 	if (get_meta_path(tracee, state->host_path, meta_path) == 0 &&
+-	    path_exists(meta_path) == 0) {
++	    read_meta_file_if_present(meta_path, &mode, &owner, &group)) {
+ 		/* TRITONTERM_ARCH_USERLAND_STATX_V1 */
+-		read_meta_file(meta_path, &mode, &owner, &group, config);
+ 		state->statx_buf.stx_mode = (mode & 07777) |
+ 			(state->statx_buf.stx_mode & S_IFMT);
+ 		state->statx_buf.stx_uid = owner;

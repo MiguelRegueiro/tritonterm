@@ -1,0 +1,229 @@
+--- a/src/proot/src/tracee/perf.h
++++ b/src/proot/src/tracee/perf.h
+@@ -2,6 +2,8 @@
+ #define PROOT_TRACEE_PERF_H
+ 
+ #include <signal.h>
++#include <errno.h>
++#include <time.h>
+ #include <stdint.h>
+ #include <stddef.h>
+ #include <sys/types.h>
+@@ -28,7 +30,13 @@
+ 	X(F2FS_ENTRIES, "f2fs_entries") \
+ 	X(F2FS_ACTIVE, "f2fs_active") \
+ 	X(METADATA_READ_ATTEMPTS, "metadata_read_attempts") \
+-	X(METADATA_READ_OPENED, "metadata_read_opened")
++	X(METADATA_READ_OPENED, "metadata_read_opened") \
++	X(CANONICAL_LSTAT_NS, "canonical_lstat_ns") \
++	X(METADATA_READ_NS, "metadata_read_ns") \
++	X(PVM_READ_NS, "pvm_read_ns") \
++	X(PVM_WRITE_NS, "pvm_write_ns") \
++	X(BINDING_LOOKUP_NS, "binding_lookup_ns") \
++	X(EVENT_HANDLING_NS, "event_handling_ns")
+ 
+ typedef enum {
+ #define PROOT_PERF_ENUM(id, name) PROOT_PERF_##id,
+@@ -38,6 +46,7 @@
+ } ProotPerfCounter;
+ 
+ extern volatile sig_atomic_t proot_perf_enabled;
++extern volatile sig_atomic_t proot_perf_timing_enabled;
+ extern uint64_t proot_perf_counters[PROOT_PERF_COUNT];
+ 
+ static inline void proot_perf_add(ProotPerfCounter counter, uint64_t value)
+@@ -63,6 +72,32 @@
+ 		proot_perf_counters[write ? PROOT_PERF_PVM_WRITE_SUCCESS : PROOT_PERF_PVM_READ_SUCCESS]++;
+ }
+ 
++static inline uint64_t proot_perf_clock(void)
++{
++	struct timespec value;
++	int saved_errno;
++	int status;
++
++	if (!proot_perf_enabled || !proot_perf_timing_enabled)
++		return 0;
++	saved_errno = errno;
++	status = clock_gettime(CLOCK_MONOTONIC, &value);
++	errno = saved_errno;
++	if (status != 0)
++		return 0;
++	return (uint64_t)value.tv_sec * UINT64_C(1000000000) + (uint64_t)value.tv_nsec;
++}
++
++static inline void proot_perf_elapsed(ProotPerfCounter counter, uint64_t start)
++{
++	uint64_t end;
++	if (start == 0)
++		return;
++	end = proot_perf_clock();
++	if (end >= start)
++		proot_perf_add(counter, end - start);
++}
++
+ void proot_perf_init(void);
+ void proot_perf_request_snapshot(void);
+ void proot_perf_flush_requested(void);
+--- a/src/proot/src/tracee/perf.c
++++ b/src/proot/src/tracee/perf.c
+@@ -12,6 +12,7 @@
+ #include "tracee/perf.h"
+ 
+ volatile sig_atomic_t proot_perf_enabled;
++volatile sig_atomic_t proot_perf_timing_enabled;
+ uint64_t proot_perf_counters[PROOT_PERF_COUNT];
+ 
+ static volatile sig_atomic_t snapshot_requested;
+@@ -135,6 +136,7 @@
+ {
+ 	int saved_errno = errno;
+ 	proot_perf_enabled = 0;
++	proot_perf_timing_enabled = 0;
+ 	snapshot_requested = 0;
+ 	if (signal_installed) {
+ 		(void) sigaction(SIGUSR2, &previous_usr2, NULL);
+@@ -162,6 +164,8 @@
+ 	if (sigfillset(&action.sa_mask) != 0 || sigaction(SIGUSR2, &action, &previous_usr2) != 0)
+ 		goto failed;
+ 	signal_installed = true;
++	const char *timing = getenv("PROOT_PERF_TIMING");
++	proot_perf_timing_enabled = timing != NULL && strcmp(timing, "1") == 0;
+ 	proot_perf_enabled = 1;
+ 	if (write_snapshot(0) == 0)
+ 		goto out;
+--- a/src/proot/src/tracee/mem.c
++++ b/src/proot/src/tracee/mem.c
+@@ -241,7 +241,9 @@
+ 	remote.iov_base = dest;
+ 	remote.iov_len  = size;
+ 
++	uint64_t perf_started = proot_perf_clock();
+ 	status = process_vm_writev(tracee->pid, &local, 1, &remote, 1, 0);
++	proot_perf_elapsed(PROOT_PERF_PVM_WRITE_NS, perf_started);
+ 	proot_perf_pvm_result(1, status, local.iov_len);
+ 	if ((size_t) status == size)
+ 		return 0;
+@@ -316,7 +318,9 @@
+ 	remote.iov_base = (word_t *)dest_tracee;
+ 	remote.iov_len  = size;
+ 
++	uint64_t perf_started = proot_perf_clock();
+ 	status = process_vm_writev(tracee->pid, src_tracer, src_tracer_count, &remote, 1, 0);
++	proot_perf_elapsed(PROOT_PERF_PVM_WRITE_NS, perf_started);
+ 	proot_perf_pvm_result(1, status, remote.iov_len);
+ 	if ((size_t) status == size)
+ 		return 0;
+@@ -364,7 +368,9 @@
+ 	remote.iov_base = src;
+ 	remote.iov_len  = size;
+ 
++	uint64_t perf_started = proot_perf_clock();
+ 	status = process_vm_readv(tracee->pid, &local, 1, &remote, 1, 0);
++	proot_perf_elapsed(PROOT_PERF_PVM_READ_NS, perf_started);
+ 	proot_perf_pvm_result(0, status, local.iov_len);
+ 	if ((size_t) status == size)
+ 		return 0;
+@@ -485,7 +491,9 @@
+ 		remote.iov_base = (uint8_t *)src + offset;
+ 		remote.iov_len  = size;
+ 
++		uint64_t perf_started = proot_perf_clock();
+ 		status = process_vm_readv(tracee->pid, &local, 1, &remote, 1, 0);
++		proot_perf_elapsed(PROOT_PERF_PVM_READ_NS, perf_started);
+ 		proot_perf_pvm_result(0, status, local.iov_len);
+ 		if ((size_t) status != size)
+ 			goto fallback;
+@@ -568,7 +576,9 @@
+ 	remote.iov_len  = sizeof_word(tracee);
+ 
+ 	errno = 0;
++	uint64_t perf_started = proot_perf_clock();
+ 	status = process_vm_readv(tracee->pid, &local, 1, &remote, 1, 0);
++	proot_perf_elapsed(PROOT_PERF_PVM_READ_NS, perf_started);
+ 	proot_perf_pvm_result(0, status, local.iov_len);
+ 	if (status > 0)
+ 		return result;
+@@ -615,7 +625,9 @@
+ 	remote.iov_len  = sizeof_word(tracee);
+ 
+ 	errno = 0;
++	uint64_t perf_started = proot_perf_clock();
+ 	status = process_vm_writev(tracee->pid, &local, 1, &remote, 1, 0);
++	proot_perf_elapsed(PROOT_PERF_PVM_WRITE_NS, perf_started);
+ 	proot_perf_pvm_result(1, status, local.iov_len);
+ 	if (status > 0)
+ 		return;
+--- a/src/proot/src/tracee/event.c
++++ b/src/proot/src/tracee/event.c
+@@ -522,8 +522,10 @@
+ 				continue;
+ 		}
+ 
++		uint64_t started = proot_perf_clock();
+ 		signal = handle_tracee_event(tracee, tracee_status);
+ 		(void) restart_tracee(tracee, signal);
++		proot_perf_elapsed(PROOT_PERF_EVENT_HANDLING_NS, started);
+ 	}
+ 
+ 	return last_exit_status;
+--- a/src/proot/src/path/canon.c
++++ b/src/proot/src/path/canon.c
+@@ -158,7 +158,9 @@
+ 		status = -ENOENT;
+ 	} else {
+ 		proot_perf_add(PROOT_PERF_CANONICAL_COMPONENT_LSTAT, 1);
++		uint64_t perf_started = proot_perf_clock();
+ 		status = lstat(host_path, &statl);
++		proot_perf_elapsed(PROOT_PERF_CANONICAL_LSTAT_NS, perf_started);
+ 		/* /linkerconfig directory is present and accessible on Android,
+ 		 * but cannot be stat()'d, use hardcoded stat if access was denied
+ 		 *
+--- a/src/proot/src/path/binding.c
++++ b/src/proot/src/path/binding.c
+@@ -118,7 +118,7 @@
+  * Get the binding for the given @path (relatively to the given
+  * binding @side).
+  */
+-Binding *get_binding(const Tracee *tracee, Side side, const char path[PATH_MAX])
++static Binding *get_binding_unmeasured(const Tracee *tracee, Side side, const char path[PATH_MAX])
+ {
+ 	Binding *binding;
+ 	size_t path_length = strlen(path);
+@@ -166,6 +166,14 @@
+ 	return NULL;
+ }
+ 
++Binding *get_binding(const Tracee *tracee, Side side, const char path[PATH_MAX])
++{
++	uint64_t started = proot_perf_clock();
++	Binding *binding = get_binding_unmeasured(tracee, side, path);
++	proot_perf_elapsed(PROOT_PERF_BINDING_LOOKUP_NS, started);
++	return binding;
++}
++
+ /**
+  * Get the binding path for the given @path (relatively to the given
+  * binding @side).
+--- a/src/proot/src/extension/fake_id0/helper_functions.c
++++ b/src/proot/src/extension/fake_id0/helper_functions.c
+@@ -363,14 +363,18 @@
+ 	gid_t lcl_group;
+ 	int fields;
+ 	char buffer[128];
++	uint64_t started = proot_perf_clock();
+ 
+ 	fp = fopen(path, "r");
+-	if (fp == NULL)
++	if (fp == NULL) {
++		proot_perf_elapsed(PROOT_PERF_METADATA_READ_NS, started);
+ 		return false;
++	}
+ 	proot_perf_add(PROOT_PERF_METADATA_READ_OPENED, 1);
+ 	setvbuf(fp, buffer, _IOFBF, sizeof(buffer));
+ 	fields = fscanf(fp, "%d %u %u", &lcl_mode, &lcl_owner, &lcl_group);
+ 	fclose(fp);
++	proot_perf_elapsed(PROOT_PERF_METADATA_READ_NS, started);
+ 	if (fields != 3)
+ 		return false;
+ 	*mode = (mode_t)otod(lcl_mode);

@@ -13,7 +13,9 @@
 #include <sys/stat.h>
 #include <sys/wait.h>
 #include <unistd.h>
+#include <time.h>
 
+static int intercepted_clock_gettime(clockid_t clock, struct timespec *value);
 static int intercepted_openat(int directory, const char *path, int flags, ...);
 static ssize_t intercepted_write(int fd, const void *data, size_t length);
 static int intercepted_close(int fd);
@@ -21,6 +23,7 @@ static int intercepted_renameat(int old_directory, const char *old_path, int new
 static int intercepted_sigaction(int signal, const struct sigaction *action, struct sigaction *previous);
 static FILE *intercepted_fopen(const char *path, const char *mode);
 
+#define clock_gettime intercepted_clock_gettime
 #define openat intercepted_openat
 #define write intercepted_write
 #define close intercepted_close
@@ -28,6 +31,7 @@ static FILE *intercepted_fopen(const char *path, const char *mode);
 #define sigaction(...) intercepted_sigaction(__VA_ARGS__)
 #define fopen intercepted_fopen
 #include "tracee/perf.c"
+#undef clock_gettime
 #undef openat
 #undef write
 #undef close
@@ -43,6 +47,46 @@ static int temporary_fd = -1;
 static const char *stat_fixture;
 static char directory[128];
 static char filename[256];
+
+static bool clock_error;
+
+static int intercepted_clock_gettime(clockid_t clock, struct timespec *value)
+{
+    assert(clock == CLOCK_MONOTONIC);
+    if (clock_error) {
+        errno = EIO;
+        return -1;
+    }
+    return clock_gettime(clock, value);
+}
+
+static void test_timing(void)
+{
+    proot_perf_enabled = 1;
+    proot_perf_timing_enabled = 0;
+    assert(proot_perf_clock() == 0);
+    proot_perf_timing_enabled = 1;
+    proot_perf_enabled = 0;
+    assert(proot_perf_clock() == 0);
+    proot_perf_enabled = 1;
+    errno = EDOM;
+    uint64_t started = proot_perf_clock();
+    assert(started > 0 && errno == EDOM);
+    uint64_t previous = proot_perf_counters[PROOT_PERF_METADATA_READ_NS];
+    proot_perf_elapsed(PROOT_PERF_METADATA_READ_NS, started - 1000);
+    assert(proot_perf_counters[PROOT_PERF_METADATA_READ_NS] > previous);
+    previous = proot_perf_counters[PROOT_PERF_METADATA_READ_NS];
+    proot_perf_elapsed(PROOT_PERF_METADATA_READ_NS, UINT64_MAX);
+    proot_perf_elapsed(PROOT_PERF_METADATA_READ_NS, 0);
+    assert(proot_perf_counters[PROOT_PERF_METADATA_READ_NS] == previous);
+    clock_error = true;
+    assert(proot_perf_clock() == 0 && errno == EDOM);
+    proot_perf_elapsed(PROOT_PERF_METADATA_READ_NS, started);
+    assert(proot_perf_counters[PROOT_PERF_METADATA_READ_NS] == previous && errno == EDOM);
+    clock_error = false;
+    proot_perf_timing_enabled = 0;
+    proot_perf_enabled = 0;
+}
 
 static int intercepted_openat(int parent, const char *path, int flags, ...)
 {
@@ -345,6 +389,7 @@ int main(void)
     strcpy(directory, "/tmp/tritonterm-perf-unit-XXXXXX");
     assert(mkdtemp(directory) != NULL);
     snprintf(filename, sizeof(filename), "%s/proot-perf-%ld.json", directory, (long) getpid());
+    test_timing();
     test_disabled();
     test_start_ticks();
     test_init_errors();

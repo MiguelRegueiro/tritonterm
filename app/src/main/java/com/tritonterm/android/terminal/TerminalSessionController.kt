@@ -438,7 +438,10 @@ internal class ArchLinuxArmBackend : TerminalBackend {
             "LANG=${ArchGuestEnvironment.LANG}",
             "TZ=${ArchGuestEnvironment.timezoneId()}"
         ) + ArchGuestNetworkDns.environment(context) +
-            if (performanceStatsEnabled()) arrayOf("PROOT_PERF_STATS_DIR=${cache.absolutePath}") else emptyArray()
+            if (performanceStatsEnabled()) arrayOf(
+                "PROOT_PERF_STATS_DIR=${cache.absolutePath}",
+                "PROOT_PERF_TIMING=1"
+            ) else emptyArray()
         val startedAt = System.nanoTime()
         TerminalDiagnostics.record(
             context,

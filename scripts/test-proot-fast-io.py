@@ -132,6 +132,16 @@ def test_performance_helper(command, environment, output):
         assert report["exit_code"] == 0
         assert report["counters"]["events"] > 0
         assert report["counters"]["f2fs_active"] == int(workaround)
+    for timing in ("0", "1"):
+        log = run(arguments + ["/bin/true"], env=dict(measured, PROOT_PERF_TIMING=timing), timeout=60)
+        report = json.loads(log)
+        assert "tracer_user_seconds" in report and "tracer_system_seconds" in report
+        assert "canonical_lstat" in report["timings_seconds"]
+        assert all(value >= 0 for value in report["timings_seconds"].values())
+        if timing == "0":
+            assert all(value == 0 for value in report["timings_seconds"].values())
+        else:
+            assert report["timings_seconds"]["event_handling"] > 0
     failure = subprocess.run(arguments + ["/bin/sh", "-c", "exit 7"], env=measured,
                              text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=60)
     assert failure.returncode == 7 and json.loads(failure.stdout)["exit_code"] == 7

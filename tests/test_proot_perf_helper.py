@@ -66,7 +66,8 @@ class ProotPerfHelperTest(unittest.TestCase):
         contents = "123 (a command ) with spaces) " + " ".join(fields)
         with patch.object(HELPER.Path, "read_text", return_value=contents):
             self.assertEqual(HELPER.process_stat(123),
-                             {"cpu_ticks": 66, "nice": 0, "start_ticks": 987})
+                             {"cpu_ticks": 66, "user_ticks": 55, "system_ticks": 11,
+                              "nice": 0, "start_ticks": 987})
 
 
 if __name__ == "__main__":

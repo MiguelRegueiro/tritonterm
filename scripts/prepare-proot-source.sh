@@ -124,4 +124,8 @@ apply_patch_or_check_marker "$PROJECT_ROOT/scripts/patches/proot-statx-missing.p
     'bool native_exit' 'src/proot/src/tracee/statx.c'
 apply_patch_or_check_marker "$PROJECT_ROOT/scripts/patches/proot-runtime-perf.patch" \
     'PROOT_PERF_COUNTERS' 'src/proot/src/tracee/perf.h'
+apply_patch_or_check_marker "$PROJECT_ROOT/scripts/patches/proot-metadata-single-open.patch" \
+    'read_meta_file_if_present' 'src/proot/src/extension/fake_id0/helper_functions.h'
+apply_patch_or_check_marker "$PROJECT_ROOT/scripts/patches/proot-runtime-timing.patch" \
+    'PROOT_PERF_TIMING' 'src/proot/src/tracee/perf.c'
 printf 'TRITONTERM_PINNED_PROOT_PATCHES_READY %s\n' "$EXPECTED_PR_COMMIT"

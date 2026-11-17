@@ -13,6 +13,8 @@ def process_stat(pid):
     fields = Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()
     return {
         "cpu_ticks": int(fields[11]) + int(fields[12]),
+        "user_ticks": int(fields[11]),
+        "system_ticks": int(fields[12]),
         "nice": int(fields[16]),
         "start_ticks": int(fields[19]),
     }
@@ -85,8 +87,14 @@ def main():
                                      start_usage.ru_utime - start_usage.ru_stime, 3),
         "tracer_cpu_seconds": round((end_stat["cpu_ticks"] - start_stat["cpu_ticks"]) /
                                     os.sysconf("SC_CLK_TCK"), 3),
+        "tracer_user_seconds": round((end_stat["user_ticks"] - start_stat["user_ticks"]) /
+                                     os.sysconf("SC_CLK_TCK"), 3),
+        "tracer_system_seconds": round((end_stat["system_ticks"] - start_stat["system_ticks"]) /
+                                       os.sysconf("SC_CLK_TCK"), 3),
         "tracer_nice": end_stat["nice"],
-        "counters": differences,
+        "timings_seconds": {name.removesuffix("_ns"): round(count / 1_000_000_000, 4)
+                            for name, count in differences.items() if name.endswith("_ns")},
+        "counters": {name: count for name, count in differences.items() if not name.endswith("_ns")},
     }
     print(json.dumps(report, indent=2))
     return result.returncode if result.returncode >= 0 else 128 - result.returncode

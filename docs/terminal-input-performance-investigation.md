@@ -480,3 +480,56 @@ prompt and process verification (`ps` must show the intended child shell):
 
 Do not infer that the Android UI is the cause from frame jank alone, or that
 PRoot is the cause from unnormalized process CPU totals alone.
+
+
+### Phone counters from exp.26 and next measurements
+
+The real tracer measured a no-change Cargo build at 7.399 seconds wall time,
+1.640 seconds command CPU and 3.380 seconds tracer CPU, with nice zero. It
+recorded 21,516 events (10,760 syscall stops, 10,706 seccomp stops and 11
+SIGSYS stops). Bulk memory reads succeeded in 29,071 of 29,072 attempts;
+all 14,403 writes succeeded. There was one ptrace peek and no ptrace pokes
+or stub writes. Thus wordwise memory fallbacks do not explain this run.
+The F2FS workaround was inactive with no scans or enumerated entries.
+
+The remaining counts were 7,808 path translations, 2,139,610 binding
+comparisons, 57,197 component lstats and 10,395 ownership-record read
+attempts (10,390 opened). Counts establish repeated work, not its elapsed
+cost. A host-only binding index preserved mapping order and passed native
+checks, but its seven-sample Cargo medians were 615.112 versus 611.123 ms,
+with overlapping variation. A monitored positive-directory cache also
+passed targeted rename, removal, symlink replacement, chmod, root-replacement
+and monitoring-error tests, without a clear whole-command gain. Neither
+prototype is in the packaged runtime; no guest filesystem cache is enabled.
+
+Stat/statx metadata handling now opens a record directly instead of making
+an existence check first. Missing records retain normal ownership mapping;
+permission helpers retain their default for missing records. Truncated
+records no longer partially assign uninitialized metadata. The shared
+reader and its defaulting wrapper have complete targeted line/block
+coverage for valid, missing and truncated records. A seven-sample host
+comparison had medians 602.297 versus 591.321 ms, a small difference amid
+substantial timing variation, not a demonstrated phone fix.
+
+The next diagnostic adds explicitly enabled monotonic elapsed timers for
+component lstat, binding lookup, ownership-record reads, process_vm reads
+and writes, and trace-event handling. Experimental/debug launches set
+`PROOT_PERF_TIMING=1`; ordinary launches leave timers disabled. Clock calls
+preserve errno and failed clock calls do not add an elapsed value. The
+same helper also separates tracer user/system CPU. Timer values measure
+elapsed wall time, including pauses inside each measured operation. Event
+handling encloses component timers, so those figures overlap and must not
+be added to it or treated as CPU accounting. Host and phone timing overhead
+must not be confused with an uninstrumented performance baseline.
+
+The command remains `python /tmp/tritonterm-measure-proot.py cargo build --offline`.
+No new trace export, Arch image, guest package rebuild or data reset is needed.
+
+Validation for this update: the full native host suite passed with bulk memory
+access available and denied, both tracing modes, metadata/path transitions,
+Rust/linker/thread workloads and debugger attachment. The updated helper was
+checked with timers enabled/disabled in both memory modes. The timer header
+has 85.51% targeted line coverage. All 85 app/emulator/view JVM tests completed
+with zero failures/errors and one existing skip, and the Android ARM64 build
+passed. The new patches prepare against the pinned source and reapply
+idempotently; no rootfs pin or guest metadata format changed.
