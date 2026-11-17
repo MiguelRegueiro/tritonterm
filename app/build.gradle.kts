@@ -61,6 +61,7 @@ android {
             useLegacyPackaging = true
         }
         jniLibs {
+            keepDebugSymbols += "**/*.so"
             // The runtime launches these ELF files by path; APK-backed direct loading is not enough.
             useLegacyPackaging = true
         }
