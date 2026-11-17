@@ -145,7 +145,7 @@ def main():
                 run(command + cargo, environment)
                 print(f"{label}: changed leaf rebuilt with its dependent; executable passed", flush=True)
         finally:
-            leaf.write_text(original)
+            write_changed(leaf, original)
     report = dict(crates=options.crates, build_scripts=min(39, options.crates),
                   guest_uid=options.guest_uid, guest_gid=options.guest_gid, samples_ms=samples,
                   cpu_samples_ms=cpu_samples,

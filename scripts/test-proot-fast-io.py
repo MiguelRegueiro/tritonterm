@@ -54,16 +54,20 @@ def build(output):
     (output / "unit-build.log").write_text(run([
         "cc", "-O0", "--coverage", "-ffunction-sections", "-fdata-sections", "-include", compat,
         f"-I{native}", f"-I{talloc}", PROJECT / "tests/proot_fast_io_unit.c", native / "syscall/sysnum.c",
-        "-Wl,--gc-sections", f"-L{library}", "-ltalloc", "-o", output / "unit"]))
+        native / "tracee/perf.c", "-Wl,--gc-sections", f"-L{library}", "-ltalloc", "-o", output / "unit"]))
     (output / "statx-unit-build.log").write_text(run([
         "cc", "-std=gnu11", "-O0", "-Wall", "-Wextra", "-Werror", "--coverage",
         "-ffunction-sections", "-fdata-sections", f"-I{native}", f"-I{talloc}",
-        PROJECT / "tests/proot_statx_path_unit.c", "-Wl,--gc-sections", "-o", output / "statx-unit"]))
+        PROJECT / "tests/proot_statx_path_unit.c", native / "tracee/perf.c",
+        "-Wl,--gc-sections", "-o", output / "statx-unit"]))
     (output / "fstat-unit-build.log").write_text(run([
         "cc", "-std=gnu11", "-O0", "-DUSERLAND", "-Wall", "-Wextra", "-Werror", "--coverage",
         "-ffunction-sections", "-fdata-sections", f"-I{native}", f"-I{talloc}",
-        f"-I{library / 'include'}", PROJECT / "tests/proot_fstat_path_unit.c",
+        f"-I{library / 'include'}", PROJECT / "tests/proot_fstat_path_unit.c", native / "tracee/perf.c",
         "-Wl,--gc-sections", "-o", output / "fstat-unit"]))
+    (output / "perf-unit-build.log").write_text(run([
+        "cc", "-std=gnu11", "-O0", "-Wall", "-Wextra", "-Werror", "--coverage",
+        f"-I{native}", PROJECT / "tests/proot_perf_unit.c", "-o", output / "perf-unit"]))
     run(["cc", "-std=c11", "-O2", "-Wall", "-Wextra", "-Werror", "-pthread",
          PROJECT / "tests/proot_fast_io_workload.c", "-o", output / "workload"])
     return native / "proot"
@@ -118,6 +122,28 @@ def prompt_benchmark(command, environment, shell):
         os.close(master)
 
 
+def test_performance_helper(command, environment, output):
+    shutil.copyfile(PROJECT / "app/src/main/assets/measure-proot.py", output / "measure-proot.py")
+    arguments = command + ["/usr/bin/python3", "/work/measure-proot.py", "--stats-dir", "/work", "--"]
+    measured = dict(environment, PROOT_PERF_STATS_DIR=str(output))
+    for workaround in ("0", "1"):
+        log = run(arguments + ["/bin/true"], env=dict(measured, PROOT_F2FS_WORKAROUND=workaround), timeout=60)
+        report = json.loads(log)
+        assert report["exit_code"] == 0
+        assert report["counters"]["events"] > 0
+        assert report["counters"]["f2fs_active"] == int(workaround)
+    failure = subprocess.run(arguments + ["/bin/sh", "-c", "exit 7"], env=measured,
+                             text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=60)
+    assert failure.returncode == 7 and json.loads(failure.stdout)["exit_code"] == 7
+    disabled = measured.copy()
+    disabled.pop("PROOT_PERF_STATS_DIR")
+    unavailable = subprocess.run(arguments + ["/bin/true"], env=disabled,
+                                 text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=60)
+    assert unavailable.returncode == 2 and "TritonTerm profiler:" in unavailable.stdout
+    assert "talloc" not in unavailable.stdout.lower()
+    print("PASS performance helper snapshots, gauges, command failure and disabled runtime", flush=True)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, required=True)
@@ -132,6 +158,7 @@ def main():
     print(run([output / "unit"]), end="", flush=True)
     print(run([output / "statx-unit"]), end="", flush=True)
     print(run([output / "fstat-unit"]), end="", flush=True)
+    print(run([output / "perf-unit"]), end="", flush=True)
     root = output / "rootfs"
     root.mkdir(exist_ok=True)
     for name in ("tmp", "work", "usr", "bin", "lib", "lib64", "etc", "proc", "dev"):
@@ -223,6 +250,7 @@ def main():
         results["metadata_comparison_ms"] = comparison
     (output / "results.json").write_text(json.dumps(results, indent=2) + "\n")
     print(json.dumps(results, indent=2), flush=True)
+    test_performance_helper(command, environment, output)
 
 
 if __name__ == "__main__":

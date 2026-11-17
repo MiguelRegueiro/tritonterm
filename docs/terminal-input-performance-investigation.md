@@ -170,6 +170,82 @@ It therefore has a substantial shell/test-protocol baseline and cannot be
 used alone to assign the phone's held-Enter backlog to PRoot. No shell timing
 variables or input-repeat behavior were changed by these runtime fixes.
 
+### Follow-up after exp.25
+
+The user reported another profiled no-change build taking 7.76 seconds. The
+subsequent unprofiled runs on November 17 fell from 5.85 seconds wall time
+(Cargo reported 5.65) to 2.56 seconds. The first reported user+system CPU sum
+was about 1.29 seconds; the final sum was about 1.03 seconds. These totals
+still exclude the PRoot tracer. The warm-up effect remains substantial, and
+the remaining warm-build delay is not established as solved.
+
+A host-verified diagnostic can identify the actual tracer from
+`/proc/self/status`'s `TracerPid`, read its utime/stime counters before and
+after a normal offline build, and report those separately from Cargo and
+its children. Tracer nice level and guest/tracer seccomp-filter counts are
+also available in the same small output. This does not use nested ptrace.
+The host guest showed the expected additional filter on the tracee; the
+corresponding phone measurements are pending. CPU counters do not by
+themselves attribute scheduler or storage waits, and CPU totals from
+concurrent processes must not be subtracted from wall time as an I/O metric.
+
+The next phone run measured 7.037 seconds wall time, 1.533 seconds Cargo child
+CPU, and 3.200 seconds tracer CPU from `/proc/<TracerPid>/stat`. The tracer's
+nice value was zero. Guest and tracer reported two and one seccomp filters
+respectively, consistent with the added fast-I/O filter being installed.
+The tracer consumes substantial CPU, rather than the missing wall time being
+entirely storage wait. Those CPU totals can overlap and do not constitute an
+additive wall-time breakdown. They do not identify individual hot functions,
+prove that process_vm access is blocked, or rule out Android cgroup scheduling
+effects merely because the nice value is zero.
+
+An opt-in host prototype retained process_vm first, then attempted a bulk
+`/proc/<pid>/mem` transfer for larger buffers before the existing ptrace path.
+The phone child-process probe then returned 256 successful bytes for both
+process_vm operations and proc-mem read/write. This does not establish the
+real tracer's transfer success rate, but rules out a blanket denial in that
+probe. The prototype was preserved outside the active source tree and is not
+packaged; its forced-denial host gain is not evidence of a phone fix.
+
+### Measuring the real tracer
+
+An explicitly enabled native counter recorder now measures the installed
+tracer rather than inferring its behavior from a separate child probe. It
+records process-memory attempts/successes, wordwise ptrace and stub writes,
+path-component lookups, binding comparisons, metadata reads/opened records,
+F2FS scan activity and the syscall/seccomp/SIGSYS stop mix. The recorder writes
+an initial numeric JSON record, then writes only when requested. SIGUSR2 sets
+a signal-safe flag; the event loop publishes an atomic snapshot outside the
+signal handler and preserves errno. Disabled SIGUSR2 and SIGUSR1 retain their
+existing behavior. Records contain the tracer PID and process start ticks to
+reject stale files after PID reuse.
+
+TritonTerm enables this for debug/experimental builds only and puts the helper
+in its cache, exposed through the existing `/tmp` binding. It changes neither
+the Arch image nor guest metadata. After installing the diagnostic build,
+force-stop the app in Android settings and reopen it, then run:
+
+```sh
+python /tmp/tritonterm-measure-proot.py cargo build --offline
+```
+
+The helper requests snapshots before/after the command and prints their
+counter differences with command/tracer CPU and wall time. Bookkeeping
+syscalls are included in those differences; this is a diagnostic rather than
+a replacement for the uninstrumented performance baseline. `f2fs_active` is a
+gauge and is reported as its actual value rather than subtracted.
+
+Native recorder coverage is 96.06% for its implementation and 100% for its
+counter header. Host tests cover signal/file failure paths, atomic output,
+PID reuse, rejected stale snapshots, command failures and disabled runtimes.
+The full runtime suite passed with counters disabled and with counters
+enabled plus process_vm denied. Real signals were checked with fast filtering
+and the F2FS workaround independently on/off. App/emulator/view JVM tests
+passed. A five-sample 280-dependency host comparison had medians 655.735 ms
+before, 655.173 ms with recording disabled, and 642.551 ms enabled. The sample
+spread overlaps; this establishes no measured slowdown in that run, not a
+speedup from instrumentation or a bound on phone overhead.
+
 ## Symptom and device tests
 
 - Holding Enter in the normal Fish + Starship session can leave several prompts

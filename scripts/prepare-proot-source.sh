@@ -122,4 +122,6 @@ apply_patch_or_check_marker "$PROJECT_ROOT/scripts/patches/proot-fstat-buffer.pa
     'static int handle_fstat_readlink_exit' 'src/proot/src/extension/fake_id0/fake_id0.c'
 apply_patch_or_check_marker "$PROJECT_ROOT/scripts/patches/proot-statx-missing.patch" \
     'bool native_exit' 'src/proot/src/tracee/statx.c'
+apply_patch_or_check_marker "$PROJECT_ROOT/scripts/patches/proot-runtime-perf.patch" \
+    'PROOT_PERF_COUNTERS' 'src/proot/src/tracee/perf.h'
 printf 'TRITONTERM_PINNED_PROOT_PATCHES_READY %s\n' "$EXPECTED_PR_COMMIT"

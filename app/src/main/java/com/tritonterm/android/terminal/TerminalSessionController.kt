@@ -16,6 +16,7 @@ import com.termux.terminal.TerminalSessionClient
 import com.termux.terminal.TerminalEmulator
 import com.termux.view.TerminalView
 import com.termux.view.TerminalViewClient
+import com.tritonterm.android.BuildConfig
 import com.tritonterm.android.config.TerminalConfig
 import android.graphics.Color
 import kotlin.math.roundToInt
@@ -364,6 +365,8 @@ internal class AndroidShellBackend : TerminalBackend {
 
 /** Launches the downloaded Arch Linux ARM rootfs through the bundled Android PRoot runtime. */
 internal class ArchLinuxArmBackend : TerminalBackend {
+    private fun performanceStatsEnabled() = BuildConfig.DEBUG || BuildConfig.VERSION_NAME.contains("-exp.")
+
     override val label = "Arch ARM"
     override fun isReady(context: Context) = ArchLinuxArmBootstrap.isInstalled(context)
     override suspend fun prepare(
@@ -387,6 +390,13 @@ internal class ArchLinuxArmBackend : TerminalBackend {
         ).forEach { directory ->
             check(directory.mkdirs() || directory.isDirectory) {
                 "Could not create TritonTerm environment directory: $directory"
+            }
+        }
+        if (performanceStatsEnabled()) {
+            context.assets.open("measure-proot.py").use { source ->
+                File(cache, "tritonterm-measure-proot.py").outputStream().use { destination ->
+                    source.copyTo(destination)
+                }
             }
         }
         val nativeLibs = File(context.applicationInfo.nativeLibraryDir)
@@ -427,7 +437,8 @@ internal class ArchLinuxArmBackend : TerminalBackend {
             "TERM=xterm-256color",
             "LANG=${ArchGuestEnvironment.LANG}",
             "TZ=${ArchGuestEnvironment.timezoneId()}"
-        ) + ArchGuestNetworkDns.environment(context)
+        ) + ArchGuestNetworkDns.environment(context) +
+            if (performanceStatsEnabled()) arrayOf("PROOT_PERF_STATS_DIR=${cache.absolutePath}") else emptyArray()
         val startedAt = System.nanoTime()
         TerminalDiagnostics.record(
             context,
