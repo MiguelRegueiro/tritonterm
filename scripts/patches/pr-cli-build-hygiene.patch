@@ -1,0 +1,31 @@
+--- a/src/pr-cli/src/install.rs
++++ b/src/pr-cli/src/install.rs
+@@ -887,7 +887,7 @@
+                 )?;
+             }
+             let entries = extracted_entries.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+-            if entries == 1 || entries % 64 == 0 {
++            if entries == 1 || entries.is_multiple_of(64) {
+                 write_extraction_progress(
+                     bytes_read.load(std::sync::atomic::Ordering::Relaxed),
+                     archive_size,
+@@ -1008,7 +1008,7 @@
+         .map_err(|e| format!("write guest metadata for {}: {}", guest_path, e))?;
+     fs::set_permissions(&temporary, fs::Permissions::from_mode(0o600))
+         .map_err(|e| format!("protect guest metadata for {}: {}", guest_path, e))?;
+-    fs::rename(&temporary, &metadata_path)
++    fs::rename(&temporary, metadata_path)
+         .map_err(|e| format!("commit guest metadata for {}: {}", guest_path, e))
+ }
+ 
+--- a/src/pr-cli/src/shared.rs
++++ b/src/pr-cli/src/shared.rs
+@@ -1139,7 +1139,7 @@
+         assert!(!table.lines().any(|line| {
+             line.split_ascii_whitespace()
+                 .nth(1)
+-                .is_some_and(|mount| is_android_host_mount_point(mount))
++                .is_some_and(is_android_host_mount_point)
+         }));
+ 
+         if let Some(value) = saved {

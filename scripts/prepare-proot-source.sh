@@ -104,8 +104,10 @@ elif ! grep -qF 'TRITONTERM_ARCH_ROOT_TRAVERSAL_V1' "$PR_SOURCE/src/pr-cli/src/i
     exit 1
 fi
 archive_test_patch="$PROJECT_ROOT/scripts/patches/pr-cli-rootfs-archive-test.patch"
-apply_patch_or_check_marker "$archive_test_patch" \
-    'extract_arch_fakeroot_payload' 'src/pr-cli/src/install.rs'
+if ! grep -qF 'fn extract_arch_fakeroot_payload()' "$PR_SOURCE/src/pr-cli/src/install.rs"; then
+    apply_patch_or_check_marker "$archive_test_patch" \
+        'extract_arch_fakeroot_payload' 'src/pr-cli/src/install.rs'
+fi
 apply_patch_or_check_marker "$PROJECT_ROOT/scripts/patches/tritonterm-arch-guest-env.patch" \
     'TRITONTERM_GUEST_LOCALE_TZ_V1' 'src/pr-cli/src/login.rs'
 apply_patch_or_check_marker "$PROJECT_ROOT/scripts/patches/pr-cli-network-dns.patch" \
@@ -128,4 +130,6 @@ apply_patch_or_check_marker "$PROJECT_ROOT/scripts/patches/proot-metadata-single
     'read_meta_file_if_present' 'src/proot/src/extension/fake_id0/helper_functions.h'
 apply_patch_or_check_marker "$PROJECT_ROOT/scripts/patches/proot-runtime-timing.patch" \
     'PROOT_PERF_TIMING' 'src/proot/src/tracee/perf.c'
+apply_patch_or_check_marker "$PROJECT_ROOT/scripts/patches/pr-cli-build-hygiene.patch" \
+    'entries.is_multiple_of(64)' 'src/pr-cli/src/install.rs'
 printf 'TRITONTERM_PINNED_PROOT_PATCHES_READY %s\n' "$EXPECTED_PR_COMMIT"
