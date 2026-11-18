@@ -107,6 +107,43 @@ clock/counter overhead and normal application work are not fully attributed.
 Concurrent exec requests and raw kernel calls outside the monitor are not a
 complete tracing model; the intended workloads are short noninteractive queries.
 
+### Loader diagnostics in exp.38
+
+Reports add a `cache` object with numeric `ctr_el0`, `idc`, `dic`, `dline`
+and `iline` fields. This is the kernel-visible register at report time; the
+cache synchronization routine reads it independently on each invocation.
+New metrics retain the existing `[count,nanoseconds]` representation:
+
+* `loader_fill`: ELF segment preads into anonymous memory, including page
+  faults/copying within those reads; header reads are outside this metric.
+* `loader_protect`: the loader's protection changes, including trampoline
+  protections and the existing conditional execmem geometry probe.
+* `loader_sync`: instruction synchronization requests, including trampolines.
+* `loader_sync_bytes`: requested synchronization bytes; its second value is
+  zero. A skipped maintenance loop still contributes requested bytes.
+
+Rewrite scanning retains its existing `rewrite` timer. These timings are not
+a complete partition: initial mapping/allocation, header handling and other
+work remain outside the new spans, and existing enclosing timers overlap.
+Count mode records events without phase clocks; off mode emits nothing.
+
+The Fish helper also invokes `true` with guest environment variable
+`TRITONTERM_CNG_LOADER_PROBE=1` in a separate untimed command. Launcher
+`CNG_PROFILE_SUPPORT=1` is required. A native child attempts sealed memfd
+creation, a private writable mapping patched to executable code, RW-to-RX
+transition and execution, then verifies a fresh mapping retains the original
+code. Raw monitor gate syscalls bypass execmap's anonymous fallback. This is
+only a capability diagnostic, not an executable-image cache.
+
+The JSON prefix is `TRITONTERM_CNG_LOADER_PROBE`; `stage=9,error=0,signal=0`
+indicates success. Failure stages are documented in `cng/loader_probe.h`.
+Stage 15 reports a child signal, and stage 14 reports a timeout. The parent
+polls for about two seconds and kills/reaps an unfinished child. Native Linux
+uses a quiet clone child; qemu-user's EINVAL fallback uses ordinary fork, as
+the existing broker does. Denial is reported without changing command output
+or exit status. A missing report is retained as unavailable by the collector.
+Nothing runs by default on normal commands or shell startup.
+
 ## Host checks
 
 ```sh

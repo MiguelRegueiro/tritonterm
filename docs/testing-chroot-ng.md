@@ -414,3 +414,23 @@ The self-contained `scripts/test-chroot-ng-stat-path.py` regression fixture
 checks stat semantics, live replacement and containment with the packaged
 runtime. It accepts `--guest-cc` and an optional `--baseline-runtime` for the
 component-probe comparison. The rootfs/metadata format is unchanged.
+
+## exp.38: cache synchronization and loader capability diagnostics
+
+The [loader investigation](executable-loading-investigation.md) records the
+feature-aware instruction synchronization change, expanded profiling phases,
+isolated native mapping experiment and validation limits. Reproduce its new
+focused checks with:
+
+```sh
+python3 -B scripts/test-chroot-ng-loader.py --guest-cc /path/to/aarch64-linux-gcc
+python3 -B scripts/test-chroot-ng-profile.py --guest-cc /path/to/aarch64-linux-gcc
+python3 -B scripts/test-phone-profile-helper.py
+```
+
+The mapping experiment handles permission errors, SIGSYS and blocked calls
+without changing the guest command's output or exit status. It is diagnostic
+only: anonymous loading, package metadata and backend selection are preserved.
+The packaged cache routine contains none of the fixture's synthetic-feature
+entry points or loop counters. Hardware coherence, app policy and speed gains
+must be checked on the phone using the refreshed profile helper.
