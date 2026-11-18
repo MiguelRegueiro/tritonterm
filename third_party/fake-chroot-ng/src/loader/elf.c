@@ -66,7 +66,7 @@ void cng_loader_check_execmem(void) {
 static int map_anon(int fd, const Elf64_Ehdr *eh, const Elf64_Phdr *ph,
                     int is_dyn, unsigned long lo, unsigned long span,
                     unsigned long base_hint, unsigned long *bias_out,
-                    unsigned long *maplen_out) {
+                    unsigned long *maplen_out, unsigned char *copied) {
     unsigned long pool_extra = cng_g_rewrite ? CNG_TRAMP_POOL : 0;
     *maplen_out = span + pool_extra;
     int mflags = CNG_MAP_PRIVATE | CNG_MAP_ANONYMOUS;
@@ -82,11 +82,40 @@ static int map_anon(int fd, const Elf64_Ehdr *eh, const Elf64_Phdr *ph,
     for (int i = 0; i < eh->e_phnum; i++) {
         if (ph[i].p_type != PT_LOAD || !ph[i].p_filesz)
             continue;
+        /* Non-executable, page-compatible, non-overlapping segments need not
+         * be eagerly copied. A private data mapping works on noexec mounts;
+         * code retains anonymous memory and the existing rewrite/W^X path.
+         * Shared 4K/16K pages and failed mmap retain the copying fallback. */
+        unsigned long v = bias + ph[i].p_vaddr;
+        unsigned long first = cng_page_down(v);
+        unsigned long last = cng_page_up(v + ph[i].p_filesz);
+        int isolated = !(ph[i].p_flags & PF_X) &&
+            (v - first) == (ph[i].p_offset - cng_page_down(ph[i].p_offset));
+        for (int j = 0; isolated && j < eh->e_phnum; j++) {
+            if (j == i || ph[j].p_type != PT_LOAD || !ph[j].p_memsz) continue;
+            unsigned long a = cng_page_down(bias + ph[j].p_vaddr);
+            unsigned long b = cng_page_up(bias + ph[j].p_vaddr + ph[j].p_memsz);
+            if (first < b && last > a) isolated = 0;
+        }
+        if (isolated) {
+            void *m = sys_mmap((void *)first, last - first,
+                CNG_PROT_READ | CNG_PROT_WRITE, CNG_MAP_PRIVATE | CNG_MAP_FIXED,
+                fd, (long)cng_page_down(ph[i].p_offset));
+            if (!cng_is_err((long)m)) {
+                unsigned long zero_end = v + ph[i].p_memsz;
+                if (zero_end > last) zero_end = last;
+                if (zero_end > v + ph[i].p_filesz)
+                    memset((void *)(v + ph[i].p_filesz), 0, zero_end - v - ph[i].p_filesz);
+                cng_profile_add(CNG_P_FILE_MAPS, 1);
+                continue;
+            }
+        }
         if (read_exact(fd, (void *)(bias + ph[i].p_vaddr), ph[i].p_filesz,
                        (long)ph[i].p_offset) != (long)ph[i].p_filesz) {
             sys_munmap(seg, span + pool_extra);
             return CNG_LOAD_EIO;
         }
+        copied[i] = 1;
         cng_profile_add(CNG_P_COPY_BYTES, ph[i].p_filesz);
     }
 
@@ -523,6 +552,7 @@ static int cng_elf_map_profiled(const struct cng_elf_plan *plan, unsigned long b
     const Elf64_Phdr *ph = plan->ph;
     unsigned long lo = plan->lo, hi = plan->hi, span = hi - lo, bias = 0;
     unsigned long maplen = 0;
+    unsigned char copied[MAX_PHDR] = {0};
 
     /* The strategy can have changed since the plan was made — another thread's
      * load flipping cng_g_loader_file — so the geometry question the header
@@ -541,7 +571,7 @@ static int cng_elf_map_profiled(const struct cng_elf_plan *plan, unsigned long b
         return CNG_LOAD_ECLOBBER;
     int anon = !cng_g_loader_file;
     int rc = anon ? map_anon(plan->fd, eh, ph, plan->is_dyn, lo, span,
-                             base_hint, &bias, &maplen)
+                             base_hint, &bias, &maplen, copied)
                   : map_file(plan->fd, eh, ph, plan->is_dyn, lo, span,
                              base_hint, &bias, &maplen);
     if (rc == CNG_LOAD_EEXEC) {
@@ -590,7 +620,7 @@ static int cng_elf_map_profiled(const struct cng_elf_plan *plan, unsigned long b
     out->ncopied = 0;
     for (int i = 0; anon && i < eh->e_phnum && out->ncopied < CNG_LOAD_COPIED;
          i++) {
-        if (ph[i].p_type != PT_LOAD || !ph[i].p_filesz)
+        if (!copied[i])
             continue;
         unsigned long v = bias + ph[i].p_vaddr;
         out->copied[out->ncopied].lo = cng_page_down(v);
