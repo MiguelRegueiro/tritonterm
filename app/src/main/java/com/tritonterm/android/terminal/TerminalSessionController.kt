@@ -392,6 +392,11 @@ internal class ArchLinuxArmBackend : TerminalBackend {
                 "Could not create TritonTerm environment directory: $directory"
             }
         }
+        context.assets.open("profile-chroot-ng.fish").use { source ->
+            File(cache, "tritonterm-profile.fish").outputStream().use { destination ->
+                source.copyTo(destination)
+            }
+        }
         if (performanceStatsEnabled()) {
             context.assets.open("measure-proot.py").use { source ->
                 File(cache, "tritonterm-measure-proot.py").outputStream().use { destination ->
@@ -424,6 +429,7 @@ internal class ArchLinuxArmBackend : TerminalBackend {
             "APP_HOME=${File(context.filesDir, "home").absolutePath}",
             "APP_PACKAGE=${context.packageName}",
             "TRITONTERM_ARCH_ENGINE=$runtime",
+            "CNG_PROFILE_SUPPORT=1",
             "HOME=${File(context.filesDir, "home").absolutePath}",
             "TMPDIR=${cache.absolutePath}",
             "PROOT_TMP_DIR=${cache.absolutePath}",

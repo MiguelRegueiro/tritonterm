@@ -30,6 +30,7 @@ The Arch environment is stored in app-private data. App updates preserve it; uni
 - [Runtime diagnostics](docs/device-runtime-diagnostics.md)
 - [Local testing APKs](docs/testing-builds.md)
 - [Experimental chroot-ng backend](docs/testing-chroot-ng.md)
+- [Phone execution profiling](docs/chroot-ng-profiling.md)
 - [Changelog](CHANGELOG.md)
 
 ## Build
