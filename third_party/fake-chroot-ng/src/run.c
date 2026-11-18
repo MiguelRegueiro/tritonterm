@@ -1,3 +1,4 @@
+#include "cng/tritonterm.h"
 /* SPDX-License-Identifier: Apache-2.0 */
 /* Copyright 2026 Sylirre */
 /* cng_run() — load the guest program with the userland loader, install the
@@ -411,6 +412,8 @@ int cng_run(const char *rootfs, const char *libprefix, const char *workdir,
 
     /* setuid/setgid-on-exec for the initial program (e.g. running /bin/su
      * directly), mirroring the emulated-execve path. */
+    if (cng_triton_exec_check(host_prog) < 0)
+        return 126;
     cng_cred_exec(host_prog);
 
     /* The view is complete: publish it. From here every reader sees it through

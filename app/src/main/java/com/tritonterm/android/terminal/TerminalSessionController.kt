@@ -417,10 +417,13 @@ internal class ArchLinuxArmBackend : TerminalBackend {
         val cli = File(nativeLibs, "libpr-cli.so").absolutePath
         val guestRoot = ArchLinuxArmBootstrap.rootfs(context)
         val loginUser = ArchGuestUser.NAME
+        val runtime = TerminalConfig.loadOrCreate(TerminalConfig.file(context.filesDir)).archRuntime
+        TerminalDiagnostics.record(context, "arch_runtime", "selected", mapOf("engine" to runtime))
         val environment = arrayOf(
             "APP_PREFIX=${prefix.absolutePath}",
             "APP_HOME=${File(context.filesDir, "home").absolutePath}",
             "APP_PACKAGE=${context.packageName}",
+            "TRITONTERM_ARCH_ENGINE=$runtime",
             "HOME=${File(context.filesDir, "home").absolutePath}",
             "TMPDIR=${cache.absolutePath}",
             "PROOT_TMP_DIR=${cache.absolutePath}",

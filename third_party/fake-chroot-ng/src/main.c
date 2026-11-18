@@ -499,6 +499,7 @@ static void help(char **envp) {
         {"COLUMNS", "Width to render this help at when no terminal answers "
                       "TIOCGWINSZ (a redirected run). Clamped to 32..92; a "
                       "value that is not a positive number is ignored."},
+        {"TRITONTERM_USERLAND_METADATA", "Set to 1 to enable TritonTerm archive ownership/mode sidecars. Experimental development scope: set-id execution, chown and hardlinks require the PRoot backend."},
         {"CNG_DEBUG", "When set to a non-empty, non-zero value, log verbose "
                       "syscall-error diagnostics to stderr, including each "
                       "syscall the host refuses and chroot-ng emulates."},

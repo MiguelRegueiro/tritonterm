@@ -38,7 +38,7 @@ internal object TerminalConfigSyntaxHighlighter {
                                 addStyle(SpanStyle(color = number), it.start, it.end)
                             }
                         }
-                        "cursor_shape" -> highlightValue(tokens, chord)
+                        "cursor_shape", "arch_runtime" -> highlightValue(tokens, chord)
                         "cursor_blink_interval", "cursor_beam_thickness", "cursor_underline_thickness" ->
                             highlightValue(tokens, number)
                         "cursor", "cursor_text_color" -> highlightValue(tokens, action)

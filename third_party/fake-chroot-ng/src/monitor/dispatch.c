@@ -8,6 +8,7 @@
  * Also applies the M7 fidelity fixups: credential/ownership faking (--fake-id),
  * /proc/self readlink fixups, and the link2symlink fallback (--link2symlink).
  */
+#include "cng/tritonterm.h"
 #include "cng/execmap.h"
 #include "cng/l2s.h"
 #include "cng/loader.h"
@@ -4936,6 +4937,10 @@ static long dispatch_1(long nr, long a0, long a1, long a2, long a3, long a4,
                 cng_l2s_stat(hnf, sb) == 1) {
                 if (cng_g_fake_id)
                     stat_remap(sb);
+                char metadata_backing[CNG_PATH_MAX];
+                const char *metadata_host = cng_l2s_resolve(hnf, metadata_backing, sizeof metadata_backing, 0) == 1
+                    ? metadata_backing : hnf;
+                cng_triton_stat(CNG_AT_FDCWD, metadata_host, sb, 0);
                 return cng_user_copyout((void *)a2, sb, sizeof sb) < 0 ? -EFAULT
                                                                        : 0;
             }
@@ -4970,6 +4975,8 @@ static long dispatch_1(long nr, long a0, long a1, long a2, long a3, long a4,
         /* A process's /proc entries are its owner's (cng_procfs_owner). */
         if (r == 0 && cng_g_fake_id && a2 && !cng_procfs_owner(a0, p, sb))
             stat_remap(sb);
+        if (r == 0 && bounce)
+            cng_triton_stat(a0, p, sb, 0);
         if (r == 0 && bounce && cng_user_copyout((void *)a2, sb, sizeof sb) < 0)
             return -EFAULT;
         return r;
@@ -4987,6 +4994,10 @@ static long dispatch_1(long nr, long a0, long a1, long a2, long a3, long a4,
                 cng_l2s_statx(hnf, sx, (unsigned)a3, (unsigned)a2) == 1) {
                 if (cng_g_fake_id)
                     statx_remap(sx);
+                char metadata_backing[CNG_PATH_MAX];
+                const char *metadata_host = cng_l2s_resolve(hnf, metadata_backing, sizeof metadata_backing, 0) == 1
+                    ? metadata_backing : hnf;
+                cng_triton_stat(CNG_AT_FDCWD, metadata_host, sx, 1);
                 return cng_user_copyout((void *)a4, sx, sizeof sx) < 0 ? -EFAULT
                                                                        : 0;
             }
@@ -5019,6 +5030,8 @@ static long dispatch_1(long nr, long a0, long a1, long a2, long a3, long a4,
             cng_l2s_fix_fd_statx(a0, sx);
         if (r == 0 && cng_g_fake_id && a4 && !cng_procfs_owner_statx(a0, p, sx))
             statx_remap(sx);
+        if (r == 0 && bounce)
+            cng_triton_stat(a0, p, sx, 1);
         if (r == 0 && bounce && cng_user_copyout((void *)a4, sx, sizeof sx) < 0)
             return -EFAULT;
         return r;
@@ -5215,6 +5228,7 @@ static long dispatch_1(long nr, long a0, long a1, long a2, long a3, long a4,
                 cng_l2s_fix_fd(a0, sb);
             if (cng_g_fake_id && !cng_procfs_owner(a0, "", sb))
                 stat_remap(sb);
+            cng_triton_stat(a0, "", sb, 0);
             if (cng_user_copyout((void *)a1, sb, sizeof sb) < 0)
                 return -EFAULT;
         }
@@ -7216,10 +7230,14 @@ out:
 
 long cng_dispatch(long nr, long a0, long a1, long a2, long a3, long a4, long a5,
                   int trapped) {
+    struct cng_triton_change metadata_change;
+    long allowed = cng_triton_before(&metadata_change, nr, a0, a1, a2, a3, a4);
+    if (allowed < 0)
+        return allowed;
     long r = dispatch_1(nr, a0, a1, a2, a3, a4, a5, trapped);
     if (r == -EACCES && cng_fake_root())
         r = dac_bypass(nr, a0, a1, a2, a3, a4, a5, trapped);
-    return r;
+    return cng_triton_after(&metadata_change, r);
 }
 
 /* The -R trampoline's entry point: one rewritten `svc` site, with a full

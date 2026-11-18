@@ -33,7 +33,7 @@ For Arch guest sessions, the pinned `pr-cli` login patch forwards the Android-se
 
 ## All native libraries packaged in the APK
 
-There are 11 native libraries in the universal debug APK: three TritonTerm PRoot executables and two upstream Android libraries for each ABI. AndroidX Graphics Path is resolved from its pinned Gradle coordinate. Termux's terminal emulator Java sources and `libtermux.so` are vendored from the documented upstream 0.118.0 revision so TritonTerm can apply its small, source-level session UI patch. [`native-binaries.sha256`](native-binaries.sha256) records each library as extracted from the APK, and [`scripts/verify-packaged-native-libs.sh`](../scripts/verify-packaged-native-libs.sh) checks both the set and each hash after every APK build.
+There are 12 native libraries in the universal APK: three TritonTerm PRoot executables, the experimental ARM64 chroot-ng executable, and two upstream Android libraries for each ABI. AndroidX Graphics Path is resolved from its pinned Gradle coordinate. Termux's terminal emulator Java sources and `libtermux.so` are vendored from the documented upstream 0.118.0 revision so TritonTerm can apply its small, source-level session UI patch. [`native-binaries.sha256`](native-binaries.sha256) records each library as extracted from the APK, and [`scripts/verify-packaged-native-libs.sh`](../scripts/verify-packaged-native-libs.sh) checks both the set and each hash after every APK build.
 
 The APK also uses the unmodified Termux `terminal-view` 0.118.0 AAR. Its exact
 corresponding Java source is available at the immutable Termux source commit
@@ -72,6 +72,15 @@ End-to-end verification performed on 2026-11-11 against the current mirror artif
 
 The runtime ELF files must exist in Android's extracted `nativeLibraryDir` because TritonTerm creates executable symlinks there to work around app-data `execve` restrictions. `packaging.jniLibs.useLegacyPackaging = true` makes AGP extract them, and the built merged manifest contains `extractNativeLibs="true"`. The app's minSdk changed from 26 to 28 to align with upstream PRoot's NDK `API_LEVEL=28` build. That's a conservative compatibility declaration; an API-28-targeted ELF alone does not prove API 26–27 are impossible, so supporting those versions would need separate symbol and device validation. This is independent of targetSdk 35.
 
-The debug APK does not contain the Arch Linux ARM rootfs. It contains the app, renderer/font assets, the Bouncy Castle OpenPGP verifier, and the 11 native libraries listed above. The rootfs downloads to private app storage on first launch. With minSdk 28, AGP stores DEX files uncompressed by default; that explains most of the apparent APK increase in the first build. `packaging.dex.useLegacyPackaging = true` restores DEX compression for APK builds. The current debug APK is 18.5 MB (17.6 MiB), compared with 12.6 MB (12.0 MiB) for the pre-runtime APK. Remaining growth includes Bouncy Castle's verifier code and resources and about 2.4 MiB of compressed PRoot executables and supporting native libraries. Debug builds retain unused cryptography algorithms and resources.
+The debug APK does not contain the Arch Linux ARM rootfs. It contains the app, renderer/font assets, the Bouncy Castle OpenPGP verifier, and the native libraries listed above. The rootfs downloads to private app storage on first launch. With minSdk 28, AGP stores DEX files uncompressed by default; that explains most of the apparent APK increase in the first build. `packaging.dex.useLegacyPackaging = true` restores DEX compression for APK builds. The current debug APK is 18.5 MB (17.6 MiB), compared with 12.6 MB (12.0 MiB) for the pre-runtime APK. Remaining growth includes Bouncy Castle's verifier code and resources and about 2.4 MiB of compressed PRoot executables and supporting native libraries. Debug builds retain unused cryptography algorithms and resources.
 
 The terminal renderer and input UI depend only on `TerminalBackend`. `ArchLinuxArmBootstrap.kt` handles download and signature verification; `ArchLinuxArmInstaller.kt` owns the explicit noninteractive `ProcessBuilder` install and keyring commands; `TerminalSessionController.kt` launches only the interactive Arch shell after setup succeeds.
+
+
+## Optional local chroot-ng experiment
+
+The optional backend additionally packages `libchroot-ng.so` from
+`third_party/fake-chroot-ng`, Apache-2.0, with its pinned revision and local
+metadata adapter. Build it with `scripts/build-chroot-ng-runtime.sh`; selection,
+tests and limits are documented in [testing-chroot-ng.md](testing-chroot-ng.md).
+The existing PRoot engine remains present for setup and fallback.

@@ -35,6 +35,7 @@ cd "$project_root"
     -Ptritonterm.archRootfsReleaseBaseUrl="$TRITONTERM_ARCH_ROOTFS_RELEASE_BASE_URL" \
     -Ptritonterm.androidVersionCode="$TRITONTERM_ANDROID_VERSION_CODE" \
     -Ptritonterm.androidVersionName="$TRITONTERM_ANDROID_VERSION_NAME" \
+    -Ptritonterm.defaultArchRuntime="${TRITONTERM_ANDROID_DEFAULT_ARCH_RUNTIME:-proot}" \
     :app:assembleRelease
 
 apk="$project_root/app/build/outputs/apk/release/app-release.apk"

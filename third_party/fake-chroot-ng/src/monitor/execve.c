@@ -1,3 +1,4 @@
+#include "cng/tritonterm.h"
 /* SPDX-License-Identifier: Apache-2.0 */
 /* Copyright 2026 Sylirre */
 /* In-process execve/execveat emulation.
@@ -1717,6 +1718,9 @@ static long execve_plan(struct exec_job *j, int dirfd, const char *path,
                 return -ENOENT;
             }
         }
+        long metadata_allowed = cng_triton_exec_check(host);
+        if (metadata_allowed < 0)
+            return metadata_allowed;
         /* Every failure below this point is silent otherwise, and the guest only
          * sees an errno — trace the resolution so a device-side failure says
          * which stage produced it (and which build is running). */

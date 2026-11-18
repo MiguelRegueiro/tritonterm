@@ -1,0 +1,395 @@
+diff --git a/src/pr-cli/src/login.rs b/src/pr-cli/src/login.rs
+--- a/src/pr-cli/src/login.rs
++++ b/src/pr-cli/src/login.rs
+@@ -1,6 +1,6 @@
+ use std::fs;
+ use std::os::unix::process::CommandExt;
+-use std::path::Path;
++use std::path::{Path, PathBuf};
+ use std::process::Command;
+ 
+ use crate::shared::*;
+@@ -208,6 +208,119 @@
+     cmd
+ }
+ 
++#[derive(Clone, Copy, Debug, PartialEq, Eq)]
++enum LoginEngine {
++    Proot,
++    ChrootNg,
++}
++
++impl LoginEngine {
++    fn name(self) -> &'static str {
++        match self {
++            Self::Proot => "proot",
++            Self::ChrootNg => "chroot-ng",
++        }
++    }
++}
++
++fn selected_arch_engine(
++    requested: Option<&str>,
++    userland_account: bool,
++) -> Result<LoginEngine, String> {
++    if !userland_account {
++        return Ok(LoginEngine::Proot);
++    }
++    match requested {
++        None | Some("") | Some("proot") => Ok(LoginEngine::Proot),
++        Some("chroot-ng") => Ok(LoginEngine::ChrootNg),
++        Some(value) => Err(format!("unsupported Arch engine: {}", value)),
++    }
++}
++
++fn login_engine_binary(engine: LoginEngine, proot: &Path) -> PathBuf {
++    match engine {
++        LoginEngine::Proot => proot.to_path_buf(),
++        LoginEngine::ChrootNg => proot.with_file_name("libchroot-ng.so"),
++    }
++}
++
++fn chroot_ng_bind(specification: &str) -> Result<String, String> {
++    let (source, destination) = specification
++        .split_once(':')
++        .unwrap_or((specification, specification));
++    let destination = destination.strip_suffix('!').unwrap_or(destination);
++    if source.is_empty() || !destination.starts_with('/') || destination.contains(':') {
++        return Err(format!(
++            "chroot-ng cannot represent this bind: {}",
++            specification
++        ));
++    }
++    Ok(format!("--bind={}:{}", source, destination))
++}
++
++fn chroot_ng_login_args(
++    proot_args: &[String],
++    rootfs: &str,
++    no_link2symlink: bool,
++    guest_env: &[(String, String)],
++    guest_command: &[String],
++) -> Result<Vec<String>, String> {
++    let identity = proot_args
++        .iter()
++        .find_map(|arg| arg.strip_prefix("--change-id="))
++        .ok_or_else(|| "login identity is missing".to_string())?;
++    let cwd = proot_args
++        .iter()
++        .find_map(|arg| arg.strip_prefix("--cwd="))
++        .ok_or_else(|| "login working directory is missing".to_string())?;
++    let mut args = vec![
++        "-R".to_string(),
++        format!("--fake-id={}", identity),
++        "--setuid-root".to_string(),
++        "--setgid-root".to_string(),
++        format!("--work-dir={}", cwd),
++    ];
++    if !no_link2symlink {
++        args.push("--link2symlink".to_string());
++    }
++    let binds: Vec<&str> = proot_args
++        .iter()
++        .filter_map(|arg| arg.strip_prefix("--bind="))
++        .collect();
++    if binds.len() > 64 {
++        return Err("chroot-ng supports at most 64 binds".to_string());
++    }
++    for specification in binds.into_iter().rev() {
++        args.push(chroot_ng_bind(specification)?);
++    }
++    if guest_env.len() > 128 {
++        return Err("chroot-ng supports at most 128 guest environment entries".to_string());
++    }
++    for (key, value) in guest_env {
++        args.push(format!("--env={}={}", key, value));
++    }
++    args.push("--".to_string());
++    args.push(rootfs.to_string());
++    args.extend_from_slice(guest_command);
++    Ok(args)
++}
++
++fn chroot_ng_process_env(
++    inherited: impl Iterator<Item = (String, String)>,
++    cache_dir: String,
++) -> Vec<(String, String)> {
++    let mut environment: Vec<(String, String)> = inherited.collect();
++    for (key, value) in [
++        ("TMPDIR", cache_dir),
++        ("CNG_TMP_ENV_ONLY", "1".to_string()),
++        ("TRITONTERM_USERLAND_METADATA", "1".to_string()),
++    ] {
++        environment.retain(|(existing, _)| existing != key);
++        environment.push((key.to_string(), value));
++    }
++    environment
++}
++
+ pub fn command_login(
+     distro_name: &str,
+     user: &str,
+@@ -253,6 +366,10 @@
+     update_etc_environment(&rootfs);
+ 
+     let userland_account = uses_userland_account_metadata(&rootfs);
++    let engine = selected_arch_engine(
++        std::env::var("TRITONTERM_ARCH_ENGINE").ok().as_deref(),
++        userland_account,
++    )?;
+     let (guest_uid, guest_gid, guest_cwd) = if userland_account {
+         (entry.uid, entry.gid, entry.home.as_str())
+     } else {
+@@ -306,14 +423,11 @@
+ 
+     let cmd_args = guest_command(extra_args);
+ 
+-    // The proot binary
+     let proot = get_native_proot();
+-
+-    let mut full_args = Vec::new();
+-    full_args.extend(args);
+-    full_args.extend(cmd_args);
+-
+-    android_log(&format!("exec: proot {} (cwd=/)", full_args.join(" ")));
++    let binary = login_engine_binary(engine, Path::new(&proot));
++    if engine == LoginEngine::ChrootNg && !binary.is_file() {
++        return Err("chroot-ng is not included in this app build".to_string());
++    }
+ 
+     let mut child_env: Vec<(String, String)> = Vec::new();
+     for line in &login_env {
+@@ -343,17 +457,39 @@
+         .into_iter()
+         .map(|(k, v)| (k.to_string(), v))
+         .collect();
+-    let mut cmd = login_command(
+-        Path::new(&proot),
+-        &full_args,
+-        login_process_env(std::env::vars(), runtime_env, child_env),
+-    );
++    let (full_args, process_env) = match engine {
++        LoginEngine::Proot => {
++            let mut full_args = args;
++            full_args.extend(cmd_args);
++            (
++                full_args,
++                login_process_env(std::env::vars(), runtime_env, child_env),
++            )
++        }
++        LoginEngine::ChrootNg => {
++            let full_args =
++                chroot_ng_login_args(&args, &rootfs, no_link2symlink, &child_env, &cmd_args)?;
++            let cache_dir = runtime_env
++                .into_iter()
++                .find_map(|(key, value)| (key == "PROOT_TMP_DIR").then_some(value))
++                .ok_or_else(|| "login cache directory is missing".to_string())?;
++            (
++                full_args,
++                chroot_ng_process_env(std::env::vars(), cache_dir),
++            )
++        }
++    };
++    android_log(&format!("exec: {} (cwd=/)", engine.name()));
++    let mut cmd = login_command(&binary, &full_args, process_env);
++    cmd.arg0(engine.name());
+ 
+     crate::diagnostics::record(
+         "proot_launch",
+         "exec_requested",
+         serde_json::json!({
+             "proot": proot,
++            "engine": engine.name(),
++            "runtime": binary,
+             "rootfs": rootfs,
+             "command": full_args.get(full_args.len().saturating_sub(2)..).unwrap_or(&full_args),
+         }),
+@@ -365,13 +501,12 @@
+         "exec_failed",
+         serde_json::json!({ "error": err.to_string() }),
+     );
+-    Err(format!("exec proot failed: {}", err))
++    Err(format!("exec {} failed: {}", engine.name(), err))
+ }
+ 
+ #[cfg(test)]
+ mod tests {
+     use super::*;
+-    use std::path::PathBuf;
+     use std::time::{SystemTime, UNIX_EPOCH};
+ 
+     fn env_lock() -> &'static std::sync::Mutex<()> {
+@@ -388,6 +523,173 @@
+ 
+     fn strings(items: &[&str]) -> Vec<String> {
+         items.iter().map(|s| s.to_string()).collect()
++    }
++
++    #[test]
++    fn chroot_ng_selection_requires_the_arch_metadata_profile_and_explicit_opt_in() {
++        for requested in [None, Some(""), Some("proot")] {
++            assert_eq!(
++                selected_arch_engine(requested, true),
++                Ok(LoginEngine::Proot)
++            );
++        }
++        assert_eq!(
++            selected_arch_engine(Some("chroot-ng"), true),
++            Ok(LoginEngine::ChrootNg)
++        );
++        assert_eq!(
++            selected_arch_engine(Some("chroot-ng"), false),
++            Ok(LoginEngine::Proot)
++        );
++        assert_eq!(
++            selected_arch_engine(Some("unknown"), false),
++            Ok(LoginEngine::Proot)
++        );
++        assert!(selected_arch_engine(Some("unknown"), true).is_err());
++        assert_eq!(LoginEngine::Proot.name(), "proot");
++        assert_eq!(LoginEngine::ChrootNg.name(), "chroot-ng");
++    }
++
++    #[test]
++    fn chroot_ng_uses_the_sibling_native_binary() {
++        let proot = Path::new("/native/directory/libproot.so");
++        assert_eq!(login_engine_binary(LoginEngine::Proot, proot), proot);
++        assert_eq!(
++            login_engine_binary(LoginEngine::ChrootNg, proot),
++            Path::new("/native/directory/libchroot-ng.so")
++        );
++    }
++
++    #[test]
++    fn chroot_ng_bind_conversion_preserves_source_destination_and_no_follow_overrides() {
++        for (input, expected) in [
++            ("/dev", "--bind=/dev:/dev"),
++            ("/host path:/guest path", "--bind=/host path:/guest path"),
++            (
++                "/cache/mounts:/proc/mounts!",
++                "--bind=/cache/mounts:/proc/mounts",
++            ),
++            ("/host!dir:/guest!dir", "--bind=/host!dir:/guest!dir"),
++        ] {
++            assert_eq!(chroot_ng_bind(input).unwrap(), expected);
++        }
++        for invalid in ["", ":/guest", "/host:", "/host:relative", "/host:/guest:ro"] {
++            assert!(chroot_ng_bind(invalid).is_err(), "{}", invalid);
++        }
++    }
++
++    #[test]
++    fn chroot_ng_launch_passes_identity_binds_guest_environment_and_quoted_shell_command() {
++        let proot_args = strings(&[
++            "--bind=/first:/destination",
++            "--bind=/second:/destination",
++            "--bind=/dev",
++            "-L",
++            "--kernel-release=fake",
++            "--link2symlink",
++            "--kill-on-exit",
++            "--change-id=1000:1001",
++            "--rootfs=/installed/rootfs",
++            "--cwd=/home/triton",
++        ]);
++        let environment = vec![
++            ("HOME".to_string(), "/home/triton".to_string()),
++            ("VALUE".to_string(), "a b=c;$HOME".to_string()),
++        ];
++        let command = guest_command(&strings(&["printf", "%s", "a'b"]));
++        let args = chroot_ng_login_args(
++            &proot_args,
++            "/installed/rootfs",
++            false,
++            &environment,
++            &command,
++        )
++        .unwrap();
++        assert_eq!(
++            args,
++            strings(&[
++                "-R",
++                "--fake-id=1000:1001",
++                "--setuid-root",
++                "--setgid-root",
++                "--work-dir=/home/triton",
++                "--link2symlink",
++                "--bind=/dev:/dev",
++                "--bind=/second:/destination",
++                "--bind=/first:/destination",
++                "--env=HOME=/home/triton",
++                "--env=VALUE=a b=c;$HOME",
++                "--",
++                "/installed/rootfs",
++                "/bin/sh",
++                "-l",
++                "-c",
++                "'printf' '%s' 'a'\\''b'",
++            ])
++        );
++        let args = chroot_ng_login_args(
++            &proot_args,
++            "/installed/rootfs",
++            true,
++            &[],
++            &guest_command(&[]),
++        )
++        .unwrap();
++        assert!(!args.iter().any(|arg| arg == "--link2symlink"));
++    }
++
++    #[test]
++    fn chroot_ng_rejects_missing_identity_or_working_directory_and_native_limits() {
++        let identity = "--change-id=1000:1000";
++        let cwd = "--cwd=/home/triton";
++        assert!(chroot_ng_login_args(&strings(&[cwd]), "/rootfs", false, &[], &[]).is_err());
++        assert!(chroot_ng_login_args(&strings(&[identity]), "/rootfs", false, &[], &[]).is_err());
++        let mut bindings = strings(&[identity, cwd]);
++        bindings.extend((0..65).map(|n| format!("--bind=/host/{}:/guest/{}", n, n)));
++        assert!(chroot_ng_login_args(&bindings, "/rootfs", false, &[], &[]).is_err());
++        let environment: Vec<_> = (0..129)
++            .map(|n| (format!("VAR_{}", n), "x".to_string()))
++            .collect();
++        assert!(chroot_ng_login_args(
++            &strings(&[identity, cwd]),
++            "/rootfs",
++            false,
++            &environment,
++            &[]
++        )
++        .is_err());
++        assert!(chroot_ng_login_args(
++            &strings(&[identity, cwd, "--bind=bad"]),
++            "/rootfs",
++            false,
++            &[],
++            &[]
++        )
++        .is_err());
++    }
++
++    #[test]
++    fn chroot_ng_host_environment_keeps_runtime_settings_and_uses_private_host_tmp() {
++        let inherited = [
++            ("TMPDIR", "/guest/tmp"),
++            ("CNG_TMP_ENV_ONLY", "0"),
++            ("TRITONTERM_USERLAND_METADATA", "0"),
++            ("CNG_PROCSTAT_SYNTH", "1"),
++            ("ANDROID_ROOT", "/system"),
++        ]
++        .into_iter()
++        .map(|(key, value)| (key.to_string(), value.to_string()));
++        let environment = chroot_ng_process_env(inherited, "/private/app/cache".to_string());
++        assert_eq!(
++            environment,
++            vec![
++                ("CNG_PROCSTAT_SYNTH".to_string(), "1".to_string()),
++                ("ANDROID_ROOT".to_string(), "/system".to_string()),
++                ("TMPDIR".to_string(), "/private/app/cache".to_string()),
++                ("CNG_TMP_ENV_ONLY".to_string(), "1".to_string()),
++                ("TRITONTERM_USERLAND_METADATA".to_string(), "1".to_string()),
++            ]
++        );
+     }
+ 
+     #[test]

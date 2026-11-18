@@ -2,6 +2,7 @@ package com.tritonterm.android.config
 
 import android.content.Context
 import com.tritonterm.android.R
+import com.tritonterm.android.BuildConfig
 import android.graphics.Typeface
 import android.os.Build
 import java.io.File
@@ -128,7 +129,8 @@ internal data class TerminalConfig(
     val cursorColor: String = "#cccccc",
     val cursorTextColor: String = "#111111",
     val cursorBeamThickness: Double = 3.5,
-    val cursorUnderlineThickness: Double = 2.0
+    val cursorUnderlineThickness: Double = 2.0,
+    val archRuntime: String = BuildConfig.DEFAULT_ARCH_RUNTIME
 ) {
     fun typeface(context: Context): Typeface = when (fontFamily) {
         "Hack Nerd Font Mono" -> context.resources.getFont(R.font.hack_nerd_font_mono_regular)
@@ -157,6 +159,8 @@ internal data class TerminalConfig(
         add("# cursor_beam_thickness and cursor_underline_thickness: pixels at 32 px font size; scale with zoom")
         add("# Supported map actions: copy_to_clipboard, paste_from_clipboard, send_key esc, send_key ctrl+c, send_key f13, send_key f14, send_text all \\x03")
         add("# Conditional maps support Kitty syntax: map --when-focus-on var:name chord action")
+        add("# arch_runtime: proot or chroot-ng (experimental); force stop and reopen after changing")
+        add("arch_runtime $archRuntime")
         add("font_family $fontFamily")
         add("font_size $fontSize")
         add("cursor_shape $cursorShape")
@@ -185,7 +189,7 @@ internal data class TerminalConfig(
                 loaded.fontFamily == "Noto Sans Mono" && loaded.fontSize == 28 &&
                 loaded.keyBindings.isUntouchedDefaultSet()
             ) {
-                val migrated = TerminalConfig()
+                val migrated = TerminalConfig(archRuntime = loaded.archRuntime)
                 file.writeText(migrated.encode())
                 return migrated
             }
@@ -193,7 +197,7 @@ internal data class TerminalConfig(
             if (loaded.fontFamily in setOf("JetBrainsMono Nerd Font", "Hack Nerd Font Mono") &&
                 loaded.fontSize == 28 && loaded.keyBindings.isUntouchedDefaultSet()
             ) {
-                val migrated = TerminalConfig()
+                val migrated = TerminalConfig(archRuntime = loaded.archRuntime)
                 file.writeText(migrated.encode())
                 return migrated
             }
@@ -298,6 +302,7 @@ internal data class TerminalConfig(
         }
 
         fun parse(text: String): ConfigParseResult {
+            var archRuntime = BuildConfig.DEFAULT_ARCH_RUNTIME
             var fontFamily = "Noto Sans Mono"
             var fontSize = 32
             var cursorShape = "beam"
@@ -316,6 +321,12 @@ internal data class TerminalConfig(
                 val key = line.substring(0, separator)
                 val value = line.substring(separator).trim()
                 when (key) {
+                    "arch_runtime" -> {
+                        if (value !in setOf("proot", "chroot-ng")) {
+                            return ConfigParseResult(null, "Line ${index + 1}: arch_runtime must be proot or chroot-ng.")
+                        }
+                        archRuntime = value
+                    }
                     "map" -> {
                         hasMapDirectives = true
                         val fields = value.split(Regex("\\s+"))
@@ -375,6 +386,7 @@ internal data class TerminalConfig(
             }
             return ConfigParseResult(
                 TerminalConfig(
+                    archRuntime = archRuntime,
                     fontFamily = fontFamily,
                     fontSize = fontSize,
                     keyBindings = if (hasMapDirectives) keyBindings else defaultTerminalKeyBindings,

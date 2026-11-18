@@ -34,4 +34,5 @@ Native dependency source/artifact revisions and per-ABI binary hashes are in doc
 The experimental libchroot-ng.so is built from sylirre/fake-chroot-ng
 (869c42b705e889a487a9503e219fedfab71f4d88), licensed under Apache-2.0.
 Its upstream NOTICE and license are included as fake-chroot-ng-NOTICE.txt and
-fake-chroot-ng-LICENSE.txt. The pinned source is in third_party/fake-chroot-ng.
+fake-chroot-ng-LICENSE.txt. The local source includes an experimental
+TritonTerm ownership-metadata adapter and is in third_party/fake-chroot-ng.

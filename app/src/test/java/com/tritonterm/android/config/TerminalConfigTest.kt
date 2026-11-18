@@ -9,6 +9,16 @@ import org.junit.Test
 
 class TerminalConfigTest {
     @Test
+    fun selectsAndPersistsArchRuntime() {
+        for (runtime in listOf("proot", "chroot-ng")) {
+            val parsed = TerminalConfig.parse("arch_runtime $runtime").config!!
+            assertEquals(runtime, parsed.archRuntime)
+            assertEquals(runtime, TerminalConfig.parse(parsed.encode()).config?.archRuntime)
+        }
+        assertTrue(TerminalConfig.parse("arch_runtime unknown").error != null)
+    }
+
+    @Test
     fun defaultsToKittyTextFaceWithNerdSymbols() {
         assertEquals("Noto Sans Mono", TerminalConfig().fontFamily)
         assertEquals(32, TerminalConfig().fontSize)

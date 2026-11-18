@@ -17,6 +17,8 @@ require(androidApplicationIdSuffix.isEmpty() ||
     Regex("\\.[A-Za-z][A-Za-z0-9_]*(\\.[A-Za-z][A-Za-z0-9_]*)*").matches(androidApplicationIdSuffix)) {
     "tritonterm.androidApplicationIdSuffix must be empty or a dotted Android application ID suffix"
 }
+val defaultArchRuntime = providers.gradleProperty("tritonterm.defaultArchRuntime").orElse("proot").get()
+require(defaultArchRuntime in setOf("proot", "chroot-ng")) { "Unsupported default Arch runtime" }
 fun buildConfigString(value: String) = "\"${value.replace("\\", "\\\\").replace("\"", "\\\"")}\""
 
 android {
@@ -31,6 +33,7 @@ android {
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         versionCode = androidVersionCode
         versionName = androidVersionName
+        buildConfigField("String", "DEFAULT_ARCH_RUNTIME", buildConfigString(defaultArchRuntime))
         buildConfigField("String", "ARCH_ROOTFS_VERSION", buildConfigString(archRootfsVersion))
         buildConfigField("String", "ARCH_ROOTFS_RELEASE_BASE_URL", buildConfigString(archRootfsReleaseBaseUrl))
         buildConfigField("String", "ARCH_ROOTFS_RELEASE_TAG", buildConfigString(archRootfsReleaseTag))
