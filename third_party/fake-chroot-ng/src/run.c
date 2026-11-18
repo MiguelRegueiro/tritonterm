@@ -1,3 +1,4 @@
+#include "cng/profile.h"
 #include "cng/tritonterm.h"
 /* SPDX-License-Identifier: Apache-2.0 */
 /* Copyright 2026 Sylirre */
@@ -210,6 +211,7 @@ int cng_run(const char *rootfs, const char *libprefix, const char *workdir,
     cng_host_auxv = auxv;
     cng_g_exe_guest = prog_guest;
     cng_g_host_envp = envp;
+    cng_profile_init();
     /* The break before any guest program has run: what an emulated execve winds
      * the heap back to, since it cannot drop it with the address space. */
     long brk0 = CNG_SYS(__NR_brk, 0, 0, 0, 0, 0, 0);
@@ -304,6 +306,7 @@ int cng_run(const char *rootfs, const char *libprefix, const char *workdir,
      * onto the guest stack. */
     char *genv[CNG_MAX_ENV + 3];
     build_guest_env(env_set, ne, envp, genv);
+    cng_profile_exec(prog_guest, genv, 1);
 
     /* Fake identity (--fake-id): establish it from the real invoking ids (which
      * are also the stat-remap source). See cng_cred_setup for the implied-vs-
@@ -530,6 +533,7 @@ int cng_run(const char *rootfs, const char *libprefix, const char *workdir,
                      cng_g_shared_proc;
     if (want_xlate) {
         int mrc = cng_install_monitor(cng_g_fs);
+        cng_profile_monitor(mrc == 0);
         /* A monitor that could not be installed is not a warning to print on
          * the way into the guest. Without one, nothing intercepts: a rootfs
          * that is not `/` runs against the host's own paths, -u reports the
@@ -592,5 +596,6 @@ int cng_run(const char *rootfs, const char *libprefix, const char *workdir,
                         shm_why);
     }
 
+    cng_profile_entry();
     cng_enter(sp, entry);
 }

@@ -1,3 +1,4 @@
+#include "cng/profile.h"
 /* SPDX-License-Identifier: Apache-2.0 */
 /* Experimental TritonTerm sidecar adapter. The package installer continues to
  * use PRoot. Set-id execution and unsupported metadata mutations fail explicitly
@@ -114,7 +115,7 @@ static int same_stamp(const unsigned char *a, const unsigned char *b) {
            !memcmp(a + 88, b + 88, 32);
 }
 
-int cng_triton_read(const char *host, struct cng_triton_record *record) {
+static int cng_triton_read_profiled(const char *host, struct cng_triton_record *record) {
     char path[CNG_PATH_MAX], data[128];
     if (!cng_triton_enabled() || !metadata_path(host, path, sizeof path, 0))
         return 0;
@@ -136,9 +137,11 @@ int cng_triton_read(const char *host, struct cng_triton_record *record) {
     if (valid && CNG_SYS(__NR_newfstatat, CNG_AT_FDCWD, path, after,
                          CNG_AT_SYMLINK_NOFOLLOW, 0, 0) == 0 &&
         same_stamp(before, after)) {
+        cng_profile_add(CNG_P_METADATA_HITS, 1);
         *record = cached;
         return 1;
     }
+    cng_profile_add(CNG_P_METADATA_OPENS, 1);
     long fd = sys_openat(CNG_AT_FDCWD, path, CNG_O_RDONLY | CNG_O_CLOEXEC | CNG_O_NOFOLLOW, 0);
     if (fd < 0)
         return 0;
@@ -463,5 +466,12 @@ long cng_triton_after(struct cng_triton_change *c, long result) {
             return -EIO;
         remove_record(c->source);
     }
+    return result;
+}
+
+int cng_triton_read(const char *host, struct cng_triton_record *record) {
+    struct cng_profile_span span = cng_profile_begin(CNG_P_METADATA);
+    int result = cng_triton_read_profiled(host, record);
+    cng_profile_end(CNG_P_METADATA, span);
     return result;
 }

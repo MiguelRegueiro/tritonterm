@@ -1,3 +1,4 @@
+#include "cng/profile.h"
 /* SPDX-License-Identifier: Apache-2.0 */
 /* Copyright 2026 Sylirre */
 #include "cng/rewrite.h"
@@ -299,7 +300,7 @@ static int scan(unsigned long lo, unsigned long hi, unsigned long floor,
     return count;
 }
 
-int cng_rewrite_seg(unsigned long lo, unsigned long hi, unsigned long foff,
+static int cng_rewrite_seg_profiled(unsigned long lo, unsigned long hi, unsigned long foff,
                     const struct cng_code_ranges *cr, unsigned long pool,
                     unsigned long cap, unsigned long *used) {
     if (!cng_g_rewrite || hi <= lo)
@@ -863,4 +864,15 @@ void cng_rewrite_lazy_reset(void) {
             sys_munmap((void *)r->pool, LAZY_POOL);
     g_lazy_n = 0;
     g_lazy_last = 0;
+}
+
+int cng_rewrite_seg(unsigned long lo, unsigned long hi, unsigned long foff,
+                    const struct cng_code_ranges *cr, unsigned long pool,
+                    unsigned long cap, unsigned long *used) {
+    if (hi > lo) cng_profile_add(CNG_P_REWRITE_BYTES, hi - lo);
+    struct cng_profile_span span = cng_profile_begin(CNG_P_REWRITE);
+    int result = cng_rewrite_seg_profiled(lo, hi, foff, cr, pool, cap, used);
+    if (result > 0) cng_profile_add(CNG_P_REWRITE_SITES, (unsigned long)result);
+    cng_profile_end(CNG_P_REWRITE, span);
+    return result;
 }

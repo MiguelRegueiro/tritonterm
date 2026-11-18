@@ -1,3 +1,4 @@
+#include "cng/profile.h"
 /* SPDX-License-Identifier: Apache-2.0 */
 /* Copyright 2026 Sylirre */
 /* A host path, pinned for one syscall: see include/cng/pin.h. Freestanding,
@@ -140,7 +141,7 @@ static long walk_dir(const char *dir) {
     return cur;
 }
 
-long cng_pin_at(int dirfd, const char *path, struct cng_pin *p) {
+static long cng_pin_at_profiled(int dirfd, const char *path, struct cng_pin *p) {
     p->dfd = dirfd;
     p->own = 0;
     p->pinned = 0;
@@ -525,4 +526,11 @@ void cng_pin_dac_restore(int fd, unsigned orig, unsigned lent) {
     if ((fd_mode(fd) & 07777u) == lent)
         CNG_SYS(__NR_fchmodat, CNG_AT_FDCWD, (long)lk, orig, 0, 0, 0);
     sys_close(fd);
+}
+
+long cng_pin_at(int dirfd, const char *path, struct cng_pin *p) {
+    struct cng_profile_span span = cng_profile_begin(CNG_P_PIN);
+    long result = cng_pin_at_profiled(dirfd, path, p);
+    cng_profile_end(CNG_P_PIN, span);
+    return result;
 }

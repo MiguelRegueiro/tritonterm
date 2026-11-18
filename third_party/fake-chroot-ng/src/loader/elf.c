@@ -1,3 +1,4 @@
+#include "cng/profile.h"
 /* SPDX-License-Identifier: Apache-2.0 */
 /* Copyright 2026 Sylirre */
 /* ul_exec core: map an ELF64 guest into our address space from a read-only fd.
@@ -86,6 +87,7 @@ static int map_anon(int fd, const Elf64_Ehdr *eh, const Elf64_Phdr *ph,
             sys_munmap(seg, span + pool_extra);
             return CNG_LOAD_EIO;
         }
+        cng_profile_add(CNG_P_COPY_BYTES, ph[i].p_filesz);
     }
 
     if (cng_g_rewrite) {
@@ -466,7 +468,7 @@ static int elf_check_execable(int fd) {
     return CNG_LOAD_OK;
 }
 
-int cng_elf_plan_fd(int fd, struct cng_elf_plan *plan, struct cng_loaded *out) {
+static int cng_elf_plan_fd_profiled(int fd, struct cng_elf_plan *plan, struct cng_loaded *out) {
     memset(out, 0, sizeof *out);
     plan->fd = fd; /* borrowed: the caller owns it, so never own_fd */
     plan->own_fd = 0;
@@ -481,7 +483,7 @@ int cng_elf_plan_fd(int fd, struct cng_elf_plan *plan, struct cng_loaded *out) {
     return rc;
 }
 
-int cng_elf_plan(const char *path, struct cng_elf_plan *plan,
+static int cng_elf_plan_profiled(const char *path, struct cng_elf_plan *plan,
                  struct cng_loaded *out) {
     memset(out, 0, sizeof *out);
     plan->fd = -1;
@@ -515,7 +517,7 @@ void cng_elf_plan_release(struct cng_elf_plan *plan) {
 
 /* ---- the map pass: from here the address space is being rewritten ------ */
 
-int cng_elf_map(const struct cng_elf_plan *plan, unsigned long base_hint,
+static int cng_elf_map_profiled(const struct cng_elf_plan *plan, unsigned long base_hint,
                 struct cng_loaded *out) {
     const Elf64_Ehdr *eh = &plan->eh;
     const Elf64_Phdr *ph = plan->ph;
@@ -561,6 +563,7 @@ int cng_elf_map(const struct cng_elf_plan *plan, unsigned long base_hint,
     }
     if (rc != CNG_LOAD_OK)
         return rc;
+    cng_profile_add(anon ? CNG_P_LOADER_ANON : CNG_P_LOADER_FILE, 1);
 
     /* Address of the program headers in memory (within the PT_LOAD covering
      * e_phoff). */
@@ -618,4 +621,27 @@ int cng_load_elf(const char *path, unsigned long base_hint,
         rc = cng_elf_map(&plan, base_hint, out);
     cng_elf_plan_release(&plan);
     return rc;
+}
+
+int cng_elf_plan_fd(int fd, struct cng_elf_plan *plan, struct cng_loaded *out) {
+    struct cng_profile_span span = cng_profile_begin(CNG_P_ELF_HEADERS);
+    int result = cng_elf_plan_fd_profiled(fd, plan, out);
+    cng_profile_end(CNG_P_ELF_HEADERS, span);
+    return result;
+}
+
+int cng_elf_plan(const char *path, struct cng_elf_plan *plan,
+                 struct cng_loaded *out) {
+    struct cng_profile_span span = cng_profile_begin(CNG_P_ELF_HEADERS);
+    int result = cng_elf_plan_profiled(path, plan, out);
+    cng_profile_end(CNG_P_ELF_HEADERS, span);
+    return result;
+}
+
+int cng_elf_map(const struct cng_elf_plan *plan, unsigned long base_hint,
+                struct cng_loaded *out) {
+    struct cng_profile_span span = cng_profile_begin(CNG_P_ELF_MAP);
+    int result = cng_elf_map_profiled(plan, base_hint, out);
+    cng_profile_end(CNG_P_ELF_MAP, span);
+    return result;
 }

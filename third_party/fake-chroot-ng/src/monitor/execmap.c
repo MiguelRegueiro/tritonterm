@@ -1,3 +1,4 @@
+#include "cng/profile.h"
 /* SPDX-License-Identifier: Apache-2.0 */
 /* Copyright 2026 Sylirre */
 /* mmap(PROT_EXEC) of a file the host refuses to map executable — see
@@ -156,7 +157,7 @@ static int rewrite_text(int fd, unsigned long map, unsigned long off,
     return sites;
 }
 
-long cng_execmap(unsigned long addr, unsigned long len, long prot, long flags,
+static long cng_execmap_profiled(unsigned long addr, unsigned long len, long prot, long flags,
                  long fd, unsigned long off) {
     int mfd = (int)fd; /* int arg: the x-register's top half may be dirty */
     long native = -EPERM;
@@ -168,8 +169,10 @@ long cng_execmap(unsigned long addr, unsigned long len, long prot, long flags,
     if (!cng_g_execmap_force) {
         void *p = sys_mmap((void *)addr, len, (int)prot, (int)flags, mfd,
                            (long)off);
-        if (!cng_is_err((long)p))
+        if (!cng_is_err((long)p)) {
+            cng_profile_add(CNG_P_FILE_MAPS, 1);
             return (long)p;
+        }
         native = (long)p;
         if (native != -EPERM && native != -EACCES)
             return native;
@@ -204,6 +207,8 @@ long cng_execmap(unsigned long addr, unsigned long len, long prot, long flags,
         return native;
     }
 
+    cng_profile_add(CNG_P_ANON_MAPS, 1);
+    cng_profile_add(CNG_P_COPY_BYTES, (unsigned long)got);
     int sites = 0;
     if (cng_g_rewrite && (prot & CNG_PROT_EXEC))
         sites = rewrite_text(mfd, (unsigned long)p, off, (unsigned long)got);
@@ -384,4 +389,12 @@ long cng_execmap_dontunmap(unsigned long old, unsigned long len,
         cng_dprintf(2, "[cng] mremap %lx+%lu DONTUNMAP of a loader copy -> %lx\n",
                     old, len, r);
     return r;
+}
+
+long cng_execmap(unsigned long addr, unsigned long len, long prot, long flags,
+                 long fd, unsigned long off) {
+    struct cng_profile_span span = cng_profile_begin(CNG_P_LIBRARY_MAP);
+    long result = cng_execmap_profiled(addr, len, prot, flags, fd, off);
+    cng_profile_end(CNG_P_LIBRARY_MAP, span);
+    return result;
 }

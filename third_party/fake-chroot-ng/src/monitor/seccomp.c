@@ -1,3 +1,4 @@
+#include "cng/profile.h"
 /* SPDX-License-Identifier: Apache-2.0 */
 /* Copyright 2026 Sylirre */
 /* Build and install the seccomp-BPF filter.
@@ -359,7 +360,7 @@ int cng_build_seccomp(struct sock_filter *f, int cap) {
 
     /* Build the trapped syscall list (path set + SysV IPC set, plus the id set
      * when faking, plus the conditional entries below). */
-    int nr[NPATH + NIPC + NID + NROFD + 11];
+    int nr[NPATH + NIPC + NID + NROFD + 12];
     int nsys = 0;
     for (int i = 0; i < NPATH; i++)
         nr[nsys++] = path_syscalls[i];
@@ -375,6 +376,8 @@ int cng_build_seccomp(struct sock_filter *f, int cap) {
     else if (cng_g_setid_deny)
         for (int i = 0; i < cng_setid_deny_n; i++)
             nr[nsys++] = cng_setid_deny_nrs[i];
+    if (cng_profile_support)
+        nr[nsys++] = __NR_exit_group;
     int has_ro = view_has_ro();
     if (has_ro)
         for (int i = 0; i < NROFD; i++) {

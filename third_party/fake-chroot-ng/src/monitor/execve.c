@@ -1,3 +1,6 @@
+static void cng_exec_reset(void);
+static void exec_sweep(void);
+#include "cng/profile.h"
 #include "cng/tritonterm.h"
 /* SPDX-License-Identifier: Apache-2.0 */
 /* Copyright 2026 Sylirre */
@@ -127,7 +130,7 @@ static void cloexec_scan(void) {
     }
 }
 
-void cng_close_cloexec(void) {
+static void cng_close_cloexec_profiled(void) {
     long dfd = sys_openat(CNG_AT_FDCWD, "/proc/self/fd",
                           CNG_O_RDONLY | CNG_O_DIRECTORY | CNG_O_CLOEXEC, 0);
     if (dfd < 0) {
@@ -1273,6 +1276,7 @@ void cng_exec_reap(void) {
     if (!g_gen_have_dead)
         return;
     g_gen_have_dead = 0;
+    struct cng_profile_span span = cng_profile_begin(CNG_P_REAP);
     unsigned long sp = (unsigned long)&sp;
     for (int i = 0; i < EXEC_GEN_MAX; i++) {
         struct exec_range d = g_gen_dead[i];
@@ -1288,6 +1292,7 @@ void cng_exec_reap(void) {
         if (!clash)
             sys_munmap((void *)d.lo, d.len);
     }
+    cng_profile_end(CNG_P_REAP, span);
 }
 
 /* ---- everything the outgoing program mapped for itself -------------------
@@ -1391,7 +1396,7 @@ static int sweep_seen(unsigned long lo, unsigned long hi, const char *path,
     return 0;
 }
 
-static void exec_sweep(void) {
+static void exec_sweep_profiled(void) {
     if (!cng_own_ready()) {
         if (cng_g_debug)
             cng_dprintf(2, "[cng] exec: sweep disarmed (no floor)\n");
@@ -1485,7 +1490,7 @@ void cng_exec_generation(const struct cng_loaded *prog,
  *
  * All best-effort: a kernel without POSIX timers has no such file, and a failed
  * brk simply leaves the heap where it was. */
-static void cng_exec_reset(void) {
+static void cng_exec_reset_profiled(void) {
     cng_rewrite_lazy_reset(); /* the sites those pools branch from are gone */
     cng_timers_exec_reset();
     CNG_SYS(__NR_set_tid_address, 0, 0, 0, 0, 0, 0);
@@ -1908,6 +1913,7 @@ static long execve_plan(struct exec_job *j, int dirfd, const char *path,
  * since the address space is being taken apart. */
 static long execve_commit(struct exec_job *j, unsigned long *out_sp,
                           unsigned long *out_entry) {
+    cng_profile_commit_thread();
     char *host = j->host;
     char (*sheb_interp)[SHEB_WORD] = j->sheb_interp;
     char (*sheb_arg)[SHEB_WORD] = j->sheb_arg;
@@ -2092,6 +2098,7 @@ static long execve_commit(struct exec_job *j, unsigned long *out_sp,
 
     *out_sp = sp;
     *out_entry = entry;
+    cng_profile_entry();
     return 0;
 }
 
@@ -2268,8 +2275,10 @@ static long execve_core(int dirfd, const char *path, char **argv, char **envp,
         CNG_SYS(__NR_sched_yield, 0, 0, 0, 0, 0, 0);
     }
 
+    cng_profile_exec(a.path, a.envp, 0);
     rc = execve_plan(&g_job, dirfd, a.path, a.argv, a.envp, flags);
     if (rc < 0) {
+        cng_profile_failure(rc);
         exec_claim_release();
         exec_args_free(&a);
         return rc;
@@ -2477,4 +2486,22 @@ long cng_execve_tramp(int dirfd, const char *path, char **argv, char **envp,
      * this thread runs the dispatcher on the guest's own stack again. */
     cng_scratch_leave();
     cng_enter(sp, entry);
+}
+
+void cng_close_cloexec(void) {
+    struct cng_profile_span span = cng_profile_begin(CNG_P_CLOEXEC);
+    cng_close_cloexec_profiled();
+    cng_profile_end(CNG_P_CLOEXEC, span);
+}
+
+static void exec_sweep(void) {
+    struct cng_profile_span span = cng_profile_begin(CNG_P_SWEEP);
+    exec_sweep_profiled();
+    cng_profile_end(CNG_P_SWEEP, span);
+}
+
+static void cng_exec_reset(void) {
+    struct cng_profile_span span = cng_profile_begin(CNG_P_RESET);
+    cng_exec_reset_profiled();
+    cng_profile_end(CNG_P_RESET, span);
 }

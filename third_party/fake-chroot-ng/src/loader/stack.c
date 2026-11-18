@@ -1,3 +1,4 @@
+#include "cng/profile.h"
 /* SPDX-License-Identifier: Apache-2.0 */
 /* Copyright 2026 Sylirre */
 /* Build the initial process stack the way the kernel would for execve:
@@ -46,7 +47,7 @@ static unsigned long auxval(unsigned long *av, unsigned long t) {
     return 0;
 }
 
-unsigned long cng_build_stack(int argc, char **argv, char **envp,
+static unsigned long cng_build_stack_profiled(int argc, char **argv, char **envp,
                               unsigned long *host_auxv,
                               const struct cng_loaded *prog,
                               const struct cng_loaded *interp,
@@ -270,4 +271,15 @@ unsigned long cng_build_stack(int argc, char **argv, char **envp,
     cng_g_arg_end = cng_g_env_start = arg_end;
     cng_g_env_end = env_end;
     return sp;
+}
+
+unsigned long cng_build_stack(int argc, char **argv, char **envp,
+                              unsigned long *host_auxv,
+                              const struct cng_loaded *prog,
+                              const struct cng_loaded *interp,
+                              const char *execfn) {
+    struct cng_profile_span span = cng_profile_begin(CNG_P_STACK);
+    unsigned long result = cng_build_stack_profiled(argc, argv, envp, host_auxv, prog, interp, execfn);
+    cng_profile_end(CNG_P_STACK, span);
+    return result;
 }

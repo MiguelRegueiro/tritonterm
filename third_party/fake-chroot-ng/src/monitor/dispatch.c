@@ -1,3 +1,4 @@
+#include "cng/profile.h"
 /* SPDX-License-Identifier: Apache-2.0 */
 /* Copyright 2026 Sylirre */
 /* Syscall dispatcher: translate path arguments of a trapped syscall and
@@ -1318,7 +1319,7 @@ int cng_resolve(const char *path, int deref_final, char *out, size_t outsz) {
     return cng_resolve_lim(path, deref_final, out, outsz, 0);
 }
 
-int cng_resolve_lim(const char *path, int deref_final, char *out, size_t outsz,
+static int cng_resolve_lim_profiled(const char *path, int deref_final, char *out, size_t outsz,
                     struct cng_res_limit *lim) {
     char canon[CNG_PATH_MAX], rest[CNG_PATH_MAX];
     if (!path || !path[0])
@@ -1547,6 +1548,7 @@ int cng_resolve_lim(const char *path, int deref_final, char *out, size_t outsz,
         char host[CNG_PATH_MAX], link[CNG_PATH_MAX];
         if (cng_fs_translate(cng_g_fs, canon, host, sizeof host) != 0)
             continue;
+        cng_profile_add(CNG_P_PATH_PROBES, 1);
         long n = sys_readlinkat(CNG_AT_FDCWD, host, link, sizeof link - 1);
         if (n <= 0)
             continue; /* not a symlink, or missing */
@@ -6586,6 +6588,8 @@ static long dispatch_1(long nr, long a0, long a1, long a2, long a3, long a4,
      * link drop when the tracer is our parent and reaps us for real. */
     case __NR_exit:
     case __NR_exit_group: {
+        if (nr == __NR_exit_group)
+            cng_profile_exit((int)a0 & 0xff);
         int wstatus = ((int)a0 & 0xff) << 8;
         struct cng_uregs *ur = cng_pt_cur_regs(); /* either tier's frame */
         if (ur)
@@ -7254,7 +7258,7 @@ out:
     return r;
 }
 
-long cng_dispatch(long nr, long a0, long a1, long a2, long a3, long a4, long a5,
+static long cng_dispatch_profiled(long nr, long a0, long a1, long a2, long a3, long a4, long a5,
                   int trapped) {
     struct cng_triton_change metadata_change;
     long allowed = cng_triton_before(&metadata_change, nr, a0, a1, a2, a3, a4);
@@ -7391,4 +7395,21 @@ void cng_dispatch_bounced(struct cng_uregs *r, long nr, int owed) {
     if (!cng_run_scratch_in(tramp_body, &c, &c.f))
         tramp_body(&c);
     __atomic_sub_fetch(&g_disp_bounced, 1, __ATOMIC_RELAXED);
+}
+
+int cng_resolve_lim(const char *path, int deref_final, char *out, size_t outsz,
+                    struct cng_res_limit *lim) {
+    struct cng_profile_span span = cng_profile_begin(CNG_P_RESOLVE);
+    int result = cng_resolve_lim_profiled(path, deref_final, out, outsz, lim);
+    cng_profile_end(CNG_P_RESOLVE, span);
+    return result;
+}
+
+long cng_dispatch(long nr, long a0, long a1, long a2, long a3, long a4, long a5,
+                  int trapped) {
+    cng_profile_syscall(nr, trapped);
+    struct cng_profile_span span = cng_profile_begin(CNG_P_DISPATCH);
+    long result = cng_dispatch_profiled(nr, a0, a1, a2, a3, a4, a5, trapped);
+    cng_profile_end(CNG_P_DISPATCH, span);
+    return result;
 }

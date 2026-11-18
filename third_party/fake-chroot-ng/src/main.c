@@ -499,6 +499,14 @@ static void help(char **envp) {
         {"COLUMNS", "Width to render this help at when no terminal answers "
                       "TIOCGWINSZ (a redirected run). Clamped to 32..92; a "
                       "value that is not a positive number is ignored."},
+        {"CNG_PROFILE_SUPPORT", "Set to 1 to allow per-exec diagnostics. "
+                      "Guest TRITONTERM_CNG_PROFILE=count or timing emits a "
+                      "JSON report to stderr on normal process exit; off is "
+                      "the default. Timers overlap and perturb execution."},
+        {"TRITONTERM_CNG_PROFILE", "Guest exec environment: count, timing, "
+                      "or off. Requires CNG_PROFILE_SUPPORT=1 in the launcher. "
+                      "Scope begins after the exec argument snapshot; entry "
+                      "means ELF/interpreter entry, not application main."},
         {"TRITONTERM_USERLAND_METADATA", "Set to 1 to enable TritonTerm archive ownership/mode sidecars. Experimental development scope: set-id execution, chown and hardlinks require the PRoot backend."},
         {"CNG_DEBUG", "When set to a non-empty, non-zero value, log verbose "
                       "syscall-error diagnostics to stderr, including each "
