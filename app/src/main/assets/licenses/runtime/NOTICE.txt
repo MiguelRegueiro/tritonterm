@@ -30,3 +30,8 @@ The Arch Linux ARM root filesystem is fetched from an Arch Linux ARM mirror and 
 OpenPGP signature is checked against the pinned Arch Linux ARM Build System key before extraction.
 The keyring source is included as the third_party/archlinuxarm-keyring Git submodule.
 Native dependency source/artifact revisions and per-ABI binary hashes are in docs/native-runtime.md.
+
+The experimental libchroot-ng.so is built from sylirre/fake-chroot-ng
+(869c42b705e889a487a9503e219fedfab71f4d88), licensed under Apache-2.0.
+Its upstream NOTICE and license are included as fake-chroot-ng-NOTICE.txt and
+fake-chroot-ng-LICENSE.txt. The pinned source is in third_party/fake-chroot-ng.
