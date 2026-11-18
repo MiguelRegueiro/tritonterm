@@ -19,6 +19,7 @@
  */
 #include "cng/monitor.h"
 #include "cng/procreg.h"
+#include "cng/tritonterm.h"
 #include "cng/rt.h"
 #include "cng/syscall.h"
 #include "cng/uapi.h"
@@ -186,17 +187,20 @@ void cng_cred_exec(const char *host) {
         unsigned char st[128]; /* AArch64 struct stat is 128 bytes */
         if (cng_syscall6(CNG_AT_FDCWD, (long)host, (long)st, 0, 0, 0,
                          __NR_newfstatat) == 0) {
-            unsigned mode = *(unsigned *)(st + ST_MODE_OFF);
+            struct cng_triton_record record;
+            int metadata = cng_triton_read(host, &record);
+            unsigned mode = metadata ? (record.mode | CNG_S_IFREG)
+                                     : *(unsigned *)(st + ST_MODE_OFF);
             /* setuid/setgid-on-exec: effective, saved, and fs id take the
              * file's visible owner/group, which cng_exec_vis_* reports as 0 for
              * a setuid/setgid regular file under the flags. ruid/rgid (the
              * caller's real id) are unchanged. */
             if (cng_g_setuid_root && (mode & CNG_S_ISUID) &&
                 (mode & CNG_S_IFMT) == CNG_S_IFREG)
-                c->euid = cng_exec_vis_uid(*(unsigned *)(st + ST_UID_OFF), mode);
+                c->euid = metadata ? record.uid : cng_exec_vis_uid(*(unsigned *)(st + ST_UID_OFF), mode);
             if (cng_g_setgid_root && (mode & CNG_S_ISGID) &&
                 (mode & CNG_S_IFMT) == CNG_S_IFREG)
-                c->egid = cng_exec_vis_gid(*(unsigned *)(st + ST_GID_OFF), mode);
+                c->egid = metadata ? record.gid : cng_exec_vis_gid(*(unsigned *)(st + ST_GID_OFF), mode);
         }
     }
     /* Every exec resets the saved set-ids to the effective ones, set-id bit or

@@ -72,7 +72,68 @@ static int cache_threads(char *other) {
     return 0;
 }
 
+static int root_transaction(void) {
+    assert(getuid() == GUEST_UID && geteuid() == 0);
+    assert(setgid(0) == 0 && setuid(0) == 0);
+    int fd = open("/archive", O_WRONLY | O_TRUNC);
+    assert(fd >= 0 && write(fd, "root", 4) == 4);
+    assert(fchown(fd, 4321, 5432) == 0);
+    struct stat st;
+    assert(fstat(fd, &st) == 0 && st.st_uid == 4321 && st.st_gid == 5432);
+    assert(fchmod(fd, 0600) == 0);
+    check("/archive", 0600, 4321, 5432);
+    assert(link("/archive", "/archive-hard") == 0);
+    check("/archive-hard", 0600, 4321, 5432);
+    assert(lchown("/archive-hard", 4322, 5433) == 0);
+    check("/archive", 0600, 4322, 5433);
+    assert(fstat(fd, &st) == 0 && st.st_uid == 4322 && st.st_nlink == 2);
+    assert(link("/archive-hard", "/archive-third") == 0);
+    check("/archive-third", 0600, 4322, 5433);
+    assert(unlink("/archive-hard") == 0);
+    check("/archive-third", 0600, 4322, 5433);
+    assert(unlink("/archive-third") == 0);
+    assert(chown("/archive", 4321, 5432) == 0);
+    assert(fchown(fd, (uid_t)-1, 123) == 0);
+    check("/archive", 0600, 4321, 123);
+    assert(chown("/missing", 0, 0) == -1 && errno == ENOENT);
+    assert(fchown(-1, 0, 0) == -1 && errno == EBADF);
+    assert(fchownat(fd, "", 0, 0, 0) == -1 && errno == ENOENT);
+    assert(fchownat(fd, "", 4321, 123, AT_EMPTY_PATH) == 0);
+    int pathfd = open("/archive", O_PATH);
+    assert(pathfd >= 0);
+    assert(fchown(pathfd, 0, 0) == -1 && errno == EBADF);
+    close(pathfd);
+    close(fd);
+    assert(mkdir("/package", 0755) == 0);
+    fd = open("/package/file", O_CREAT | O_EXCL | O_WRONLY, 0644);
+    assert(fd >= 0 && write(fd, "v1", 2) == 2);
+    close(fd);
+    assert(chown("/package/file", 321, 654) == 0);
+    check("/package/file", 0644, 321, 654);
+    assert(symlink("file", "/package/link") == 0);
+    assert(lchown("/package/link", 12, 34) == 0);
+    assert(lstat("/package/link", &st) == 0 && S_ISLNK(st.st_mode));
+    assert(st.st_uid == 12 && st.st_gid == 34);
+    check("/package/file", 0644, 321, 654);
+    assert(unlink("/package/link") == 0);
+    assert(rename("/package/file", "/package/old") == 0);
+    fd = open("/package/file", O_CREAT | O_EXCL | O_WRONLY, 0755);
+    assert(fd >= 0 && write(fd, "v2", 2) == 2);
+    close(fd);
+    check("/package/file", 0755, 0, 0);
+    assert(unlink("/package/old") == 0);
+    assert(unlink("/package/file") == 0 && rmdir("/package") == 0);
+    assert(chown("/archive", 0, 123) == 0 && chmod("/archive", 0644) == 0);
+    assert(setgid(GUEST_UID) == 0 && setuid(GUEST_UID) == 0);
+    assert(open("/archive", O_WRONLY) == -1 && errno == EACCES);
+    assert(chmod("/archive", 0666) == -1 && errno == EPERM);
+    assert(mkdir("/not-root", 0755) == -1 && errno == EACCES);
+    puts("PASS set-ID elevation, root package transaction, ownership/mode and privilege drop");
+    return 0;
+}
+
 int main(int argc, char **argv) {
+    if (argc > 1 && !strcmp(argv[1], "root-transaction")) return root_transaction();
     if (argc > 2 && !strcmp(argv[1], "cache-threads"))
         return cache_threads(argv[2]);
     if (argc > 1 && !strcmp(argv[1], "cache-changes"))
@@ -160,13 +221,14 @@ int main(int argc, char **argv) {
     check("/home/test/moved/renamed", 0644, GUEST_UID, GUEST_UID);
     assert(rename("/home/test/moved", "/home/test/work") == 0);
     assert(access("/home/test/work/renamed", F_OK) == 0);
-    assert(link("/home/test/work/renamed", "/home/test/work/hard") == -1 && errno == EOPNOTSUPP);
-    assert(chown("/home/test/work/renamed", 123, 456) == -1 && errno == EOPNOTSUPP);
+    assert(link("/home/test/work/renamed", "/home/test/work/hard") == 0);
+    assert(unlink("/home/test/work/hard") == 0);
+    assert(chown("/home/test/work/renamed", 123, 456) == -1 && errno == EPERM);
     pid_t child = fork();
     assert(child >= 0);
     if (child == 0) {
-        execl("/setid", "/setid", NULL);
-        _exit(errno == EOPNOTSUPP ? 0 : 2);
+        execl("/setid", "/setid", "root-transaction", NULL);
+        _exit(2);
     }
     int status;
     assert(waitpid(child, &status, 0) == child && WIFEXITED(status) && WEXITSTATUS(status) == 0);
@@ -174,6 +236,6 @@ int main(int argc, char **argv) {
     assert(unlink("/home/test/work/link") == 0);
     assert(unlink("/home/test/work/renamed") == 0);
     assert(rmdir("/home/test/work") == 0);
-    puts("PASS metadata stat/fstat/statx, create/chmod/file rename/unlink directory trees, and explicit unsupported-operation gates");
+    puts("PASS metadata stat/fstat/statx, create/chmod/file rename/unlink directory trees, and metadata-backed root transactions");
     return 0;
 }

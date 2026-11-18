@@ -4802,6 +4802,11 @@ static long dispatch_1(long nr, long a0, long a1, long a2, long a3, long a4,
                 r = 0;
             }
         }
+        if (r == 0) {
+            long permission = cng_triton_access(p, (int)a2,
+                nr != __NR_faccessat2 || !((int)a3 & 0x200 /* AT_EACCESS */));
+            if (permission < 0) return permission;
+        }
         /* "SuS v2 requires we report a read only fs too", as fs/open.c puts it:
          * a W_OK that the inode itself grants is still EROFS on a read-only
          * mount, and a :ro bind is one. Without it `test -w` answered yes about
@@ -5465,7 +5470,7 @@ static long dispatch_1(long nr, long a0, long a1, long a2, long a3, long a4,
          * guest's own would have — and dropped under fake root, whose
          * capability it is. */
         int flagged = (fl & CNG_AT_EMPTY_PATH) && !empty && !cng_fake_root();
-        int force = cng_g_l2s && cng_g_l2s_force; /* CNG_L2S_FORCE: exercise
+        int force = cng_g_l2s && (cng_g_l2s_force || cng_triton_enabled()); /* CNG_L2S_FORCE: exercise
                                                     * the fallback directly */
         char srch[CNG_PATH_MAX], dsth[CNG_PATH_MAX];
         long r;
@@ -7264,6 +7269,8 @@ static long cng_dispatch_profiled(long nr, long a0, long a1, long a2, long a3, l
     long allowed = cng_triton_before(&metadata_change, nr, a0, a1, a2, a3, a4);
     if (allowed < 0)
         return allowed;
+    if (allowed > 0)
+        return 0;
     long r = dispatch_1(nr, a0, a1, a2, a3, a4, a5, trapped);
     if (r == -EACCES && cng_fake_root())
         r = dac_bypass(nr, a0, a1, a2, a3, a4, a5, trapped);

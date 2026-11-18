@@ -413,12 +413,6 @@ int cng_run(const char *rootfs, const char *libprefix, const char *workdir,
         cng_fs_abscanon(&g_fs, prog_guest, exe_guest, sizeof exe_guest) == 0)
         cng_g_exe_guest = exe_guest;
 
-    /* setuid/setgid-on-exec for the initial program (e.g. running /bin/su
-     * directly), mirroring the emulated-execve path. */
-    if (cng_triton_exec_check(host_prog) < 0)
-        return 126;
-    cng_cred_exec(host_prog);
-
     /* The view is complete: publish it. From here every reader sees it through
      * the sequence protocol and every chdir/chroot replaces it whole rather
      * than editing it under them (path.c). g_fs itself is not written again,
@@ -427,6 +421,12 @@ int cng_run(const char *rootfs, const char *libprefix, const char *workdir,
      * group made before it still has its data where this one put it. */
     cng_g_fs = cng_fs_publish(&g_fs);
     cng_l2s_home(&g_fs);
+
+    /* setuid/setgid-on-exec for the initial program (e.g. running /bin/su
+     * directly), mirroring the emulated-execve path. */
+    if (cng_triton_exec_check(host_prog) < 0)
+        return 126;
+    cng_cred_exec(host_prog);
 
     /* What the launcher handed down, judged against that view: a descriptor on
      * a directory the guest has no name for is closed here rather than left

@@ -4,6 +4,7 @@
  * syscalls + the cng runtime string helpers only, so it is safe to run inside
  * the SIGSYS handler. Every path here is an already-resolved host path. */
 #include "cng/l2s.h"
+#include "cng/tritonterm.h"
 #include "cng/monitor.h"
 #include "cng/path.h"
 #include "cng/pin.h"
@@ -825,6 +826,7 @@ static int pr_settle(struct pr_group *g) {
 static long pr_adjust(struct pr_group *g, int delta) {
     if (delta < 0 && g->count <= 1) {
         l2s_unlink(g->data);
+        cng_triton_remove_record(g->data);
         l2s_unlink(g->ind);
         return 0;
     }
@@ -849,6 +851,13 @@ static long pr_adjust(struct pr_group *g, int delta) {
         l2s_rename(g->data, old); /* the count back */
     if (r < 0) {
         cng_strlcpy(g->data, old, sizeof g->data);
+        return r;
+    }
+    r = cng_triton_move_record(old, g->data);
+    if (r < 0) {
+        l2s_rename(g->data, old);
+        cng_strlcpy(g->data, old, sizeof g->data);
+        pr_repoint(g);
         return r;
     }
     g->count = nc;
@@ -1254,6 +1263,39 @@ static void l2s_swap_out(const char *src, const char *data) {
     l2s_rename(data, src);
 }
 
+/* Metadata-backed Arch must remain readable by PRoot. Use its two-level
+ * indirection/count format for new groups, reusing the existing reader and
+ * count-update implementation for later links/unlinks. Caller holds src lock. */
+static int triton_first_link(const char *src, const char *dst) {
+    char dir[CNG_PATH_MAX], ind[CNG_PATH_MAX], data[CNG_PATH_MAX];
+    int r = l2s_store_dir(dir, sizeof dir);
+    if (r < 0) return r;
+    unsigned long long ino = 0;
+    unsigned char st[ST_SIZE];
+    r = (int)l2s_lstat(src, st);
+    if (r < 0) return r;
+    ino = *(unsigned long long *)(st + ST_INO_OFF);
+    for (unsigned n = 0; n < 10000; n++) {
+        if (cng_snprintf(ind, sizeof ind, "%s/.proot.l2s.cng%llu%04u", dir, ino, n) >= sizeof ind ||
+            cng_snprintf(data, sizeof data, "%s.0002", ind) >= sizeof data)
+            return -ENAMETOOLONG;
+        r = (int)l2s_symlink(data, ind);
+        if (r == -EEXIST) continue;
+        if (r < 0) return r;
+        r = (int)l2s_swap_in(src, data, ind);
+        if (r < 0) { l2s_unlink(ind); return r; }
+        r = (int)cng_triton_move_record(src, data);
+        if (r == 0) r = (int)l2s_symlink(ind, dst);
+        if (r < 0) {
+            cng_triton_move_record(data, src);
+            l2s_swap_out(src, data);
+            l2s_unlink(ind);
+        }
+        return r;
+    }
+    return -EEXIST;
+}
+
 /* The first link of a file of its own: src becomes the group's data file and
  * a symlink takes its name. Run under the lock. Returns 0, -errno, or 1 where
  * src cannot join a group and dst is to be a copy of it instead — made by the
@@ -1277,6 +1319,8 @@ static int l2s_first_link(const char *src, const char *dst, const char *ddir,
      * pipe, connects to the one socket. A copy cannot stand in for those. */
     if (!is_data(st) || !own) /* e.g. /proc/self/fd/N O_TMPFILE: copy contents */
         return 1;
+    if (cng_triton_enabled())
+        return triton_first_link(src, dst);
     ino = *(unsigned long long *)((char *)st + ST_INO_OFF);
 
     /* Prefer the central store: the group's names then carry the data file's

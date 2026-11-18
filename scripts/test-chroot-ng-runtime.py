@@ -48,12 +48,23 @@ def main():
         (root / 'setid').chmod(0o755)
         environment = dict(os.environ, TMPDIR=str(root / 'tmp'), CNG_TMP_ENV_ONLY='1',
                            TRITONTERM_USERLAND_METADATA='1')
-        command = [args.qemu, args.runtime.resolve(), '-R', '--link2symlink', '-u', '11000:11000',
+        command = [args.qemu, args.runtime.resolve(), '-R', '--link2symlink', '--setuid-root', '--setgid-root', '-u', '11000:11000',
                    '-w', '/home/test', root, '/bin/metadata-check']
         log = run(command, env=environment, timeout=60)
         assert 'PASS metadata' in log
         assert not (metadata / 'home/test/work/.proot-meta-file.renamed').exists()
         print(log.strip())
+        (root / 'archive').chmod(0o666)  # reset physical mode after the root transaction
+        # Direct initial set-ID launches must consult the published fs view too.
+        direct = command[:-1] + ['/setid', 'root-transaction']
+        assert 'PASS set-ID elevation' in run(direct, env=environment, timeout=60)
+        # The root transaction exercised emulated hardlinks. Restore an
+        # ordinary inode so the independent external-edit fixture below
+        # addresses exactly the record it edits.
+        (root / 'archive').unlink()
+        (root / 'archive').write_text('archive payload')
+        (root / 'archive').chmod(0o666)
+        (metadata / '.proot-meta-file.archive').write_text('644\n0\n123\n')
         # Independent host writes while one guest process keeps its cache.
         record = metadata / '.proot-meta-file.archive'
         for cache in ('1', '0'):
@@ -171,7 +182,7 @@ assert(s.st_uid==11000 && (s.st_mode&07777)==0666); return 0; }
 ''')
         run([args.guest_cc, '-static-pie', '-O0', source, '-o', root / 'bin/disabled'], timeout=60)
         environment.pop('TRITONTERM_USERLAND_METADATA')
-        run([args.qemu, args.runtime.resolve(), '-R', '--link2symlink', '-u', '11000:11000', root, '/bin/disabled'],
+        run([args.qemu, args.runtime.resolve(), '-R', '--link2symlink', '--setuid-root', '--setgid-root', '-u', '11000:11000', root, '/bin/disabled'],
             env=environment, timeout=60)
         print('PASS disabled metadata adapter retains upstream ownership behavior')
         print('QEMU verifies rewritten ARM64 execution; Android seccomp/SELinux still require device validation.')

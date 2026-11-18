@@ -20,6 +20,9 @@ int cng_triton_enabled(void);
 int cng_triton_read(const char *host, struct cng_triton_record *record);
 void cng_triton_fd_stat(long fd, void *buf, int statx);
 void cng_triton_stat(long dirfd, const char *host, void *st, int statx);
+long cng_triton_move_record(const char *source, const char *target);
+void cng_triton_remove_record(const char *host);
+long cng_triton_access(const char *host, int mode, int real);
 long cng_triton_exec_check(const char *host);
 long cng_triton_open_before(struct cng_triton_change *change, long dirfd,
                               const char *host, long flags, int follow);

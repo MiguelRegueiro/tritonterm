@@ -1,11 +1,11 @@
 #include "cng/profile.h"
 /* SPDX-License-Identifier: Apache-2.0 */
-/* Experimental TritonTerm sidecar adapter. The package installer continues to
- * use PRoot. Set-id execution and unsupported metadata mutations fail explicitly
- * instead of silently changing the archive's ownership model. */
+/* TritonTerm ownership/mode sidecars shared with the PRoot backend.
+ * Synthetic ownership never changes the Android app UID or host ownership. */
 #include "cng/tritonterm.h"
 #include "cng/broker.h"
 #include "cng/l2s.h"
+#include "cng/pin.h"
 #include "cng/monitor.h"
 #include "cng/rt.h"
 #include "cng/syscall.h"
@@ -174,7 +174,10 @@ static int cng_triton_read_profiled(const char *host, struct cng_triton_record *
 
 static int fd_host(long fd, char *out, size_t size) {
     char link[64];
-    cng_snprintf(link, sizeof link, "/proc/self/fd/%d", (int)fd);
+    if ((int)fd == CNG_AT_FDCWD)
+        cng_strlcpy(link, "/proc/self/cwd", sizeof link);
+    else
+        cng_snprintf(link, sizeof link, "/proc/self/fd/%d", (int)fd);
     long n = sys_readlinkat(CNG_AT_FDCWD, link, out, size - 1);
     if (n <= 0 || (size_t)n >= size - 1)
         return 0;
@@ -243,15 +246,35 @@ void cng_triton_fd_stat(long fd, void *buf, int statx) {
 }
 
 static long unsupported(void) {
-    cng_puts(2, "TritonTerm experimental chroot-ng: this metadata operation is not supported yet; select PRoot for sudo, package management or unsupported metadata mutations.\n");
+    cng_puts(2, "TritonTerm chroot-ng: these rename flags are not supported by the metadata adapter; use PRoot for this operation.\n");
     return -EOPNOTSUPP;
+}
+
+static unsigned permissions(const struct cng_triton_record *r,
+                            const struct cng_cred_ids *ids, int real) {
+    unsigned groups[CNG_NGROUPS_MAX];
+    unsigned uid = real ? ids->ruid : ids->fsuid;
+    unsigned gid = real ? ids->rgid : ids->fsgid;
+    if (uid == r->uid)
+        return (r->mode >> 6) & 7;
+    int match = gid == r->gid;
+    if (!match) {
+        int n = cng_cred_groups(groups, 0);
+        for (int i = 0; i < n; i++)
+            match |= groups[i] == r->gid;
+    }
+    return (r->mode >> (match ? 3 : 0)) & 7;
 }
 
 long cng_triton_exec_check(const char *host) {
     struct cng_triton_record record;
-    if (cng_triton_read(host, &record) && (record.mode & 06000))
-        return unsupported();
-    return 0;
+    if (!cng_triton_read(host, &record))
+        return 0;
+    struct cng_cred_ids ids;
+    cng_cred_ids(&ids);
+    if (ids.fsuid == 0)
+        return record.mode & 0111 ? 0 : -EACCES;
+    return permissions(&record, &ids, 0) & 1 ? 0 : -EACCES;
 }
 
 static int make_parent(char *path) {
@@ -294,6 +317,21 @@ static void remove_record(const char *host) {
         CNG_SYS(__NR_unlinkat, CNG_AT_FDCWD, path, 0, 0, 0, 0);
 }
 
+/* Internal l2s moves bypass guest syscalls. Carry the sidecar along with the
+ * backing inode so every member and an already-open descriptor agree. */
+long cng_triton_move_record(const char *source, const char *target) {
+    char old[CNG_PATH_MAX], new[CNG_PATH_MAX];
+    if (!cng_triton_enabled() || !metadata_path(source, old, sizeof old, 0) ||
+        !metadata_path(target, new, sizeof new, 0)) return 0;
+    if (!make_parent(new)) return -EIO;
+    long r = CNG_SYS(__NR_renameat, CNG_AT_FDCWD, old, CNG_AT_FDCWD, new, 0, 0);
+    return r == -ENOENT ? 0 : r;
+}
+
+void cng_triton_remove_record(const char *host) {
+    if (cng_triton_enabled()) remove_record(host);
+}
+
 static int read_host(long dirfd, const char *guest, int follow, char *out) {
     char input[CNG_PATH_MAX];
     if (cng_user_strcopyin(input, guest, sizeof input) < 0)
@@ -301,17 +339,55 @@ static int read_host(long dirfd, const char *guest, int follow, char *out) {
     return host_path(dirfd, input, follow, out);
 }
 
+static long parent_write(const char *host) {
+    char parent[CNG_PATH_MAX];
+    if (!host || host[0] != '/' || cng_strlcpy(parent, host, sizeof parent) >= sizeof parent)
+        return 0;
+    char *slash = strrchr(parent, '/');
+    if (!slash) return 0;
+    if (slash == parent) slash[1] = '\0'; else *slash = '\0';
+    struct cng_cred_ids ids;
+    cng_cred_ids(&ids);
+    if (ids.fsuid == 0) return 0;
+    struct cng_triton_record record;
+    if (cng_triton_read(parent, &record)) {
+        if ((permissions(&record, &ids, 0) & 3) != 3)
+            return -EACCES;
+        if ((record.mode & 01000) && record.uid != ids.fsuid) {
+            struct cng_triton_record leaf;
+            if (cng_triton_read(host, &leaf) && leaf.uid != ids.fsuid)
+                return -EPERM;
+        }
+    }
+    return 0;
+}
+
+long cng_triton_access(const char *host, int mode, int real) {
+    if (!cng_triton_enabled() || !host || !host[0] || mode == 0 || (mode & ~7))
+        return 0;
+    struct cng_triton_record r;
+    if (!cng_triton_read(host, &r)) return 0;
+    struct cng_cred_ids ids;
+    cng_cred_ids(&ids);
+    unsigned uid = real ? ids.ruid : ids.fsuid;
+    if (uid == 0)
+        return (mode & 1) && !(r.mode & 0111) ? -EACCES : 0;
+    return (permissions(&r, &ids, real) & (unsigned)mode) == (unsigned)mode ? 0 : -EACCES;
+}
+
 static long open_record(struct cng_triton_change *c, long flags,
                         int present, const struct cng_cred_ids *ids) {
-    if (present) {
-        unsigned perms = ids->euid == c->record.uid ? (c->record.mode >> 6) & 7
-            : ids->egid == c->record.gid ? (c->record.mode >> 3) & 7 : c->record.mode & 7;
+    if (present && ids->fsuid != 0 && !(flags & CNG_O_PATH)) {
+        unsigned perms = permissions(&c->record, ids, 0);
         unsigned need = (flags & 3) == CNG_O_WRONLY ? 2 : (flags & 3) == CNG_O_RDWR ? 6 : 4;
         if ((perms & need) != need)
             return -EACCES;
     }
-    if ((flags & CNG_O_CREAT) && !present)
+    if ((flags & CNG_O_CREAT) && !present) {
+        long r = parent_write(c->source);
+        if (r < 0) return r;
         c->op = 1;
+    }
     return 0;
 }
 
@@ -320,9 +396,6 @@ long cng_triton_open_before(struct cng_triton_change *c, long dirfd,
     c->op = 0;
     if (!cng_triton_enabled())
         return 0;
-    int readonly = !(flags & (CNG_O_CREAT | CNG_O_TRUNC)) && !(flags & 3);
-    if (!readonly && cng_fake_root())
-        return unsupported();
     if (!host || !host[0])
         return 0;
     if (host[0] == '/') {
@@ -340,6 +413,93 @@ long cng_triton_open_before(struct cng_triton_change *c, long dirfd,
     return open_record(c, flags, present, &ids);
 }
 
+/* Return one for a completed virtual attribute operation, zero for the
+ * ordinary dispatcher. Validate the real target first so bad descriptors,
+ * missing names, read-only binds and invalid flags retain their errors. */
+static long attributes(struct cng_triton_change *c, long nr, long a0,
+                       long a1, long a2, long a3, long a4) {
+    int owner = nr == __NR_fchown || nr == __NR_fchownat;
+    int fd = nr == __NR_fchmod || nr == __NR_fchown;
+    int flags = fd ? 0 : nr == __NR_fchownat ? (int)a4
+        : nr == __NR_fchmodat2 ? (int)a3 : 0;
+    if (flags & ~(CNG_AT_SYMLINK_NOFOLLOW | CNG_AT_EMPTY_PATH))
+        return -EINVAL;
+    if (!fd) {
+        char first;
+        if (cng_user_copyin(&first, (const void *)a1, 1) < 0) return -EFAULT;
+        if (!first && !(flags & CNG_AT_EMPTY_PATH)) return -ENOENT;
+    } else {
+        long status = sys_fcntl((int)a0, CNG_F_GETFL, 0);
+        if (status < 0) return status;
+        if (status & CNG_O_PATH) return -EBADF;
+    }
+    if (!(fd ? fd_host(a0, c->source, sizeof c->source)
+          : read_host(a0, (const char *)a1,
+                      !(flags & CNG_AT_SYMLINK_NOFOLLOW), c->source)))
+        return 0; /* ordinary dispatcher preserves bad pointers/fds/paths */
+    char meta[CNG_PATH_MAX];
+    if (!metadata_path(c->source, meta, sizeof meta, 0))
+        return 0;
+    unsigned char st[128];
+    long r = fd ? sys_fstat((int)a0, st)
+        : cng_pin_fstatat(c->source, st, flags & CNG_AT_SYMLINK_NOFOLLOW);
+    if (r < 0)
+        return r;
+    if (cng_g_l2s && (*(unsigned *)(st + 16) & CNG_S_IFMT) == 0120000u) {
+        char backing[CNG_PATH_MAX];
+        if (cng_l2s_resolve(c->source, backing, sizeof backing, 0) == 1) {
+            cng_strlcpy(c->source, backing, sizeof c->source);
+            r = cng_pin_fstatat(c->source, st, CNG_AT_SYMLINK_NOFOLLOW);
+            if (r < 0) return r;
+        }
+    }
+    if (cng_fs_host_ro(cng_g_fs, c->source))
+        return -EROFS;
+    struct cng_cred_ids ids;
+    cng_cred_ids(&ids);
+    if (!cng_triton_read(c->source, &c->record)) {
+        c->record.mode = *(unsigned *)(st + 16) & 07777;
+        c->record.uid = ids.fsuid;
+        c->record.gid = ids.fsgid;
+    }
+    if (ids.euid != 0 && ids.euid != c->record.uid)
+        return -EPERM;
+    if (owner) {
+        unsigned uid = (unsigned)(fd ? a1 : a2);
+        unsigned gid = (unsigned)(fd ? a2 : a3);
+        if (ids.euid != 0) {
+            struct cng_triton_record group_test = { .mode = 0070, .uid = ~0u, .gid = gid };
+            if ((uid != ~0u && uid != c->record.uid) ||
+                (gid != ~0u && gid != c->record.gid && !permissions(&group_test, &ids, 0)))
+                return -EPERM;
+        }
+        if (uid != ~0u) c->record.uid = uid;
+        if (gid != ~0u) c->record.gid = gid;
+        if ((*(unsigned *)(st + 16) & CNG_S_IFMT) != CNG_S_IFDIR)
+            c->record.mode &= ~06000u;
+    } else {
+        if ((*(unsigned *)(st + 16) & CNG_S_IFMT) == 0120000u)
+            return -EOPNOTSUPP;
+        c->record.mode = (unsigned)(fd ? a1 : a2) & 07777;
+        /* Keep the app able to manage the inode. Guest-visible permissions
+         * live in the sidecar; physical execute bits still serve the loader. */
+        unsigned physical = (c->record.mode & 0111) | 0600;
+        if ((*(unsigned *)(st + 16) & CNG_S_IFMT) == CNG_S_IFDIR)
+            physical |= 0100;
+        struct cng_pin pin;
+        r = fd ? CNG_SYS(__NR_fchmod, a0, physical, 0, 0, 0, 0)
+            : cng_pin_at(CNG_AT_FDCWD, c->source, &pin);
+        if (!fd && r == 0) {
+            r = CNG_SYS(__NR_fchmodat, pin.dfd, pin.name, physical, 0, 0, 0);
+            cng_unpin(&pin);
+        }
+        if (r < 0) return r;
+    }
+    if (!write_record(c->source, &c->record))
+        return -EIO;
+    return 1;
+}
+
 long cng_triton_before(struct cng_triton_change *c, long nr, long a0,
                        long a1, long a2, long a3, long a4) {
     c->op = 0;
@@ -353,21 +513,26 @@ long cng_triton_before(struct cng_triton_change *c, long nr, long a0,
         a2 = (long)flags;
         nr = __NR_openat;
     }
+    if (nr == __NR_fchmod || nr == __NR_fchmodat || nr == __NR_fchmodat2 ||
+        nr == __NR_fchown || nr == __NR_fchownat)
+        return attributes(c, nr, a0, a1, a2, a3, a4);
     int mutates = nr == __NR_openat || nr == __NR_openat2 || nr == __NR_mkdirat ||
         nr == __NR_unlinkat || nr == __NR_renameat || nr == __NR_renameat2 ||
-        nr == __NR_fchmod || nr == __NR_fchmodat || nr == __NR_fchmodat2 ||
-        nr == __NR_fchown || nr == __NR_fchownat || nr == __NR_linkat;
+        nr == __NR_linkat || nr == __NR_symlinkat;
     if (!mutates)
         return 0;
-    int readonly_open = nr == __NR_openat && !(a2 & (CNG_O_CREAT | CNG_O_TRUNC)) && !(a2 & 3);
-    if (nr == __NR_linkat)
-        return -EOPNOTSUPP;
-    if ((!readonly_open && cng_fake_root()) || nr == __NR_fchown || nr == __NR_fchownat)
-        return unsupported();
-    int fd_form = nr == __NR_fchmod;
+    if (nr == __NR_linkat) {
+        if (read_host(a2, (const char *)a3, 0, c->target))
+            return parent_write(c->target);
+        return 0;
+    }
+    if (nr == __NR_symlinkat) {
+        if (!read_host(a1, (const char *)a2, 0, c->source)) return 0;
+        c->op = 8;
+        return parent_write(c->source);
+    }
     int follow = nr != __NR_unlinkat && nr != __NR_renameat && nr != __NR_renameat2;
-    if (!(fd_form ? fd_host(a0, c->source, sizeof c->source)
-                  : read_host(a0, (const char *)a1, follow, c->source)))
+    if (!read_host(a0, (const char *)a1, follow, c->source))
         return 0;
     char meta[CNG_PATH_MAX];
     if (!metadata_path(c->source, meta, sizeof meta, 0))
@@ -375,29 +540,15 @@ long cng_triton_before(struct cng_triton_change *c, long nr, long a0,
     int present = cng_triton_read(c->source, &c->record);
     struct cng_cred_ids ids;
     cng_cred_ids(&ids);
-    if (present && c->record.uid != ids.euid && nr != __NR_openat)
-        return unsupported();
     if (nr == __NR_openat)
         return open_record(c, a2, present, &ids);
     if (nr == __NR_mkdirat) {
         c->op = 2;
-        return 0;
-    }
-    if (nr == __NR_fchmod || nr == __NR_fchmodat || nr == __NR_fchmodat2) {
-        if (!present) {
-            unsigned char st[128];
-            if (CNG_SYS(__NR_newfstatat, CNG_AT_FDCWD, c->source, st, 0, 0, 0) < 0)
-                return 0;
-            c->record.uid = ids.euid;
-            c->record.gid = ids.egid;
-        }
-        c->record.mode = (unsigned)(fd_form ? a1 : a2) & 07777;
-        c->op = 3;
-        return 0;
+        return parent_write(c->source);
     }
     if (nr == __NR_unlinkat) {
         c->op = (a2 & CNG_AT_REMOVEDIR) ? 6 : 4;
-        return 0;
+        return parent_write(c->source);
     }
     if (nr == __NR_renameat || nr == __NR_renameat2) {
         unsigned char st[128];
@@ -413,6 +564,10 @@ long cng_triton_before(struct cng_triton_change *c, long nr, long a0,
             c->record.uid = ids.euid;
             c->record.gid = ids.egid;
         }
+        long allowed = parent_write(c->source);
+        if (allowed < 0) return allowed;
+        allowed = parent_write(c->target);
+        if (allowed < 0) return allowed;
         c->op = directory ? 7 : 5;
     }
     return 0;
@@ -421,10 +576,10 @@ long cng_triton_before(struct cng_triton_change *c, long nr, long a0,
 long cng_triton_after(struct cng_triton_change *c, long result) {
     if (result < 0 || !c->op)
         return result;
-    if (c->op == 1 || c->op == 2) {
+    if (c->op == 1 || c->op == 2 || c->op == 8) {
         unsigned char st[128];
         long r = c->op == 1 ? sys_fstat((int)result, st)
-            : CNG_SYS(__NR_newfstatat, CNG_AT_FDCWD, c->source, st, 0, 0, 0);
+            : CNG_SYS(__NR_newfstatat, CNG_AT_FDCWD, c->source, st, c->op == 8 ? CNG_AT_SYMLINK_NOFOLLOW : 0, 0, 0);
         if (r < 0)
             return result;
         struct cng_cred_ids ids;
@@ -437,9 +592,6 @@ long cng_triton_after(struct cng_triton_change *c, long result) {
                 sys_close((int)result);
             return -EIO;
         }
-    } else if (c->op == 3) {
-        if (!write_record(c->source, &c->record))
-            return -EIO;
     } else if (c->op == 4 || c->op == 6) {
         remove_record(c->source);
         if (c->op == 6) {
