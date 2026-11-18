@@ -533,3 +533,99 @@ has 85.51% targeted line coverage. All 85 app/emulator/view JVM tests completed
 with zero failures/errors and one existing skip, and the Android ARM64 build
 passed. The new patches prepare against the pinned source and reapply
 idempotently; no rootfs pin or guest metadata format changed.
+
+
+### Phone elapsed timers from exp.27
+
+Two successful offline Cargo runs reported the following values. These are
+elapsed section times, including scheduling pauses, rather than a CPU-time
+partition. Event handling encloses the component timers.
+
+| Measurement | First run | Second run |
+| --- | ---: | ---: |
+| Command wall | 7.590 s | 5.352 s |
+| Command CPU | 1.573 s | 1.332 s |
+| Tracer user CPU | 0.430 s | 0.380 s |
+| Tracer system CPU | 3.010 s | 2.190 s |
+| Component lstat elapsed | 1.7087 s | 1.0701 s |
+| Ownership-record read elapsed | 1.7700 s | 1.1535 s |
+| Bulk memory read/write elapsed | 0.1749 s | 0.1383 s |
+| Binding lookup elapsed | 0.0799 s | 0.0648 s |
+| Event handling elapsed, enclosing components | 5.5363 s | 3.5610 s |
+
+The workload counts remained approximately 57,200 component lstats and
+10,400 opened ownership records. Bulk memory still succeeded except for
+one read; the F2FS workaround remained inactive. This supplies the elapsed
+cost missing from the earlier count-only diagnosis. The two filesystem
+sections account for approximately 63% of measured event-handler elapsed
+time in both runs. Binding lookup is a small elapsed cost despite its
+millions of comparisons. The two filesystem sections explain about 1.26 s
+of the 2.24 s wall-time difference between runs, without proving a complete
+additive wall/CPU breakdown.
+
+The next candidates are reducing live directory validation and ownership
+record open/read/close work. The monitored-directory prototype's lack of
+host benefit does not establish lack of phone benefit: the phone's measured
+filesystem cost differs substantially from the host profile. Nevertheless,
+changes need mutation, symlink, permission, replacement and monitoring-failure
+checks before packaging. Reusing metadata descriptors with live content
+reads and pathname/identity validation is another candidate that avoids
+caching ownership values; descriptor limits and permission changes must be
+handled. Neither candidate is established as a phone fix yet. No change to
+the rootfs format is required for these runtime approaches. These Cargo
+measurements still do not independently establish the Fish Enter bottleneck.
+
+## exp.31 phone follow-up: Cargo and prompt isolation
+
+With the validated metadata cache and openat path reuse, the phone reported
+unchanged Cargo builds at 3.48 s, 851.20 ms and 877.03 ms wall time. Cargo's
+own reported durations were 3.27 s, 0.74 s and 0.76 s; a subsequent cargo run
+reported 0.80 s before launching Elio. These sequential measurements are not a
+controlled speedup estimate against exp.30: filesystem warmth and phone state
+remain variables.
+
+Enter still piled up in the normal configured Fish session. In the requested
+shell comparison, the user reported no piling up with fish --no-config
+--private, with its fish_prompt replaced by a literal MIN> prompt, or with
+bash --noprofile --norc -i. Crucially, replacing fish_prompt with that same
+literal prompt in the normal configured Fish session also removed the backlog.
+This latest result isolates expensive normal prompt generation as a practical
+trigger on this build. It does not identify an individual Starship module or
+prove that all terminal input/rendering latency is absent.
+
+The next prompt change should target synchronous prompt generation and repeated
+context discovery, retaining useful status information and checking freshness
+when commands or directories change. Earlier PRoot measurements of Git/Rust
+module cost are leads, not fresh module-level profiling of exp.31. Cargo's
+remaining startup overhead is a separate workload; faster prompt rendering
+must not be presented as a fix for it.
+
+### exp.32 source investigation
+
+The corrected Starship comparison at home was about 23–25 ms minimal and
+53–57 ms configured on the phone; in Elio it was 118–130 ms configured. On the
+laptop, the first user block's repository cd failed, so both of those batches
+were home measurements. The corrected host path is /home/regueiro/elio-fm/elio:
+local repeats measured roughly 2.2 ms minimal and 21–27 ms configured, with
+Git status around 7 ms, Rust around 14 ms and the clock around 2 ms. Different
+hardware, versions and repository state limit causal interpretation.
+
+An ARM64 Starship from an existing local Arch image was traced under QEMU,
+with the original archive metadata and TZ=Europe/Madrid. Clock initialization
+walked timezone-data directories. The runtime repeated path-stat work in the
+l2s probe, repeated fd-target lookup between l2s and ownership handling, and
+read each executable-mapping program header separately in two passes. The
+exp.32 candidate reuses those per-operation results and reads the bounded ELF
+program-header table in bulk. No prompt modules, time settings or freshness
+rules are changed. Focused stat fixture filesystem calls dropped 6065 to 3565
+(path stat) and 2572 to 2072 (fd stat), relative to exp.31. Validated Starship
+runs removed 58 individual program-header reads, replaced with three bulk
+reads. These are operation counts, not measured phone speedups.
+
+QEMU's unavailable guest seccomp fallback can leave a shared-library syscall
+untranslated. A profiling run that rendered the wrong/default prompt after
+reading an untranslated config path was rejected explicitly; its timing and
+operation counts are not comparison evidence. The profiling script verifies
+prompt output and keeps rejected logs. Source and test details are in
+docs/testing-chroot-ng.md; /tmp/tritonterm-starship-validated/summary.json holds
+the accepted operation-count summaries for this session.
