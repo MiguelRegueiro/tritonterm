@@ -4343,6 +4343,44 @@ void cng_clone_convert(struct cng_uregs *ur) {
     CNG_SYS(__NR_rt_sigprocmask, 2 /*SIG_SETMASK*/, &mask, 0, 8, 0, 0);
 }
 
+/* An absolute, canonical rootfs name can be checked by the existing pinned
+ * lstat without first readlink-walking every parent. The pin proves its
+ * parent is symlink-free; an ordinary leaf then has the same stat/lstat.
+ * Keep binds, zones, symlinks, errors and noncanonical names on the full path.
+ * This is one-operation reuse, not a path cache. */
+static int stat_plain_absolute(const char *guest, char *host, size_t size,
+                                void *st) {
+    if (!cng_g_fs || !guest || guest[0] != '/' || !guest[1])
+        return 0;
+    if ((!strncmp(guest, "/proc", 5) && (!guest[5] || guest[5] == '/')) ||
+        (!strncmp(guest, "/dev", 4) && (!guest[4] || guest[4] == '/')))
+        return 0;
+    for (const char *part = guest + 1;;) {
+        const char *end = part;
+        while (*end && *end != '/') end++;
+        size_t length = (size_t)(end - part);
+        if (!length || (length == 1 && part[0] == '.') ||
+            (length == 2 && part[0] == '.' && part[1] == '.') ||
+            (length >= 5 && !strncmp(part, ".l2s.", 5)) ||
+            (length >= 11 && !strncmp(part, ".proot.l2s.", 11)))
+            return 0;
+        if (!*end) break;
+        part = end + 1;
+    }
+    const struct cng_fs *view;
+    unsigned seq = cng_fs_read_begin(&view);
+    int mount;
+    if (cng_fs_translate_mnt(view, guest, host, size, &mount) != 0 ||
+        mount != CNG_MOUNT_ROOTFS)
+        return 0;
+    long result = cng_pin_fstatat(host, st, CNG_AT_SYMLINK_NOFOLLOW);
+    /* A concurrent chroot/view replacement invalidates the candidate. No
+     * result has been published to the guest, so retry via normal resolution. */
+    return result == 0 &&
+        ((*(unsigned *)((char *)st + STAT_MODE_OFF) & CNG_S_IFMT) != 0120000u) &&
+        !cng_fs_read_retry(seq);
+}
+
 /* One syscall, as cng_dispatch makes it the first time: see there for the
  * second. */
 static long dispatch_1(long nr, long a0, long a1, long a2, long a3, long a4,
@@ -4951,8 +4989,12 @@ static long dispatch_1(long nr, long a0, long a1, long a2, long a3, long a4,
         int ordinary = 0;
         if (cng_g_l2s && a2) {
             char *hnf = b1;
-            int probe = cng_resolve_at(a0, (const char *)a1, 0, hnf, sizeof b1) == 0
-                ? cng_l2s_stat_probe(hnf, sb) : 0;
+            unsigned known = CNG_AT_SYMLINK_NOFOLLOW | CNG_AT_NO_AUTOMOUNT | CNG_AT_EMPTY_PATH;
+            int fast = !((unsigned)a3 & ~known) &&
+                stat_plain_absolute((const char *)a1, hnf, sizeof b1, sb);
+            int probe = fast ? 2 :
+                cng_resolve_at(a0, (const char *)a1, 0, hnf, sizeof b1) == 0
+                    ? cng_l2s_stat_probe(hnf, sb) : 0;
             /* The l2s check already performed a pinned kernel lstat. For a
              * non-symlink, that is also stat's answer. Keep unknown flags on
              * the kernel validation path and preserve all common fixups. */

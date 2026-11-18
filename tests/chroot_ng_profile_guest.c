@@ -15,6 +15,9 @@ static void *worker(void *unused) {
     for (int i = 0; i < 30; i++) {
         struct stat st;
         assert(stat("/fixture", &st) == 0 && st.st_size == 7);
+        /* Keep explicit full-resolver coverage alongside canonical stat's
+         * optimized path: the profiling checks require resolver activity. */
+        assert(stat("/./fixture", &st) == 0 && st.st_size == 7);
     }
     return NULL;
 }
