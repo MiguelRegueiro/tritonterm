@@ -980,14 +980,19 @@ int cng_l2s_untranslate_target(const char *tgt, char *out, size_t sz) {
 /* ---- core --------------------------------------------------------------- */
 
 /* If `host` is one of our l2s symlinks, fill data+count. 1/0/-errno. */
-int cng_l2s_resolve(const char *host, char *data, size_t dsz,
-                    unsigned long *count) {
+static int l2s_resolve_stat(const char *host, char *data, size_t dsz,
+                             unsigned long *count, void *plain) {
     char st[ST_SIZE];
     long r = l2s_lstat(host, st);
     if (r < 0)
         return (int)r;
-    if (!is_lnk(st))
+    if (!is_lnk(st)) {
+        if (plain) {
+            memcpy(plain, st, sizeof st);
+            return 2; /* ordinary object; the pinned lstat already answered */
+        }
         return 0;
+    }
 
     char tgt[CNG_PATH_MAX];
     long n = l2s_readlink(host, tgt, sizeof tgt - 1);
@@ -1026,12 +1031,18 @@ int cng_l2s_resolve(const char *host, char *data, size_t dsz,
     return 1;
 }
 
+int cng_l2s_resolve(const char *host, char *data, size_t dsz,
+                    unsigned long *count) {
+    return l2s_resolve_stat(host, data, dsz, count, 0);
+}
+
 /* Map `host` to its backing file: our symlink (NOFOLLOW) or the data file
- * itself (a FOLLOW resolution already landed on it). 1/0/-errno. */
+ * itself (a FOLLOW resolution already landed on it). 1/0/-errno, or 2 with
+ * a pinned ordinary-object stat in `plain` when the caller requests it. */
 static int l2s_target(const char *host, char *data, size_t dsz,
-                      unsigned long *count) {
-    int isl = cng_l2s_resolve(host, data, dsz, count);
-    if (isl != 0)
+                      unsigned long *count, void *plain) {
+    int isl = l2s_resolve_stat(host, data, dsz, count, plain);
+    if (isl != 0 && isl != 2)
         return isl;
     unsigned long long ino;
     if (parse_data_exact(l2s_basename(host), &ino) && l2s_canonical(host) &&
@@ -1056,7 +1067,7 @@ static int l2s_target(const char *host, char *data, size_t dsz,
             *count = g.count;
         return 1;
     }
-    return 0;
+    return isl == 2 ? 2 : 0;
 }
 
 /* Copy the contents of `src` (opened, follows /proc/self/fd/N) into a new
@@ -1466,10 +1477,10 @@ void cng_l2s_decref(const char *data, unsigned long count) {
     l2s_unlock(&lk);
 }
 
-int cng_l2s_stat(const char *host, void *statbuf) {
+int cng_l2s_stat_probe(const char *host, void *statbuf) {
     char data[CNG_PATH_MAX];
     unsigned long count = 0;
-    int r = l2s_target(host, data, sizeof data, &count);
+    int r = l2s_target(host, data, sizeof data, &count, statbuf);
     if (r != 1)
         return r;
     long s = l2s_statf(data, statbuf);
@@ -1479,11 +1490,17 @@ int cng_l2s_stat(const char *host, void *statbuf) {
     return 1;
 }
 
-int cng_l2s_statx(const char *host, void *statxbuf, unsigned mask,
-                  unsigned flags) {
+int cng_l2s_stat(const char *host, void *statbuf) {
+    int r = cng_l2s_stat_probe(host, statbuf);
+    return r == 2 ? 0 : r;
+}
+
+int cng_l2s_statx_probe(const char *host, void *statxbuf, unsigned mask,
+                        unsigned flags) {
     char data[CNG_PATH_MAX];
     unsigned long count = 0;
-    int r = l2s_target(host, data, sizeof data, &count);
+    char plain[ST_SIZE];
+    int r = l2s_target(host, data, sizeof data, &count, plain);
     if (r != 1)
         return r;
     /* The data path is never a symlink: force a follow so the guest's
@@ -1497,20 +1514,15 @@ int cng_l2s_statx(const char *host, void *statxbuf, unsigned mask,
     return 1;
 }
 
+int cng_l2s_statx(const char *host, void *statxbuf, unsigned mask,
+                  unsigned flags) {
+    int r = cng_l2s_statx_probe(host, statxbuf, mask, flags);
+    return r == 2 ? 0 : r;
+}
+
 /* If /proc/self/fd/<fd> names a data file, yield the group's live count.
  * Returns 1 (*count filled, floored to 1) or 0. */
-static int l2s_fd_count(long fd, unsigned long *count) {
-    char link[64], *p = link;
-    char *end = link + sizeof link - 1;
-    p += cng_strlcpy(p, "/proc/self/fd/", (size_t)(end - p) + 1);
-    /* int arg: the x-register's top half may be dirty (glibc). */
-    put_u64(&p, end, (unsigned long long)(unsigned)(int)fd, 1);
-    *p = '\0';
-    char path[CNG_PATH_MAX];
-    long n = l2s_readlink(link, path, sizeof path - 1);
-    if (n < 0)
-        return 0;
-    path[n] = '\0';
+static int l2s_path_count(const char *path, unsigned long *count) {
     /* Where the kernel says the file is, which is only a data file of ours
      * — or of proot's — in a place of the guest's own (see l2s_locate). */
     struct pr_group g;
@@ -1529,6 +1541,22 @@ static int l2s_fd_count(long fd, unsigned long *count) {
         return 0;
     *count = c ? c : 1;
     return 1;
+}
+
+
+static int l2s_fd_count(long fd, unsigned long *count) {
+    char link[64], *p = link;
+    char *end = link + sizeof link - 1;
+    p += cng_strlcpy(p, "/proc/self/fd/", (size_t)(end - p) + 1);
+    /* int arg: the x-register's top half may be dirty (glibc). */
+    put_u64(&p, end, (unsigned long long)(unsigned)(int)fd, 1);
+    *p = '\0';
+    char path[CNG_PATH_MAX];
+    long n = l2s_readlink(link, path, sizeof path - 1);
+    if (n < 0)
+        return 0;
+    path[n] = '\0';
+    return l2s_path_count(path, count);
 }
 
 /* The host path of the directory behind an open fd, for the one place a
@@ -1598,6 +1626,18 @@ int cng_l2s_dirent(long dirfd, const char *name, unsigned long long *ino,
     *ino = *(unsigned long long *)(st + ST_INO_OFF);
     *type = (st_mode(st) & S_IFMT_) >> 12; /* DT_* is S_IFMT >> 12 */
     return 1;
+}
+
+void cng_l2s_fix_host(const char *path, void *buf, int statx) {
+    unsigned long count;
+    if (!l2s_path_count(path, &count))
+        return;
+    if (statx) {
+        *(unsigned *)((char *)buf + STX_NLINK_OFF) = (unsigned)count;
+        *(unsigned *)((char *)buf + STX_MASK_OFF) |= CNG_STATX_NLINK;
+    } else {
+        *(unsigned *)((char *)buf + ST_NLINK_OFF) = (unsigned)count;
+    }
 }
 
 void cng_l2s_fix_fd(long fd, void *statbuf) {

@@ -4941,10 +4941,17 @@ static long dispatch_1(long nr, long a0, long a1, long a2, long a3, long a4,
         int bounce = a2 && (cng_g_l2s || cng_g_fake_id || !cng_g_no_proc);
         char sb[STAT_BUF_SIZE];
         long ob = bounce ? (long)sb : a2;
+        int ordinary = 0;
         if (cng_g_l2s && a2) {
-            char hnf[CNG_PATH_MAX];
-            if (cng_resolve_at(a0, (const char *)a1, 0, hnf, sizeof hnf) == 0 &&
-                cng_l2s_stat(hnf, sb) == 1) {
+            char *hnf = b1;
+            int probe = cng_resolve_at(a0, (const char *)a1, 0, hnf, sizeof b1) == 0
+                ? cng_l2s_stat_probe(hnf, sb) : 0;
+            /* The l2s check already performed a pinned kernel lstat. For a
+             * non-symlink, that is also stat's answer. Keep unknown flags on
+             * the kernel validation path and preserve all common fixups. */
+            ordinary = probe == 2 && !((unsigned)a3 &
+                ~(CNG_AT_SYMLINK_NOFOLLOW | CNG_AT_NO_AUTOMOUNT | CNG_AT_EMPTY_PATH));
+            if (probe == 1) {
                 if (cng_g_fake_id)
                     stat_remap(sb);
                 char metadata_backing[CNG_PATH_MAX];
@@ -4956,10 +4963,11 @@ static long dispatch_1(long nr, long a0, long a1, long a2, long a3, long a4,
             }
         }
         int deref = !((int)a3 & CNG_AT_SYMLINK_NOFOLLOW);
-        const char *p = xlate(a0, (const char *)a1, b1, sizeof b1, deref);
+        const char *p = ordinary ? b1
+            : xlate(a0, (const char *)a1, b1, sizeof b1, deref);
         if (xlate_bad(p))
             return xlate_errno(p);
-        long r = reissue(a0, (long)p, ob, a3, a4, a5, __NR_newfstatat);
+        long r = ordinary ? 0 : reissue(a0, (long)p, ob, a3, a4, a5, __NR_newfstatat);
         /* The host's refusal of a synthesized name (Android's SELinux denies
          * the getattr of the global files it hides) is not the file's answer:
          * the guest was served it in full, and stat says what any /proc
@@ -4980,13 +4988,15 @@ static long dispatch_1(long nr, long a0, long a1, long a2, long a3, long a4,
             else if (deref)
                 cng_procfs_fix_path(a0, p, sb);
         }
-        if (r == 0 && byfd && a2 && cng_g_l2s)
-            cng_l2s_fix_fd(a0, sb);
         /* A process's /proc entries are its owner's (cng_procfs_owner). */
         if (r == 0 && cng_g_fake_id && a2 && !cng_procfs_owner(a0, p, sb))
             stat_remap(sb);
-        if (r == 0 && bounce)
-            cng_triton_stat(a0, p, sb, 0);
+        if (r == 0 && bounce) {
+            if (byfd)
+                cng_triton_fd_stat(a0, sb, 0);
+            else
+                cng_triton_stat(a0, p, sb, 0);
+        }
         if (r == 0 && bounce && cng_user_copyout((void *)a2, sb, sizeof sb) < 0)
             return -EFAULT;
         return r;
@@ -4998,10 +5008,13 @@ static long dispatch_1(long nr, long a0, long a1, long a2, long a3, long a4,
         int bounce = a4 && (cng_g_l2s || cng_g_fake_id || !cng_g_no_proc);
         char sx[STATX_BUF_SIZE];
         long ob = bounce ? (long)sx : a4;
+        int ordinary = 0;
         if (cng_g_l2s && a4) {
-            char hnf[CNG_PATH_MAX];
-            if (cng_resolve_at(a0, (const char *)a1, 0, hnf, sizeof hnf) == 0 &&
-                cng_l2s_statx(hnf, sx, (unsigned)a3, (unsigned)a2) == 1) {
+            char *hnf = b1;
+            int probe = cng_resolve_at(a0, (const char *)a1, 0, hnf, sizeof b1) == 0
+                ? cng_l2s_statx_probe(hnf, sx, (unsigned)a3, (unsigned)a2) : 0;
+            ordinary = probe == 2;
+            if (probe == 1) {
                 if (cng_g_fake_id)
                     statx_remap(sx);
                 char metadata_backing[CNG_PATH_MAX];
@@ -5013,7 +5026,10 @@ static long dispatch_1(long nr, long a0, long a1, long a2, long a3, long a4,
             }
         }
         int deref = !((int)a2 & CNG_AT_SYMLINK_NOFOLLOW);
-        const char *p = xlate(a0, (const char *)a1, b1, sizeof b1, deref);
+        /* Reuse the nofollow path only for an ordinary object; statx still
+         * goes to the kernel with the guest's mask and synchronization flags. */
+        const char *p = ordinary ? b1
+            : xlate(a0, (const char *)a1, b1, sizeof b1, deref);
         if (xlate_bad(p))
             return xlate_errno(p);
         long r = reissue(a0, (long)p, a2, a3, ob, a5, __NR_statx);
@@ -5036,12 +5052,14 @@ static long dispatch_1(long nr, long a0, long a1, long a2, long a3, long a4,
                 cng_procfs_fix_path_statx(a0, p, (unsigned)a2, (unsigned)a3,
                                           sx);
         }
-        if (r == 0 && byfd && a4 && cng_g_l2s)
-            cng_l2s_fix_fd_statx(a0, sx);
         if (r == 0 && cng_g_fake_id && a4 && !cng_procfs_owner_statx(a0, p, sx))
             statx_remap(sx);
-        if (r == 0 && bounce)
-            cng_triton_stat(a0, p, sx, 1);
+        if (r == 0 && bounce) {
+            if (byfd)
+                cng_triton_fd_stat(a0, sx, 1);
+            else
+                cng_triton_stat(a0, p, sx, 1);
+        }
         if (r == 0 && bounce && cng_user_copyout((void *)a4, sx, sizeof sx) < 0)
             return -EFAULT;
         return r;
@@ -5234,11 +5252,9 @@ static long dispatch_1(long nr, long a0, long a1, long a2, long a3, long a4,
         if (r == 0 && bounce) {
             if (!cng_g_no_proc)
                 cng_procfs_fix_fd((int)a0, sb);
-            if (cng_g_l2s)
-                cng_l2s_fix_fd(a0, sb);
             if (cng_g_fake_id && !cng_procfs_owner(a0, "", sb))
                 stat_remap(sb);
-            cng_triton_stat(a0, "", sb, 0);
+            cng_triton_fd_stat(a0, sb, 0);
             if (cng_user_copyout((void *)a1, sb, sizeof sb) < 0)
                 return -EFAULT;
         }

@@ -82,6 +82,18 @@ int main(int argc, char **argv) {
         puts("PASS metadata lookup loop");
         return 0;
     }
+    if (argc > 1 && !strcmp(argv[1], "fd-loop")) {
+        int f = open("/archive", O_RDONLY);
+        assert(f >= 0);
+        for (int i = 0; i < 500; i++) {
+            struct stat st;
+            assert(fstat(f, &st) == 0);
+            assert(st.st_uid == 0 && st.st_gid == 123);
+        }
+        close(f);
+        puts("PASS descriptor metadata loop");
+        return 0;
+    }
     if (argc > 1 && !strcmp(argv[1], "open-loop")) {
         for (int i = 0; i < 100; i++) {
             int f = open("/archive", O_RDONLY);
@@ -102,6 +114,17 @@ int main(int argc, char **argv) {
     assert(syscall(SYS_statx, AT_FDCWD, "/archive", 0, 0x7ff, sx) == 0);
     assert(*(uint32_t *)(sx + 20) == 0 && *(uint32_t *)(sx + 24) == 123);
     assert((*(uint16_t *)(sx + 28) & 07777) == 0644);
+    memset(sx, 0, sizeof sx);
+    assert(syscall(SYS_statx, fd, "", AT_EMPTY_PATH, 0x7ff, sx) == 0);
+    assert(*(uint32_t *)(sx + 20) == 0 && *(uint32_t *)(sx + 24) == 123);
+    assert((*(uint16_t *)(sx + 28) & 07777) == 0644);
+    assert(syscall(SYS_newfstatat, AT_FDCWD, "/archive", &value, 0x40000000) == -1);
+    assert(errno == EINVAL);
+    assert(syscall(SYS_statx, AT_FDCWD, "/archive", 0x40000000, 0x7ff, sx) == -1);
+    assert(errno == EINVAL);
+    assert(syscall(SYS_statx, AT_FDCWD, "/archive", 0, 0x80000000u, sx) == -1);
+    assert(errno == EINVAL);
+    assert(lstat("/archive", &value) == 0 && !S_ISLNK(value.st_mode));
     close(fd);
     assert(chdir("/home/test") == 0);
     check("../../archive", 0644, 0, 123);
@@ -125,6 +148,10 @@ int main(int argc, char **argv) {
     assert(symlink("renamed", "/home/test/work/link") == 0);
     check("/home/test/work/link", 0644, GUEST_UID, GUEST_UID);
     assert(lstat("/home/test/work/link", &value) == 0 && S_ISLNK(value.st_mode));
+    assert(syscall(SYS_statx, AT_FDCWD, "/home/test/work/link",
+                   AT_SYMLINK_NOFOLLOW, 0x7ff, sx) == 0);
+    assert(S_ISLNK(*(uint16_t *)(sx + 28)));
+    assert(stat("/home/test/work/renamed/", &value) == -1 && errno == ENOTDIR);
     assert(rename("/home/test/work", "/home/test/moved") == 0);
     check("/home/test/moved/renamed", 0644, GUEST_UID, GUEST_UID);
     check("/home/test/moved/link", 0644, GUEST_UID, GUEST_UID);

@@ -94,8 +94,21 @@ int cng_l2s_stat(const char *host, void *statbuf);
 int cng_l2s_statx(const char *host, void *statxbuf, unsigned mask,
                   unsigned flags);
 
+/* Dispatch probes: the same answers as stat/statx above, plus 2 when the
+ * nofollow check found an ordinary, non-symlink object. stat_probe leaves its
+ * complete pinned kernel stat in statbuf; statx_probe does not fill statxbuf
+ * on 2 (the caller must still issue statx with its original mask/sync flags).
+ * Data files/markers retain the emulation's count handling. This is a result
+ * of this syscall's check, not a cache of names across guest operations. */
+int cng_l2s_stat_probe(const char *host, void *statbuf);
+int cng_l2s_statx_probe(const char *host, void *statxbuf, unsigned mask,
+                        unsigned flags);
+
 /* fd variants: if the fd names a backing file, correct st_nlink (and for
  * statx, advertise STATX_NLINK) in the buffer. */
+/* Same correction when this syscall already resolved /proc/self/fd/N.
+ * `path` must be that kernel-reported host path, never a guest spelling. */
+void cng_l2s_fix_host(const char *path, void *buf, int statx);
 void cng_l2s_fix_fd(long fd, void *statbuf);
 void cng_l2s_fix_fd_statx(long fd, void *statxbuf);
 

@@ -22,6 +22,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--runtime', type=Path, default=PROJECT / 'app/src/main/jniLibs/arm64-v8a/libchroot-ng.so')
     parser.add_argument('--guest-cc', required=True)
+    parser.add_argument('--stat-baseline-runtime', type=Path, help='Optional exp.31 runtime for stat/fd operation counts')
     parser.add_argument('--baseline-runtime', type=Path, help='Optional previous runtime for operation-count comparison')
     parser.add_argument('--qemu', default='qemu-aarch64-static')
     args = parser.parse_args()
@@ -149,6 +150,19 @@ def main():
             assert operations['path-reuse'] < operations['baseline'], operations
             assert operations['path-reuse+cache'] < operations['path-reuse'], operations
             print(f'PASS 100 opens, filesystem syscall counts: {operations}')
+        if args.stat_baseline_runtime:
+            for workload in ('cache-loop', 'fd-loop'):
+                operations = {}
+                for name, runtime in (('exp31', args.stat_baseline_runtime), ('current', args.runtime)):
+                    trace_command = [args.qemu, '-strace', runtime.resolve()] + command[2:] + [workload]
+                    trace = subprocess.run([str(a) for a in trace_command],
+                                           env=environment, capture_output=True, text=True, timeout=60)
+                    assert trace.returncode == 0, trace.stderr[-3000:]
+                    calls = ('newfstatat(', 'readlinkat(', 'fstat(', 'openat(', 'read(', 'close(')
+                    operations[name] = sum(any(call in line for call in calls)
+                                           for line in trace.stderr.splitlines())
+                assert operations['current'] < operations['exp31'], operations
+                print(f'PASS {workload} filesystem syscall counts: {operations}')
         source = output / 'disabled.c'
         source.write_text('''#include <assert.h>
 #include <sys/stat.h>

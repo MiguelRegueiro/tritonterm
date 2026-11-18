@@ -37,15 +37,6 @@ static long fill_from_file(int fd, char *dst, unsigned long len,
     return (long)done;
 }
 
-/* One program header, read straight from the file rather than from the mapping
- * (which may begin past them). Returns 0/-1. */
-static int read_phdr(int fd, const Elf64_Ehdr *eh, int i, Elf64_Phdr *ph) {
-    unsigned long at = eh->e_phoff + (unsigned long)i * sizeof *ph;
-    return fill_from_file(fd, (char *)ph, sizeof *ph, at) == (long)sizeof *ph
-               ? 0
-               : -1;
-}
-
 /* Rewrite the `svc` sites of this mapping, but only where the object says its
  * code is. The M8 scan matches a bare 0xD4000001 word, and a PF_X PT_LOAD is
  * not a code segment: a musl link puts the whole read-only image in it, and
@@ -77,6 +68,15 @@ static int rewrite_text(int fd, unsigned long map, unsigned long off,
         eh.e_phnum > CNG_MAX_PHDR)
         return 0;
 
+    /* Read the bounded program-header table once. Both passes below use it;
+     * issuing one pread per header in each pass multiplied startup syscalls
+     * for every executable library mapping on Android's noexec fallback. */
+    Elf64_Phdr headers[CNG_MAX_PHDR];
+    unsigned long header_bytes = (unsigned long)eh.e_phnum * sizeof *headers;
+    if (eh.e_phoff > ~0UL - header_bytes ||
+        fill_from_file(fd, (char *)headers, header_bytes, eh.e_phoff) != (long)header_bytes)
+        return 0;
+
     /* Pass one: the object's own load span, and the bias this mapping implies.
      * A linker maps a segment at bias + page_down(p_vaddr) from file offset
      * page_down(p_offset) — glibc and musl both — so the segment whose rounded
@@ -84,9 +84,7 @@ static int rewrite_text(int fd, unsigned long map, unsigned long off,
     unsigned long vlo = ~0UL, vhi = 0, bias = 0;
     int have_bias = 0;
     for (int i = 0; i < eh.e_phnum; i++) {
-        Elf64_Phdr ph;
-        if (read_phdr(fd, &eh, i, &ph) != 0)
-            return 0;
+        Elf64_Phdr ph = headers[i];
         if (ph.p_type != PT_LOAD)
             continue;
         /* A header whose end is not an address describes nothing — the sum
@@ -133,9 +131,7 @@ static int rewrite_text(int fd, unsigned long map, unsigned long off,
     unsigned long used = 0;
     int sites = 0;
     for (int i = 0; i < eh.e_phnum; i++) {
-        Elf64_Phdr ph;
-        if (read_phdr(fd, &eh, i, &ph) != 0)
-            break;
+        Elf64_Phdr ph = headers[i];
         if (ph.p_type != PT_LOAD || !(ph.p_flags & PF_X) || !ph.p_filesz)
             continue;
         unsigned long slo = ph.p_offset, shi = ph.p_offset + ph.p_filesz;

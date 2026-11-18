@@ -4,6 +4,7 @@
  * instead of silently changing the archive's ownership model. */
 #include "cng/tritonterm.h"
 #include "cng/broker.h"
+#include "cng/l2s.h"
 #include "cng/monitor.h"
 #include "cng/rt.h"
 #include "cng/syscall.h"
@@ -219,6 +220,23 @@ void cng_triton_stat(long dirfd, const char *host, void *st, int statx) {
         *(unsigned *)(buffer + 24) = record.uid;
         *(unsigned *)(buffer + 28) = record.gid;
     }
+}
+
+void cng_triton_fd_stat(long fd, void *buf, int statx) {
+    /* The l2s link count and ownership overlay both need the same live fd
+     * target. Resolve it once for this operation; never cache fd numbers. */
+    char host[CNG_PATH_MAX];
+    int have = cng_triton_enabled() && fd_host(fd, host, sizeof host);
+    if (cng_g_l2s) {
+        if (have)
+            cng_l2s_fix_host(host, buf, statx);
+        else if (statx)
+            cng_l2s_fix_fd_statx(fd, buf);
+        else
+            cng_l2s_fix_fd(fd, buf);
+    }
+    if (have)
+        cng_triton_stat(fd, host, buf, statx);
 }
 
 static long unsupported(void) {
