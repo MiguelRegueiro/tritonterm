@@ -1618,6 +1618,38 @@ static int l2s_fd_dir(long fd, char *out, size_t sz) {
     return 0;
 }
 
+/* A PRoot member names a symlink indirection beside its count-named data
+ * file. For readdir only the backing inode and type are needed: do not repeat
+ * member lookup, resolve the directory again, or compute the link count.
+ * Both lookups use the same pinned parent and never follow a guest symlink.
+ * On an incomplete/moved chain the caller retains the full repair path. */
+static int pr_dirent_pinned(const struct cng_pin *pin, const char *ind,
+                            void *st) {
+    if (!pin->pinned || pin->dfd < 0)
+        return 0;
+    char target[CNG_PATH_MAX], data[CNG_PATH_MAX];
+    long n = sys_readlinkat(pin->dfd, pin->name, target, sizeof target - 1);
+    if (n <= 0)
+        return 0;
+    target[n] = '\0';
+    const char *ib = l2s_basename(ind);
+    const char *db = l2s_basename(target);
+    size_t dl = (size_t)(ib - ind), bl = strlen(db);
+    if (!pr_data_of(db, ib, strlen(ib), 0) || dl + bl >= sizeof data)
+        return 0;
+    memcpy(data, ind, dl);
+    memcpy(data + dl, db, bl + 1);
+    /* Same chain spelling rule as pr_chain, including a copied rootfs whose
+     * old absolute store path is healed by taking its validated basename. */
+    if (strcmp(target, data) != 0 &&
+        !(l2s_canonical(target) && l2s_store_shaped(target) &&
+          l2s_store_shaped(ind)))
+        return 0;
+    long r = CNG_SYS(__NR_newfstatat, pin->dfd, db, st,
+                     CNG_AT_SYMLINK_NOFOLLOW, 0, 0);
+    return r == 0 && is_data(st);
+}
+
 int cng_l2s_dirent(long dirfd, const char *name, unsigned long long *ino,
                    unsigned *type) {
     /* One readlink tells an ordinary symlink from ours: the target of ours
@@ -1646,8 +1678,27 @@ int cng_l2s_dirent(long dirfd, const char *name, unsigned long long *ino,
     if (tgt[0] != '/')
         sr = CNG_SYS(__NR_newfstatat, (int)dirfd, tgt, st,
                      CNG_AT_SYMLINK_NOFOLLOW, 0, 0);
-    else if (l2s_canonical(tgt) && l2s_owned(tgt))
-        sr = cng_pin_fstatat(tgt, st, CNG_AT_SYMLINK_NOFOLLOW);
+    else if (l2s_canonical(tgt) && l2s_owned(tgt)) {
+        struct cng_pin pin;
+        sr = cng_pin_at(CNG_AT_FDCWD, tgt, &pin);
+        if (sr == 0) {
+            /* A successful readlink proves the indirection is a symlink;
+             * its separate lstat is unnecessary. Numeric names can also be
+             * our own regular backing files, so leave their common path at
+             * one stat and disambiguate only when it actually is a link. */
+            int direct = pr_is_ind(b) && !parse_data_exact(b, 0);
+            if (direct && pr_dirent_pinned(&pin, tgt, st)) {
+                sr = 0;
+            } else {
+                sr = CNG_SYS(__NR_newfstatat, pin.dfd, pin.name, st,
+                             CNG_AT_SYMLINK_NOFOLLOW, 0, 0);
+                if (!direct && sr == 0 && is_lnk(st) && pr_is_ind(b) &&
+                    !pr_dirent_pinned(&pin, tgt, st))
+                    sr = -1;
+            }
+        }
+        cng_unpin(&pin);
+    }
     if (sr < 0 || !is_data(st)) {
         if (tgt[0] != '/')
             return 0; /* a bare name with no data beside it: not ours */
