@@ -405,3 +405,12 @@ about 2,500 metadata opens and 15,500 path probes. Threaded timers overlap and
 must not be added into elapsed time. These profiles establish successful
 execution/profiling, not phone validation of sudo/pacman/paru transactions.
 The clock's repeated directory discovery remains the next investigation target.
+
+## exp.37: canonical stat path reuse
+
+The next repository optimization and its operation-count comparison are in
+[repository-stat-performance-investigation.md](repository-stat-performance-investigation.md).
+The self-contained `scripts/test-chroot-ng-stat-path.py` regression fixture
+checks stat semantics, live replacement and containment with the packaged
+runtime. It accepts `--guest-cc` and an optional `--baseline-runtime` for the
+component-probe comparison. The rootfs/metadata format is unchanged.
