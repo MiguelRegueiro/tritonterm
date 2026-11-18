@@ -40,14 +40,13 @@ user-created files/directories, chmod, file/directory renames (including
 RENAME_NOREPLACE), and deletion. Directory renames move the corresponding
 metadata subtree, needed by Cargo registry/incremental state.
 
-Set-id execution, ownership changes, hardlinks and unsupported rename flags
-are refused explicitly. Use PRoot for sudo/pacman and other privileged or
-unsupported operations. Cargo can use its copy fallback when hardlinking is
-unavailable; this emits Rust incremental-cache warnings and can add copying
-overhead during actual rebuilds. This is not yet complete permission/identity emulation parity:
-metadata adapter behavior is deliberately bounded. The initial comparison
-included no metadata cache; the exp.31 and exp.32 sections below describe the
-subsequent filesystem optimizations.
+As of exp.34, the adapter supports metadata-backed set-ID execution, chmod,
+chown/lchown/fchown, root writes and new emulated hardlinks in PRoot's format.
+The initial-launch credential setup now follows filesystem publication, so
+launching a set-ID program directly also sees its virtual owner/mode. Set-ID
+execution changes guest credentials only; Android ownership stays unchanged.
+The exp.34 section below describes validation and remaining limitations.
+Rename exchange/whiteout metadata is still refused explicitly.
 
 ## Validation and limits
 
@@ -259,3 +258,150 @@ and 0.16 to 0.25 s on the laptop. They include the interactive application's
 entire lifetime and do not isolate startup or first-frame latency. Future
 comparison should verify the resolved executable/build and distinguish a
 noninteractive version query from instrumented initialization to first frame.
+
+## exp.34 compatibility and measured optimizations
+
+This APK updates the same local signer and rootfs pin. Install over exp.33,
+retain the current Arch installation, and keep `arch_runtime chroot-ng` for
+phone validation. PRoot remains selectable; setup still follows its existing
+path. No rootfs rebuild, migration, Git commit or publication is involved.
+
+Metadata-backed set-ID execution now takes the effective owner/group from the
+sidecar instead of the Android inode. Attribute operations validate the real
+object, flags, descriptors and read-only binds, then update virtual ownership
+and permissions. chmod keeps the host app able to manage its inode; guest
+access checks use the sidecar. Root writes are allowed, supplementary groups
+participate in open/access checks, and mutation checks consult parent metadata.
+Symlinks get their own records. Invalid fds, O_PATH fchown, missing targets and
+empty-path flags remain errors rather than fabricated success.
+
+New hardlink groups use the PRoot-compatible indirection/count scheme. The
+adapter moves metadata with backing files when forming or changing groups,
+so all members and already-open descriptors share ownership/mode changes.
+Existing upstream behavior remains when the adapter is disabled. The sidecar
+format has not changed. Mixed simultaneous PRoot/chroot-ng writers are not a
+transactional cross-engine locking protocol; host tests do not establish
+complete Linux permission/credential parity or all package-manager behaviors.
+
+Two optimizations target work identified by the phone reports:
+
+* Directory pinning tries openat2 with NO_SYMLINKS/NO_MAGICLINKS, combining the
+  open and validation. Unsupported kernels/filters keep the previous checked
+  walk; ENOSYS/EINVAL disable further attempts. No path/fd cache is introduced.
+* Eligible non-executable ELF segments use private file mappings instead of
+  eager anonymous copies. Executable segments retain copying and rewriting.
+  Alignment, shared pages (including 16 KiB host pages), BSS zeroing and failed
+  mmap retain the established copying path where needed.
+
+A validated Starship fixture compared with exp.33 reduced pread64 calls from
+101 to 97 (minimal) and 169 to 165 (clock). Measured filesystem-call totals
+were 410 to 396 and 1047 to 1011. These are host operation counts, not phone
+speedup estimates; the main executable's text is still copied and rewritten.
+
+Validation:
+
+* Metadata tests passed for initial and emulated set-ID exec, root package-like
+  mutations, chmod/chown, shared hardlink metadata/counts/descriptors, privilege
+  drop, invalid fds/flags, stat variants, external record changes, cache
+  collisions, threads and fork. They also passed with openat2 disabled by a
+  host seccomp filter, exercising the directory-pinning fallback.
+* Native profiling and portable Fish collector checks passed. Android JVM
+  checks succeeded (71 tests, one existing skip; app code is unchanged).
+* The broad QEMU run recorded 1409 passed, the two known high-bit openat2
+  reference discrepancies, and 38 skipped. An earlier repeat also encountered
+  the previously recorded intermittent lazy mapping assertions.
+* Real Arch sudo and pacman completed an offline install, upgrade and removal
+  in a disposable fixture using the local archive's account/PAM configuration.
+  Checks covered regular payloads, hardlinks, symlinks, uid/gid/modes/link count,
+  package database state and post-install/upgrade/remove scripts. No PAM bypass
+  or sudo-policy expansion was used in that passing run.
+
+Unconstrained QEMU runs intermittently returned physical host credentials or
+missed guest paths: both unchanged exp.33 and the new engine reproduced the
+identity mismatch (one failure in each 16-run comparison). QEMU cannot install
+this guest's seccomp fallback. The real-package test uses a constrained 128 GiB
+QEMU guest address space (`QEMU_RESERVED_VA=0x2000000000`) plus the existing
+forced-anonymous executable-mapping test mode. This is a correctness fixture,
+not an Android performance environment. Failed unconstrained runs remain a
+validation limitation, not passing checks. The normal APK does not set these
+QEMU test variables. Full paru/AUR and Android restrictions need phone testing.
+
+Reproduce against a **disposable, provisioned Arch test rootfs**, never the
+installed phone or an important rootfs:
+
+```sh
+python3 scripts/test-chroot-ng-packages.py --rootfs /path/to/test-rootfs
+```
+
+The fixture requires sudo/pacman, PAM helpers (including unix_chkpwd), standard
+Arch directory aliases, the triton account, its existing pacman NOPASSWD rule,
+and the sibling ownership/mode metadata tree. The test installs and removes a
+locally generated package and never downloads packages or changes sudo policy.
+Useful local logs are `/tmp/tritonterm-exp34-packages.log`,
+`/tmp/tritonterm-compat-metadata-final.log`,
+`/tmp/tritonterm-compat-no-openat2.log`,
+`/tmp/tritonterm-exp34-upstream.log`,
+`/tmp/tritonterm-compat-profiling-final.log` and
+`/tmp/tritonterm-compat-starship-final/summary.json`.
+
+After updating/reopening the phone app, first try `sudo pacman --version`, a
+normal small package installation and removal, then the usual paru workflow.
+Repeat warmed Cargo builds and `fish /tmp/tritonterm-profile.fish` to compare
+with exp.33. Report the complete error if a package operation fails; a version
+query alone is not a package transaction or an AUR build validation.
+
+## exp.35: repair exp.34 pre-monitor SIGSYS startup
+
+The phone reported immediate shell termination with signal 31 (SIGSYS) after
+installing exp.34. The new directory-pinning openat2 fast path could run during
+initial resolution/loading, before cng_install_monitor calls cng_probe_blocked.
+The zero-initialized blocked-syscall table did not yet prove openat2 safe. An
+Android ambient filter trapping that syscall therefore killed the process
+before the monitor/guest shell could start. The errno-only host fallback test
+was insufficient: returning ENOSYS does not exercise SECCOMP_RET_TRAP.
+
+Exp.35 removes that pinning optimization completely, restoring the established
+open/readlink/descriptor-walk implementation. It retains the metadata/sudo/
+package compatibility changes and eligible non-executable ELF private mapping.
+No speculative optional syscall is introduced into the pre-monitor path.
+
+The new startup-filter regression test installs a real host seccomp filter,
+with separate ENOSYS and SIGSYS-trap modes, before launching the ARM64 runtime.
+The exact packaged exp.34 binary starts under ENOSYS but terminates with
+SIGSYS under TRAP. The fixed binary starts in control, errno and trap modes,
+and preserves metadata-backed set-ID credentials. Core dumps are disabled for
+this intentional baseline crash. Reproduce with:
+
+```sh
+python3 scripts/test-chroot-ng-startup-filter.py \
+  --guest-cc /path/to/aarch64-linux-gcc \
+  --baseline-runtime /path/to/exp34-libchroot-ng.so
+```
+
+The baseline argument is optional. Metadata and native profiling checks passed
+again, as did a real sudo/pacman install, upgrade and removal in the disposable
+constrained-QEMU fixture. Logs: `/tmp/tritonterm-exp35-startup-filter.log`,
+`/tmp/tritonterm-exp35-metadata.log`, `/tmp/tritonterm-exp35-profile.log` and
+`/tmp/tritonterm-exp35-packages.log`. The exp.34 broad-suite results above are
+historical; the targeted repair was validated by these focused checks.
+
+Install exp.35 over exp.34 using the same local signer, then fully reopen the
+app. No working guest shell, Arch reinstall, app-data deletion, or rootfs
+migration is required. Both backends remain available. The earlier exp.34
+filesystem-call reductions include the removed pinning optimization and must
+not be attributed to exp.35 without a fresh comparison.
+
+## exp.35 phone profile follow-up
+
+The phone successfully completed two profile collections after the startup
+repair. The retained samples show seccomp and rewriting enabled. Starship's
+copied bytes fell from 10,890,711 to 8,324,523; Elio's fell from 15,947,119 to
+15,435,071. Timings do not demonstrate a meaningful speedup: results vary and
+repository prompt runs are generally higher than the earlier exp.33 samples.
+
+Clock-only Starship still makes about 2,987 pin calls (about 23 ms in the saved
+samples), while minimal Starship makes about 41–43. Repository prompts retain
+about 2,500 metadata opens and 15,500 path probes. Threaded timers overlap and
+must not be added into elapsed time. These profiles establish successful
+execution/profiling, not phone validation of sudo/pacman/paru transactions.
+The clock's repeated directory discovery remains the next investigation target.
