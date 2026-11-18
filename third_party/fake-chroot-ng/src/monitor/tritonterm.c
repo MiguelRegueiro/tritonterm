@@ -71,14 +71,82 @@ static int number(const char **cursor, unsigned base, unsigned *result) {
     return 1;
 }
 
+/* A bounded, process-local parsed-record cache. Every hit revalidates the
+ * pathname with lstat: inode replacement, in-place edits, permissions changes
+ * and updates from PRoot/other processes must not become stale ownership.
+ * Atime is deliberately excluded (our reads can change it). Admit only after
+ * a second lookup, so a cold scan does not add stat calls to every record.
+ * Try-locks protect only memory copies; contention/reentrant signals/fork
+ * never wait for a lock held by a suspended or vanished task. */
+#define META_CACHE_SLOTS 256
+struct meta_cache_entry {
+    unsigned busy;
+    int valid;
+    char path[CNG_PATH_MAX];
+    unsigned char stamp[128];
+    struct cng_triton_record record;
+};
+static struct meta_cache_entry meta_cache[META_CACHE_SLOTS];
+
+static struct meta_cache_entry *cache_slot(const char *path) {
+    const char *setting = cng_broker_env("TRITONTERM_METADATA_CACHE");
+    if (setting && !strcmp(setting, "0"))
+        return 0;
+    unsigned hash = 2166136261u;
+    for (const unsigned char *p = (const unsigned char *)path; *p; p++)
+        hash = (hash ^ *p) * 16777619u;
+    return &meta_cache[hash % META_CACHE_SLOTS];
+}
+
+static int cache_lock(struct meta_cache_entry *entry) {
+    unsigned free = 0;
+    return entry && __atomic_compare_exchange_n(&entry->busy, &free, 1, 0,
+                                                 __ATOMIC_ACQUIRE, __ATOMIC_RELAXED);
+}
+static void cache_unlock(struct meta_cache_entry *entry) {
+    __atomic_store_n(&entry->busy, 0, __ATOMIC_RELEASE);
+}
+static int same_stamp(const unsigned char *a, const unsigned char *b) {
+    /* AArch64 kernel stat: dev/ino/mode/nlink/uid/gid/rdev, size,
+     * mtime + ctime (seconds and nanoseconds). No libc struct/padding. */
+    return !memcmp(a, b, 40) && !memcmp(a + 48, b + 48, 8) &&
+           !memcmp(a + 88, b + 88, 32);
+}
+
 int cng_triton_read(const char *host, struct cng_triton_record *record) {
     char path[CNG_PATH_MAX], data[128];
     if (!cng_triton_enabled() || !metadata_path(host, path, sizeof path, 0))
         return 0;
+    struct meta_cache_entry *entry = cache_slot(path);
+    unsigned char before[128], after[128];
+    struct cng_triton_record cached;
+    int known = 0, valid = 0;
+    if (cache_lock(entry)) {
+        if (!strcmp(entry->path, path)) {
+            known = 1;
+            valid = entry->valid;
+            if (valid) {
+                memcpy(before, entry->stamp, sizeof before);
+                cached = entry->record;
+            }
+        }
+        cache_unlock(entry);
+    }
+    if (valid && CNG_SYS(__NR_newfstatat, CNG_AT_FDCWD, path, after,
+                         CNG_AT_SYMLINK_NOFOLLOW, 0, 0) == 0 &&
+        same_stamp(before, after)) {
+        *record = cached;
+        return 1;
+    }
     long fd = sys_openat(CNG_AT_FDCWD, path, CNG_O_RDONLY | CNG_O_CLOEXEC | CNG_O_NOFOLLOW, 0);
     if (fd < 0)
         return 0;
+    int snapshot = known && sys_fstat((int)fd, before) == 0;
     long n = sys_read((int)fd, data, sizeof data - 1);
+    /* Check both sides of the read: PRoot may edit a record in place. A
+     * concurrent mutation may still affect this one read, as before, but
+     * must never seed a cached mixture with the new file's timestamp. */
+    snapshot = snapshot && sys_fstat((int)fd, after) == 0 && same_stamp(before, after);
     sys_close((int)fd);
     if (n <= 0)
         return 0;
@@ -88,6 +156,14 @@ int cng_triton_read(const char *host, struct cng_triton_record *record) {
     if (!number(&cursor, 8, &parsed.mode) || parsed.mode > 07777 ||
         !number(&cursor, 10, &parsed.uid) || !number(&cursor, 10, &parsed.gid))
         return 0;
+    if (cache_lock(entry)) {
+        cng_strlcpy(entry->path, path, sizeof entry->path);
+        entry->record = parsed;
+        entry->valid = snapshot;
+        if (snapshot)
+            memcpy(entry->stamp, after, sizeof after);
+        cache_unlock(entry);
+    }
     *record = parsed;
     return 1;
 }
@@ -204,11 +280,50 @@ static int read_host(long dirfd, const char *guest, int follow, char *out) {
     return host_path(dirfd, input, follow, out);
 }
 
+static long open_record(struct cng_triton_change *c, long flags,
+                        int present, const struct cng_cred_ids *ids) {
+    if (present) {
+        unsigned perms = ids->euid == c->record.uid ? (c->record.mode >> 6) & 7
+            : ids->egid == c->record.gid ? (c->record.mode >> 3) & 7 : c->record.mode & 7;
+        unsigned need = (flags & 3) == CNG_O_WRONLY ? 2 : (flags & 3) == CNG_O_RDWR ? 6 : 4;
+        if ((perms & need) != need)
+            return -EACCES;
+    }
+    if ((flags & CNG_O_CREAT) && !present)
+        c->op = 1;
+    return 0;
+}
+
+long cng_triton_open_before(struct cng_triton_change *c, long dirfd,
+                              const char *host, long flags, int follow) {
+    c->op = 0;
+    if (!cng_triton_enabled())
+        return 0;
+    int readonly = !(flags & (CNG_O_CREAT | CNG_O_TRUNC)) && !(flags & 3);
+    if (!readonly && cng_fake_root())
+        return unsupported();
+    if (!host || !host[0])
+        return 0;
+    if (host[0] == '/') {
+        if (cng_strlcpy(c->source, host, sizeof c->source) >= sizeof c->source)
+            return 0;
+    } else if (!host_path(dirfd, host, follow, c->source)) {
+        return 0;
+    }
+    char meta[CNG_PATH_MAX];
+    if (!metadata_path(c->source, meta, sizeof meta, 0))
+        return 0;
+    int present = cng_triton_read(c->source, &c->record);
+    struct cng_cred_ids ids;
+    cng_cred_ids(&ids);
+    return open_record(c, flags, present, &ids);
+}
+
 long cng_triton_before(struct cng_triton_change *c, long nr, long a0,
                        long a1, long a2, long a3, long a4) {
     c->op = 0;
     c->source[0] = c->target[0] = '\0';
-    if (!cng_triton_enabled())
+    if (!cng_triton_enabled() || nr == __NR_openat)
         return 0;
     if (nr == __NR_openat2) {
         unsigned long flags;
@@ -241,18 +356,8 @@ long cng_triton_before(struct cng_triton_change *c, long nr, long a0,
     cng_cred_ids(&ids);
     if (present && c->record.uid != ids.euid && nr != __NR_openat)
         return unsupported();
-    if (nr == __NR_openat) {
-        if (present) {
-            unsigned perms = ids.euid == c->record.uid ? (c->record.mode >> 6) & 7
-                : ids.egid == c->record.gid ? (c->record.mode >> 3) & 7 : c->record.mode & 7;
-            unsigned need = (a2 & 3) == CNG_O_WRONLY ? 2 : (a2 & 3) == CNG_O_RDWR ? 6 : 4;
-            if ((perms & need) != need)
-                return -EACCES;
-        }
-        if ((a2 & CNG_O_CREAT) && !present)
-            c->op = 1;
-        return 0;
-    }
+    if (nr == __NR_openat)
+        return open_record(c, a2, present, &ids);
     if (nr == __NR_mkdirat) {
         c->op = 2;
         return 0;

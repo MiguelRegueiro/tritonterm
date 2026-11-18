@@ -4686,6 +4686,16 @@ static long dispatch_1(long nr, long a0, long a1, long a2, long a3, long a4,
          * so nothing above may have changed anything yet, and nothing has. */
         if (trapped == CNG_DISP_HANDLER && is_open && open_blocks(a0, p, oflags))
             return -CNG_EBOUNCE_DISP;
+        /* Reuse the runtime's translated host path for metadata checks. Doing
+         * this in the outer dispatch made every openat walk the same guest
+         * path twice. openat2 retains its outer hook for scoped early returns. */
+        struct cng_triton_change metadata_open;
+        metadata_open.op = 0;
+        if (nr == __NR_openat) {
+            long allowed = cng_triton_open_before(&metadata_open, a0, p, oflags, deref);
+            if (allowed < 0)
+                return allowed;
+        }
         long r = reissue(a0, (long)p, ha2, ha3, a4, a5, rnr);
         /* O_NOFOLLOW through a real dirfd lands on the l2s symlink and draws
          * ELOOP where a real hardlink would open. Retry on the backing file —
@@ -4706,7 +4716,7 @@ static long dispatch_1(long nr, long a0, long a1, long a2, long a3, long a4,
             r = reissue(CNG_AT_FDCWD, (long)l2d, ha2, ha3, a4, a5, rnr);
         if ((r == -EACCES || r == -EPERM) && nr == __NR_openat)
             r = cng_fd_reopen(p, a2, a3, r);
-        return r;
+        return cng_triton_after(&metadata_open, r);
     }
 
     /* access: translate + reissue; under fake-root apply root's DAC bypass when

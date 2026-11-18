@@ -509,6 +509,9 @@ static void help(char **envp) {
         {"CNG_UACCESS_MEMFD", "Validate guest pointers through a scratch memfd "
                       "instead of process_vm_readv/writev. Test aid: it is the "
                       "fallback a host without that pair already uses."},
+        {"TRITONTERM_METADATA_CACHE", "Set to 0 to disable the validated parsed "
+                      "record cache in TritonTerm's metadata adapter. "
+                      "Ownership records are checked for changes on every hit."},
         {"CNG_MMAP_FORCE_ANON", "Serve every executable file mapping from an "
                       "anonymous copy without asking the kernel first. Test "
                       "aid: it is what a true noexec mount forces anyway."},

@@ -3,6 +3,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <stdint.h>
+#include <pthread.h>
 #include <stdio.h>
 #include <string.h>
 #include <sys/stat.h>
@@ -19,7 +20,77 @@ static void check(const char *path, unsigned mode, unsigned uid, unsigned gid) {
     assert(value.st_uid == uid && value.st_gid == gid);
 }
 
-int main(void) {
+static void barrier(void) {
+    puts("READY");
+    fflush(stdout);
+    assert(getchar() == '\n');
+}
+
+static int cache_changes(void) {
+    /* Host-side edits model another process or a PRoot package operation. */
+    for (int i = 0; i < 5; i++) check("/archive", 0644, 0, 123);
+    barrier();
+    for (int i = 0; i < 5; i++) check("/archive", 0600, 0, 321);
+    assert(open("/archive", O_RDONLY) == -1 && errno == EACCES);
+    barrier();
+    for (int i = 0; i < 5; i++) check("/archive", 0640, 0, 456);
+    barrier();
+    for (int i = 0; i < 5; i++) check("/archive", 0666, GUEST_UID, GUEST_UID);
+    barrier();
+    for (int i = 0; i < 5; i++) check("/archive", 0644, 0, 789);
+    barrier();
+    for (int i = 0; i < 5; i++) check("/archive", 0666, GUEST_UID, GUEST_UID);
+    puts("PASS live cross-process metadata replacement/edit/delete/recreate/symlink");
+    return 0;
+}
+
+static void *cache_worker(void *other) {
+    for (int i = 0; i < 200; i++) {
+        check("/archive", 0644, 0, 123);
+        check(other, 0640, 0, 777);
+    }
+    return NULL;
+}
+
+static int cache_threads(char *other) {
+    pthread_t threads[8];
+    for (unsigned i = 0; i < 8; i++)
+        assert(pthread_create(&threads[i], NULL, cache_worker, other) == 0);
+    for (int i = 0; i < 8; i++) {
+        pid_t child = fork();
+        assert(child >= 0);
+        if (!child) {
+            cache_worker(other);
+            _exit(0);
+        }
+        int status;
+        assert(waitpid(child, &status, 0) == child);
+        assert(WIFEXITED(status) && WEXITSTATUS(status) == 0);
+    }
+    for (unsigned i = 0; i < 8; i++) assert(pthread_join(threads[i], NULL) == 0);
+    puts("PASS colliding cache paths with concurrent threads and fork");
+    return 0;
+}
+
+int main(int argc, char **argv) {
+    if (argc > 2 && !strcmp(argv[1], "cache-threads"))
+        return cache_threads(argv[2]);
+    if (argc > 1 && !strcmp(argv[1], "cache-changes"))
+        return cache_changes();
+    if (argc > 1 && !strcmp(argv[1], "cache-loop")) {
+        for (int i = 0; i < 500; i++) check("/archive", 0644, 0, 123);
+        puts("PASS metadata lookup loop");
+        return 0;
+    }
+    if (argc > 1 && !strcmp(argv[1], "open-loop")) {
+        for (int i = 0; i < 100; i++) {
+            int f = open("/archive", O_RDONLY);
+            assert(f >= 0);
+            close(f);
+        }
+        puts("PASS translated open loop");
+        return 0;
+    }
     check("/archive", 0644, 0, 123);
     int fd = open("/archive", O_RDONLY);
     assert(fd >= 0);
