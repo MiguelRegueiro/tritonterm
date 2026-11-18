@@ -11,6 +11,11 @@ import json, os, sys
 from pathlib import Path
 name=Path(sys.argv[0]).name
 mode=os.environ.get('TRITONTERM_CNG_PROFILE','off')
+if name=='true':
+ assert os.environ.get('TRITONTERM_CNG_LOADER_PROBE')=='1'
+ if os.environ.get('MOCK_BAD')!='probe-missing':
+  print('TRITONTERM_CNG_LOADER_PROBE '+json.dumps({'v':1,'stage':9,'error':0,'signal':0}),file=sys.stderr)
+ sys.exit(0)
 if name=='elio': print('elio 1.15.0')
 else:
  config=Path(os.environ['STARSHIP_CONFIG']).read_text()
@@ -26,11 +31,11 @@ def main():
         base = Path(directory)
         binaries = base / 'bin'
         binaries.mkdir()
-        for name in ['elio', 'starship']:
+        for name in ['elio', 'starship', 'true']:
             file = binaries / name
             file.write_text(MOCK)
             file.chmod(0o755)
-        for scenario in ['normal', 'missing', 'truncated']:
+        for scenario in ['normal', 'probe-missing', 'missing', 'truncated']:
             home = base / scenario
             (home / '.config').mkdir(parents=True)
             (home / 'elio').mkdir()
@@ -40,10 +45,12 @@ def main():
             env.pop('STARSHIP_CONFIG', None)
             result = subprocess.run(['fish', '--no-config', str(ROOT / 'app/src/main/assets/profile-chroot-ng.fish')],
                                     env=env, cwd=home, capture_output=True, text=True, timeout=90)
-            if scenario == 'normal':
+            if scenario in ('normal', 'probe-missing'):
                 assert result.returncode == 0, result.stderr + result.stdout
                 assert 'END TRITONTERM PROFILE' in result.stdout
                 assert 'starship-repo' in result.stdout and 'off_ms:' in result.stdout
+                if scenario == 'normal': assert 'TRITONTERM_CNG_LOADER_PROBE ' in result.stdout
+                else: assert 'Loader capability report unavailable' in result.stdout
                 reports = list((home / '.cache/tritonterm').glob('runtime-profile.*/summary.txt'))
                 assert len(reports) == 1 and reports[0].stat().st_size > 100
                 print('PASS portable Fish collector runs all workloads and prints/saves the summary')

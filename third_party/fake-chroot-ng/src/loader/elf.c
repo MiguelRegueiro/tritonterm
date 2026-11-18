@@ -49,12 +49,28 @@ static int prot_of(uint32_t pf) {
 
 int cng_g_loader_file = 0;
 
+static long loader_protect(void *address, unsigned long length, int protection) {
+    struct cng_profile_span span = cng_profile_begin(CNG_P_LOADER_PROTECT);
+    long result = sys_mprotect(address, length, protection);
+    cng_profile_end(CNG_P_LOADER_PROTECT, span);
+    return result;
+}
+
+static void loader_sync(void *start, void *end) {
+    struct cng_profile_span span = cng_profile_begin(CNG_P_LOADER_SYNC);
+    cng_flush_icache(start, end);
+    cng_profile_end(CNG_P_LOADER_SYNC, span);
+    if ((unsigned long)end > (unsigned long)start)
+        cng_profile_add(CNG_P_LOADER_SYNC_BYTES,
+                        (unsigned long)end - (unsigned long)start);
+}
+
 void cng_loader_check_execmem(void) {
     void *t = sys_mmap(0, 4096, CNG_PROT_READ | CNG_PROT_WRITE,
                        CNG_MAP_PRIVATE | CNG_MAP_ANONYMOUS, -1, 0);
     if (t == CNG_MAP_FAILED || cng_is_err((long)t))
         return;
-    if (sys_mprotect(t, 4096, CNG_PROT_READ | CNG_PROT_EXEC) < 0)
+    if (loader_protect(t, 4096, CNG_PROT_READ | CNG_PROT_EXEC) < 0)
         cng_g_loader_file = 1; /* execmem revoked (e.g. by NO_NEW_PRIVS) */
     sys_munmap(t, 4096);
 }
@@ -110,8 +126,11 @@ static int map_anon(int fd, const Elf64_Ehdr *eh, const Elf64_Phdr *ph,
                 continue;
             }
         }
-        if (read_exact(fd, (void *)(bias + ph[i].p_vaddr), ph[i].p_filesz,
-                       (long)ph[i].p_offset) != (long)ph[i].p_filesz) {
+        struct cng_profile_span fill = cng_profile_begin(CNG_P_LOADER_FILL);
+        long got = read_exact(fd, (void *)(bias + ph[i].p_vaddr), ph[i].p_filesz,
+                              (long)ph[i].p_offset);
+        cng_profile_end(CNG_P_LOADER_FILL, fill);
+        if (got != (long)ph[i].p_filesz) {
             sys_munmap(seg, span + pool_extra);
             return CNG_LOAD_EIO;
         }
@@ -140,9 +159,9 @@ static int map_anon(int fd, const Elf64_Ehdr *eh, const Elf64_Phdr *ph,
             cng_dprintf(2, "[cng] load: rewrote %d svc site(s), ranges=%d\n",
                         sites, cr.n);
         if (used) {
-            sys_mprotect((void *)pool, cng_page_up(used),
+            loader_protect((void *)pool, cng_page_up(used),
                          CNG_PROT_READ | CNG_PROT_EXEC);
-            cng_flush_icache((void *)pool, (void *)(pool + used));
+            loader_sync((void *)pool, (void *)(pool + used));
         }
     }
 
@@ -199,7 +218,7 @@ static int map_anon(int fd, const Elf64_Ehdr *eh, const Elf64_Phdr *ph,
         }
         if (!covered)
             continue;
-        long mr = sys_mprotect((void *)ps, pe - ps, prot);
+        long mr = loader_protect((void *)ps, pe - ps, prot);
         if (mr < 0) {
             sys_munmap(seg, span + pool_extra);
             if (mr == -EACCES && (prot & CNG_PROT_EXEC))
@@ -210,7 +229,7 @@ static int map_anon(int fd, const Elf64_Ehdr *eh, const Elf64_Phdr *ph,
             return CNG_LOAD_EMAP;
         }
         if (prot & CNG_PROT_EXEC)
-            cng_flush_icache((void *)ps, (void *)pe);
+            loader_sync((void *)ps, (void *)pe);
     }
     *bias_out = bias;
     return CNG_LOAD_OK;
@@ -307,7 +326,7 @@ static int map_file(int fd, const Elf64_Ehdr *eh, const Elf64_Phdr *ph,
             }
         }
         if (ph[i].p_flags & PF_X)
-            cng_flush_icache((void *)vpage, (void *)cng_page_up(fileend));
+            loader_sync((void *)vpage, (void *)cng_page_up(fileend));
     }
     *bias_out = bias;
     return CNG_LOAD_OK;

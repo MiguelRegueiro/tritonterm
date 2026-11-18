@@ -148,6 +148,16 @@ if not test -f $config
     exit 1
 end
 set config (path resolve -- $config)
+# A separate untimed command keeps capability checks out of workload timings.
+# Its raw native child mappings cannot be replaced by the runtime's execmap.
+env TRITONTERM_CNG_LOADER_PROBE=1 (command -s true) >$profile_dir/loader-probe.stdout 2>$profile_dir/loader-probe.stderr
+set -l probe_status $status
+set -l probe (string match -r '^TRITONTERM_CNG_LOADER_PROBE .*' -- (cat $profile_dir/loader-probe.stderr))
+if test (count $probe) = 1
+    printf '\n%s\n' $probe >>$profile_summary
+else
+    printf '\nLoader capability report unavailable (command status %s); see loader-probe.stderr.\n' $probe_status >>$profile_summary
+end
 profile_workload elio-version $HOME $config $elio --version; or exit 1
 profile_workload starship-minimal $HOME $profile_dir/minimal.toml $starship prompt; or exit 1
 profile_workload starship-clock $HOME $profile_dir/clock.toml $starship prompt; or exit 1

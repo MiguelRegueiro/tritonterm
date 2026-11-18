@@ -507,6 +507,10 @@ static void help(char **envp) {
                       "or off. Requires CNG_PROFILE_SUPPORT=1 in the launcher. "
                       "Scope begins after the exec argument snapshot; entry "
                       "means ELF/interpreter entry, not application main."},
+        {"TRITONTERM_CNG_LOADER_PROBE", "Guest exec environment: set to 1 for "
+                      "an isolated, bounded sealed-memfd/private-code probe. "
+                      "Requires launcher CNG_PROFILE_SUPPORT=1. Emits one "
+                      "JSON diagnostic to stderr; does not enable image caching."},
         {"TRITONTERM_USERLAND_METADATA", "Set to 1 to enable TritonTerm ownership/mode sidecars, virtual set-ID execution, ownership changes and PRoot-format hardlinks. Rename exchange/whiteout metadata is not supported."},
         {"CNG_DEBUG", "When set to a non-empty, non-zero value, log verbose "
                       "syscall-error diagnostics to stderr, including each "

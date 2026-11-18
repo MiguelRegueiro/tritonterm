@@ -10,7 +10,8 @@ enum cng_profile_metric {
     CNG_P_REWRITE_BYTES, CNG_P_REWRITE_SITES, CNG_P_METADATA_OPENS,
     CNG_P_METADATA_HITS, CNG_P_PATH_PROBES, CNG_P_LOADER_ANON,
     CNG_P_LOADER_FILE, CNG_P_STACK, CNG_P_CLOEXEC, CNG_P_SWEEP,
-    CNG_P_RESET, CNG_P_REAP, CNG_P_METRICS
+    CNG_P_RESET, CNG_P_REAP, CNG_P_LOADER_FILL, CNG_P_LOADER_PROTECT,
+    CNG_P_LOADER_SYNC, CNG_P_LOADER_SYNC_BYTES, CNG_P_METRICS
 };
 struct cng_profile_span { unsigned long start; unsigned generation; };
 extern int cng_profile_support;

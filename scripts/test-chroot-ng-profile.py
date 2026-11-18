@@ -43,6 +43,16 @@ def main():
             assert record['status'] == 7 and record['mode'] == mode and not record['truncated']
             assert record['wall_ns'] >= record['to_entry_ns'] > 0
             assert record['metrics']['resolve'][0] >= 120 and record['metrics']['rewrite_sites'][0] > 0
+            cache = record['cache']
+            assert cache['idc'] == (cache['ctr_el0'] >> 28) & 1
+            assert cache['dic'] == (cache['ctr_el0'] >> 29) & 1
+            assert cache['dline'] == 4 << ((cache['ctr_el0'] >> 16) & 15)
+            assert cache['iline'] == 4 << (cache['ctr_el0'] & 15)
+            for metric in ('loader_fill', 'loader_protect', 'loader_sync', 'loader_sync_bytes'):
+                assert record['metrics'][metric][0] > 0, record
+            if mode == 'timing':
+                for metric in ('loader_fill', 'loader_protect', 'loader_sync'):
+                    assert record['metrics'][metric][1] > 0, record
             assert sum(record['syscalls'].values()) > 0
             if mode == 'count': assert all(value[1] == 0 for value in record['metrics'].values())
             else: assert record['metrics']['resolve'][1] > 0

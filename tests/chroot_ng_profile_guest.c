@@ -27,6 +27,11 @@ static void *exec_worker(void *unused) {
     _exit(96);
 }
 int main(int argc, char **argv) {
+    if (argc > 1 && !strcmp(argv[1], "loader-probe")) {
+        assert(setenv("TRITONTERM_CNG_LOADER_PROBE", "1", 1) == 0);
+        execl("/bin/guest", "guest", NULL);
+        return 95;
+    }
     if (argc > 1 && !strcmp(argv[1], "pipe")) {
         puts("READY");
         fflush(stdout);

@@ -2,6 +2,7 @@
 /* Opt-in per-exec diagnostics. No guest arguments, environment values, paths
  * or output are logged. Timers overlap; totals are not a CPU partition. */
 #include "cng/profile.h"
+#include "cng/loader_probe.h"
 #include "cng/rewrite.h"
 #include "cng/broker.h"
 #include "cng/monitor.h"
@@ -26,7 +27,8 @@ static const char *names[CNG_P_METRICS] = {
     "library_map", "dispatch", "file_maps", "anonymous_maps", "copied_bytes",
     "rewrite_bytes", "rewrite_sites", "metadata_opens", "metadata_hits", "path_probes",
     "loader_anonymous_objects", "loader_file_objects", "stack", "close_cloexec",
-    "exec_sweep", "exec_reset", "exec_reap"
+    "exec_sweep", "exec_reset", "exec_reap", "loader_fill",
+    "loader_protect", "loader_sync", "loader_sync_bytes"
 };
 
 static unsigned long now(void) {
@@ -108,15 +110,20 @@ static void report(const char *reason, long status) {
     unsigned long system = have_cpu ? cpu_ns(usage, 2) - cpu_ns(cpu_start, 2) : 0;
     /* Emit after taking time/CPU snapshots. Formatting and stderr I/O are
      * excluded from wall_ns, but included in the helper's external duration. */
+    unsigned long ctr;
+    __asm__ volatile("mrs %0, ctr_el0" : "=r"(ctr));
     char output[4096];
     size_t used = cng_snprintf(output, sizeof output,
         PROFILE_PREFIX "{\"v\":1,\"program\":\"%s\",\"pid\":%ld,\"mode\":\"%s\","
         "\"reason\":\"%s\",\"status\":%ld,\"wall_ns\":%lu,\"to_entry_ns\":%lu,"
         "\"initial_scope\":%d,\"cpu_available\":%d,\"user_ns\":%lu,\"system_ns\":%lu,"
-        "\"seccomp\":%d,\"rewrite\":%d,\"tiers\":[%lu,%lu,%lu],\"metrics\":{",
+        "\"seccomp\":%d,\"rewrite\":%d,\"cache\":{\"ctr_el0\":%lu,\"idc\":%lu,\"dic\":%lu,"
+        "\"dline\":%lu,\"iline\":%lu},\"tiers\":[%lu,%lu,%lu],\"metrics\":{",
         program, owner_pid, active == 2 ? "timing" : "count", reason, status,
         end >= started ? end - started : 0, entered >= started ? entered - started : 0,
         initial_scope, have_cpu, user, system, installed, cng_g_rewrite,
+        ctr, (ctr >> 28) & 1, (ctr >> 29) & 1,
+        4UL << ((ctr >> 16) & 15), 4UL << (ctr & 15),
         __atomic_load_n(&tiers[0], __ATOMIC_RELAXED),
         __atomic_load_n(&tiers[1], __ATOMIC_RELAXED),
         __atomic_load_n(&tiers[2], __ATOMIC_RELAXED));
@@ -157,6 +164,18 @@ void cng_profile_exec(const char *path, char *const *envp, int initial) {
             continue;
         const char *v = *p + sizeof key - 1;
         requested = !strcmp(v, "count") ? 1 : !strcmp(v, "timing") ? 2 : 0;
+        break;
+    }
+    /* Explicit probe runs before measured snapshots, never on ordinary exec.
+     * The collector invokes it in a separate command before timed workloads. */
+    for (char *const *p = envp; p && *p; p++) {
+        if (strcmp(*p, "TRITONTERM_CNG_LOADER_PROBE=1")) continue;
+        struct cng_loader_probe_result r = cng_loader_probe();
+        char output[256];
+        size_t length = cng_snprintf(output, sizeof output,
+            "TRITONTERM_CNG_LOADER_PROBE {\"v\":1,\"stage\":%ld,"
+            "\"error\":%ld,\"signal\":%ld}\n", r.stage, r.error, r.signal);
+        report_write(output, length);
         break;
     }
     if (!requested)
