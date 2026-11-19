@@ -14,7 +14,11 @@ mode=os.environ.get('TRITONTERM_CNG_PROFILE','off')
 if name=='true':
  assert os.environ.get('TRITONTERM_CNG_LOADER_PROBE')=='1'
  if os.environ.get('MOCK_BAD')!='probe-missing':
-  print('TRITONTERM_CNG_LOADER_PROBE '+json.dumps({'v':1,'stage':9,'error':0,'signal':0}),file=sys.stderr)
+  if os.environ.get('MOCK_BAD')=='probe-legacy':
+   print('TRITONTERM_CNG_LOADER_PROBE '+json.dumps({'v':1,'stage':9,'error':0,'signal':0}),file=sys.stderr)
+  else:
+   for strategy in ('private_patch','direct_rx','read_rx','hybrid'):
+    print('TRITONTERM_CNG_LOADER_PROBE '+json.dumps({'v':2,'strategy':strategy,'stage':6 if strategy=='private_patch' else 9,'error':-13 if strategy=='private_patch' else 0,'signal':0}),file=sys.stderr)
  sys.exit(0)
 if name=='elio': print('elio 1.15.0')
 else:
@@ -35,7 +39,7 @@ def main():
             file = binaries / name
             file.write_text(MOCK)
             file.chmod(0o755)
-        for scenario in ['normal', 'probe-missing', 'missing', 'truncated']:
+        for scenario in ['normal', 'probe-legacy', 'probe-missing', 'missing', 'truncated']:
             home = base / scenario
             (home / '.config').mkdir(parents=True)
             (home / 'elio').mkdir()
@@ -45,11 +49,17 @@ def main():
             env.pop('STARSHIP_CONFIG', None)
             result = subprocess.run(['fish', '--no-config', str(ROOT / 'app/src/main/assets/profile-chroot-ng.fish')],
                                     env=env, cwd=home, capture_output=True, text=True, timeout=90)
-            if scenario in ('normal', 'probe-missing'):
+            if scenario in ('normal', 'probe-legacy', 'probe-missing'):
                 assert result.returncode == 0, result.stderr + result.stdout
                 assert 'END TRITONTERM PROFILE' in result.stdout
                 assert 'starship-repo' in result.stdout and 'off_ms:' in result.stdout
-                if scenario == 'normal': assert 'TRITONTERM_CNG_LOADER_PROBE ' in result.stdout
+                if scenario == 'normal':
+                    records = [line for line in result.stdout.splitlines() if line.startswith('TRITONTERM_CNG_LOADER_PROBE ')]
+                    assert len(records) == 4, result.stdout
+                    assert all('"strategy": "'+name+'"' in records[i] for i, name in enumerate(('private_patch','direct_rx','read_rx','hybrid')))
+                    assert '"error": -13' in records[0] and '"stage": 9' in records[3]
+                elif scenario == 'probe-legacy':
+                    assert 'TRITONTERM_CNG_LOADER_PROBE ' in result.stdout
                 else: assert 'Loader capability report unavailable' in result.stdout
                 reports = list((home / '.cache/tritonterm').glob('runtime-profile.*/summary.txt'))
                 assert len(reports) == 1 and reports[0].stat().st_size > 100

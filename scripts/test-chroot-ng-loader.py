@@ -8,6 +8,21 @@ import subprocess
 import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
+STRATEGIES = ('private_patch', 'direct_rx', 'read_rx', 'hybrid')
+
+
+def check_records(rows, label):
+    assert [row.get('strategy') for row in rows] == list(STRATEGIES), rows
+    for row in rows:
+        assert row['v'] == 2, row
+        if label == 'control':
+            assert row == {'v': 2, 'strategy': row['strategy'], 'stage': 9, 'error': 0, 'signal': 0}, row
+        elif label == 'errno':
+            assert row['stage'] == 1 and row['error'] == -1 and row['signal'] == 0, row
+        elif label == 'trap':
+            assert row['stage'] == 15 and row['signal'] == 31, row
+        else:
+            assert row['stage'] == 14 and row['error'] == -110, row
 
 
 def main():
@@ -47,12 +62,7 @@ def main():
             if label == 'disabled':
                 assert not rows, result.stderr
             else:
-                assert len(rows) == 1 and rows[0]['v'] == 1, result.stderr
-                row = rows[0]
-                if label == 'control': assert row == {'v': 1, 'stage': 9, 'error': 0, 'signal': 0}, row
-                elif label == 'errno': assert row['stage'] == 1 and row['error'] == -1 and row['signal'] == 0, row
-                elif label == 'trap': assert row['stage'] == 15 and row['signal'] == 31, row
-                else: assert row['stage'] == 14 and row['error'] == -110, row
+                check_records(rows, label)
             print(f'PASS {label}: capability result preserves guest stdout/exit and parent survival')
         # The phone invokes the probe through emulated exec from its shell.
         # Activate only in the guest so startup does not probe as well.
@@ -62,8 +72,20 @@ def main():
         assert result.returncode == 7 and result.stdout == 'PROFILE_GUEST_OK\n', result
         rows = [json.loads(line.split(' ', 1)[1]) for line in result.stderr.splitlines()
                 if line.startswith('TRITONTERM_CNG_LOADER_PROBE ')]
-        assert rows == [{'v': 1, 'stage': 9, 'error': 0, 'signal': 0}], result.stderr
+        check_records(rows, 'control')
         print('PASS probe activation across emulated exec preserves command behavior')
+        # Exercise the actual probe with both logical geometries. Modern
+        # QEMU lacks the old -p option; this does not emulate a 16 KB kernel.
+        subprocess.run([args.guest_cc, '-static-pie', '-O2', '-Wall', '-Wextra', '-Werror',
+            '-I', ROOT / 'third_party/fake-chroot-ng/include',
+            ROOT / 'tests/chroot_ng_loader_geometry.c',
+            ROOT / 'third_party/fake-chroot-ng/src/loader/probe.c',
+            ROOT / 'third_party/fake-chroot-ng/src/rt/cache.S',
+            '-o', work / 'geometry-check'], check=True)
+        result = subprocess.run(['qemu-aarch64-static', work / 'geometry-check'],
+                                capture_output=True, text=True, timeout=30)
+        assert result.returncode == 0 and result.stdout.startswith('PASS'), result
+        print(result.stdout.strip())
 
 
 if __name__ == '__main__':

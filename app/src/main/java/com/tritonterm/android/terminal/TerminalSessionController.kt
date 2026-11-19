@@ -430,6 +430,7 @@ internal class ArchLinuxArmBackend : TerminalBackend {
             "APP_PACKAGE=${context.packageName}",
             "TRITONTERM_ARCH_ENGINE=$runtime",
             "CNG_PROFILE_SUPPORT=1",
+            "CNG_IMAGE_CACHE=1",
             "HOME=${File(context.filesDir, "home").absolutePath}",
             "TMPDIR=${cache.absolutePath}",
             "PROOT_TMP_DIR=${cache.absolutePath}",

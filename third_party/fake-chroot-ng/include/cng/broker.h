@@ -74,6 +74,7 @@ enum {
     CNG_REQ_CANCEL,  /* on a parked connection: abandon the wait (-> EINTR) */
     CNG_REQ_NLSOCK,  /* an emulated netlink socket: the daemon's end of its
                       * pair rides as SCM_RIGHTS, arg = CNG_NL_F_*; ret = id */
+    CNG_REQ_IMAGE, /* opened source fd -> sealed virtual ELF image, site index */
     CNG_REQ_NLSYNC,  /* id = a netlink socket: serve what is queued on it */
 };
 

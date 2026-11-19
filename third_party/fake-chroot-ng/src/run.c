@@ -1,4 +1,5 @@
 #include "cng/profile.h"
+#include "cng/image_cache.h"
 #include "cng/tritonterm.h"
 /* SPDX-License-Identifier: Apache-2.0 */
 /* Copyright 2026 Sylirre */
@@ -306,6 +307,7 @@ int cng_run(const char *rootfs, const char *libprefix, const char *workdir,
      * onto the guest stack. */
     char *genv[CNG_MAX_ENV + 3];
     build_guest_env(env_set, ne, envp, genv);
+    cng_image_cache_exec(genv);
     cng_profile_exec(prog_guest, genv, 1);
 
     /* Fake identity (--fake-id): establish it from the real invoking ids (which

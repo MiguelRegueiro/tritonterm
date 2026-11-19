@@ -1,6 +1,7 @@
 static void cng_exec_reset(void);
 static void exec_sweep(void);
 #include "cng/profile.h"
+#include "cng/image_cache.h"
 #include "cng/tritonterm.h"
 /* SPDX-License-Identifier: Apache-2.0 */
 /* Copyright 2026 Sylirre */
@@ -2275,6 +2276,7 @@ static long execve_core(int dirfd, const char *path, char **argv, char **envp,
         CNG_SYS(__NR_sched_yield, 0, 0, 0, 0, 0, 0);
     }
 
+    cng_image_cache_exec(a.envp);
     cng_profile_exec(a.path, a.envp, 0);
     rc = execve_plan(&g_job, dirfd, a.path, a.argv, a.envp, flags);
     if (rc < 0) {

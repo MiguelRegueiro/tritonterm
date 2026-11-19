@@ -23,6 +23,7 @@
 #include "cng/ownmap.h"
 #include "cng/path.h"
 #include "cng/procreg.h"
+#include "cng/image_cache.h"
 #include "cng/rt.h"
 #include "cng/shm.h"
 #include "cng/syscall.h"
@@ -93,7 +94,9 @@ u64 cng_broker_hash(const void *p, unsigned long n) {
  * which widened struct cng_breq; v3 added the hello, and widened the hash; v4
  * the netlink sockets, and a descriptor riding with a request; v5 the ids a
  * process publishes, and the argv and environ ranges, which were added
- * without a bump; v6 the rest of its ids, and its groups.) */
+ * without a bump; v6 the rest of its ids, and its groups; v7 adds sealed
+ * image-cache requests; v8 retains sealed descriptors without reopening
+ * them and reports cache failure stages.) */
 struct broker_ns {
     struct cng_sockaddr_un addr;
     unsigned alen;
@@ -108,13 +111,13 @@ static void broker_ns(struct broker_ns *ns, const char *rootfs, u64 sess) {
     size_t n;
     if (sess) {
         n = cng_snprintf(a->path + 1, sizeof a->path - 1,
-                         "cng-ipc.v6.%u.s%016llx", (unsigned)sys_getuid(),
+                         "cng-ipc.v8.%u.s%016llx", (unsigned)sys_getuid(),
                          (unsigned long long)sess);
         cng_snprintf(ns->key, sizeof ns->key, "%016llx",
                      (unsigned long long)sess);
     } else {
         n = cng_snprintf(a->path + 1, sizeof a->path - 1,
-                         "cng-ipc.v6.%u.%016llx", (unsigned)sys_getuid(),
+                         "cng-ipc.v8.%u.%016llx", (unsigned)sys_getuid(),
                          (unsigned long long)cng_broker_key_hash(rootfs));
         cng_strlcpy(ns->key, rootfs, sizeof ns->key);
     }
@@ -1050,12 +1053,21 @@ static int tab_memfd(void **tab_out) {
 /* Serve one connected client: dispatch the request and reply. Returns 1 when the
  * connection has been parked in a waiter slot (a blocking semop/msgsnd/msgrcv),
  * in which case the caller must not close it. `infd` is a descriptor that came
- * with the request, or -1: only a netlink registration has a use for one, and
- * every other request has it closed here. */
+ * with the request, or -1: image misses retain it, netlink registration uses
+ * it, and all other requests close it here. */
 static int ipc_serve(int cfd, const struct cng_breq *q, void **tab, int infd) {
     struct cng_bresp r;
     memset(&r, 0, sizeof r);
     int outfd = -1;
+    if (q->op == CNG_REQ_IMAGE) {
+        outfd = q->arg == (int)cng_page_size ? cng_image_cache_serve(infd, &r) : -1;
+        if (outfd < 0 && r.ret >= 0) r.ret = -ENOSYS;
+        /* A successful miss retains the received source fd to prevent inode
+         * recycling. Hits and errors do not consume it. */
+        if (infd >= 0 && (outfd < 0 || r.ret != 1)) sys_close(infd);
+        cng_broker_send(cfd, &r, sizeof r, outfd);
+        return 0;
+    }
     if (q->op == CNG_REQ_NLSOCK) {
         /* The port id is the registering process's pid, as the kernel tells
          * it (q->pid is the SO_PEERCRED answer by now): the guest side reports

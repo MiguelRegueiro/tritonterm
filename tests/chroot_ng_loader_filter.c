@@ -15,6 +15,7 @@ int main(int argc, char **argv) {
     assert(argc > 2);
     struct rlimit core = {0, 0}; assert(setrlimit(RLIMIT_CORE, &core) == 0);
     unsigned action = !strcmp(argv[1], "trap") ? SECCOMP_RET_TRAP : SECCOMP_RET_ERRNO | EPERM;
+    if (!strcmp(argv[1], "kill")) action = SECCOMP_RET_KILL_PROCESS;
     if (!strcmp(argv[1], "hang")) action = SECCOMP_RET_USER_NOTIF;
     struct sock_filter insns[] = {
         BPF_STMT(BPF_LD | BPF_W | BPF_ABS, offsetof(struct seccomp_data, nr)),
@@ -24,6 +25,10 @@ int main(int argc, char **argv) {
         BPF_STMT(BPF_RET | BPF_K, action),
         BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ALLOW),
     };
+    if (!strcmp(argv[1], "watch")) {
+        insns[1].k = SYS_inotify_add_watch;
+        insns[3] = (struct sock_filter)BPF_STMT(BPF_JMP | BPF_JA, 0);
+    }
     struct sock_fprog filter = {sizeof insns / sizeof insns[0], insns};
     assert(prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) == 0);
     if (!strcmp(argv[1], "hang")) {

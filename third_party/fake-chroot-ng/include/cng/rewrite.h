@@ -59,6 +59,12 @@ int cng_rewrite_seg(unsigned long lo, unsigned long hi, unsigned long foff,
                     const struct cng_code_ranges *cr, unsigned long pool,
                     unsigned long cap, unsigned long *used);
 
+/* Same selector, using validated candidate offsets in an immutable image. */
+int cng_rewrite_index(unsigned long lo, unsigned long hi, unsigned long foff,
+                      const struct cng_code_ranges *cr, unsigned long image,
+                      const unsigned long *sites, unsigned long nsites,
+                      unsigned long pool, unsigned long cap, unsigned long *used);
+
 /* Take `size` bytes at exactly `want`, or nothing. MAP_FIXED_NOREPLACE so an
  * occupied range is refused rather than replaced; on a kernel that predates the
  * flag it degrades to a hint, so the address is checked either way. */

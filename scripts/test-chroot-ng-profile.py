@@ -43,6 +43,9 @@ def main():
             assert record['status'] == 7 and record['mode'] == mode and not record['truncated']
             assert record['wall_ns'] >= record['to_entry_ns'] > 0
             assert record['metrics']['resolve'][0] >= 120 and record['metrics']['rewrite_sites'][0] > 0
+            image = record['image_cache']
+            assert image['enabled'] in (0, 1) and image['blocked'] in (0, 1)
+            assert image['stage'] == image['error'] == image['blocked'] == 0, image
             cache = record['cache']
             assert cache['idc'] == (cache['ctr_el0'] >> 28) & 1
             assert cache['dic'] == (cache['ctr_el0'] >> 29) & 1

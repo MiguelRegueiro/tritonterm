@@ -1,4 +1,5 @@
 #include "cng/profile.h"
+#include "cng/image_cache.h"
 /* SPDX-License-Identifier: Apache-2.0 */
 /* Copyright 2026 Sylirre */
 /* ul_exec core: map an ELF64 guest into our address space from a read-only fd.
@@ -75,6 +76,119 @@ void cng_loader_check_execmem(void) {
     sys_munmap(t, 4096);
 }
 
+/* A sealed virtual image has the same zero-filled page layout as map_anon.
+ * Keep shared text RX throughout: only candidate patch pages become anonymous
+ * RW, which Android permits to transition to RX. Every error is recoverable
+ * here: discard this reservation and let the original loader retry. */
+static int map_hybrid(int fd, const Elf64_Ehdr *eh, const Elf64_Phdr *ph,
+                       int is_dyn, unsigned long lo, unsigned long span,
+                       unsigned long hint, unsigned long *bias_out,
+                       unsigned long *length_out, unsigned char *copied) {
+    if (!cng_image_cache_enabled() || !cng_g_rewrite || span > CNG_IMAGE_LIMIT)
+        return -1;
+    for (int i = 0; i < eh->e_phnum; i++) {
+        if (ph[i].p_type == PT_DYNAMIC) {
+            struct { long tag; unsigned long value; } dyn[256];
+            if (ph[i].p_filesz > sizeof dyn || ph[i].p_filesz % sizeof dyn[0] ||
+                read_exact(fd, dyn, ph[i].p_filesz, ph[i].p_offset) != (long)ph[i].p_filesz)
+                return -1;
+            for (unsigned j = 0; j < ph[i].p_filesz / sizeof dyn[0] && dyn[j].tag; j++)
+                if (dyn[j].tag == 22 /* DT_TEXTREL */ ||
+                    (dyn[j].tag == 30 /* DT_FLAGS */ && (dyn[j].value & 4))) return -1;
+        }
+        if (ph[i].p_type != PT_LOAD || !ph[i].p_memsz) continue;
+        if ((ph[i].p_flags & (PF_W | PF_X)) == (PF_W | PF_X)) return -1;
+        unsigned long a = cng_page_down(ph[i].p_vaddr);
+        unsigned long b = cng_page_up(ph[i].p_vaddr + ph[i].p_memsz);
+        for (int j = i + 1; j < eh->e_phnum; j++) {
+            if (ph[j].p_type != PT_LOAD || !ph[j].p_memsz) continue;
+            unsigned long c = cng_page_down(ph[j].p_vaddr);
+            unsigned long d = cng_page_up(ph[j].p_vaddr + ph[j].p_memsz);
+            if (a < d && b > c) return -1;
+        }
+    }
+    struct cng_image_meta meta;
+    struct cng_profile_span fetch = cng_profile_begin(CNG_P_IMAGE_FETCH);
+    int image = cng_image_cache_get(fd, eh, ph, span, lo, &meta);
+    cng_profile_end(CNG_P_IMAGE_FETCH, fetch);
+    if (image < 0) return -1;
+    unsigned long length = span + CNG_TRAMP_POOL;
+    int flags = CNG_MAP_PRIVATE | CNG_MAP_ANONYMOUS | (is_dyn ? 0 : CNG_MAP_FIXED);
+    char *memory = sys_mmap(is_dyn ? (void *)hint : (void *)lo, length,
+                            CNG_PROT_READ | CNG_PROT_WRITE, flags, -1, 0);
+    if (cng_is_err((long)memory)) { cng_image_cache_failure(30, (long)memory); sys_close(image); return -1; }
+    unsigned long bias = (unsigned long)memory - lo;
+    for (int i = 0; i < eh->e_phnum; i++) {
+        if (ph[i].p_type != PT_LOAD || !ph[i].p_memsz) continue;
+        unsigned long first = cng_page_down(ph[i].p_vaddr),
+                      last = cng_page_up(ph[i].p_vaddr + ph[i].p_memsz);
+        void *at = (void *)(bias + first);
+        int protection = CNG_PROT_READ | ((ph[i].p_flags & PF_X) ? CNG_PROT_EXEC : CNG_PROT_WRITE);
+        void *got = sys_mmap(at, last - first, protection, CNG_MAP_PRIVATE | CNG_MAP_FIXED,
+                             image, first - lo);
+        if (cng_is_err((long)got)) { cng_image_cache_failure(31, (long)got); goto fallback; }
+        cng_profile_add(CNG_P_FILE_MAPS, 1);
+        if (!(ph[i].p_flags & PF_X)) continue;
+        unsigned long previous = ~0UL;
+        for (unsigned long k = 0; k < meta.nsites; k++) {
+            unsigned long site = lo + meta.sites[k];
+            if (site < ph[i].p_vaddr || site + 4 > ph[i].p_vaddr + ph[i].p_filesz) continue;
+            unsigned long page = cng_page_down(site);
+            if (page == previous) continue;
+            previous = page;
+            at = (void *)(bias + page);
+            got = sys_mmap(at, cng_page_size, CNG_PROT_READ | CNG_PROT_WRITE,
+                          CNG_MAP_PRIVATE | CNG_MAP_ANONYMOUS | CNG_MAP_FIXED, -1, 0);
+            if (cng_is_err((long)got)) { cng_image_cache_failure(32, (long)got); goto fallback; }
+            struct cng_profile_span fill = cng_profile_begin(CNG_P_LOADER_FILL);
+            long n = read_exact(image, at, cng_page_size, page - lo);
+            cng_profile_end(CNG_P_LOADER_FILL, fill);
+            if (n != (long)cng_page_size) { cng_image_cache_failure(33, n < 0 ? n : -EIO); goto fallback; }
+            cng_profile_add(CNG_P_COPY_BYTES, cng_page_size);
+            cng_profile_add(CNG_P_IMAGE_PATCH_BYTES, cng_page_size);
+        }
+    }
+    unsigned long pool = (unsigned long)memory + span, used = 0;
+    for (int i = 0; i < eh->e_phnum; i++) {
+        if (ph[i].p_type != PT_LOAD || !(ph[i].p_flags & PF_X)) continue;
+        cng_rewrite_index(bias + ph[i].p_vaddr, bias + ph[i].p_vaddr + ph[i].p_filesz,
+            ph[i].p_offset, &meta.code, (unsigned long)memory,
+            meta.sites, meta.nsites, pool, CNG_TRAMP_POOL, &used);
+        copied[i] = 1; /* retain DONTUNMAP emulation for anonymous patch pages */
+    }
+    if (used) {
+        long protected = loader_protect((void *)pool, cng_page_up(used), CNG_PROT_READ | CNG_PROT_EXEC);
+        if (protected) { cng_image_cache_failure(34, protected); goto fallback; }
+        loader_sync((void *)pool, (void *)(pool + used));
+    }
+    for (int i = 0; i < eh->e_phnum; i++) {
+        if (ph[i].p_type != PT_LOAD || !ph[i].p_memsz) continue;
+        unsigned long first = cng_page_down(ph[i].p_vaddr),
+                      last = cng_page_up(ph[i].p_vaddr + ph[i].p_memsz);
+        long protected = loader_protect((void *)(bias + first), last - first, prot_of(ph[i].p_flags));
+        if (protected) { cng_image_cache_failure(35, protected); goto fallback; }
+        if (!(ph[i].p_flags & PF_X)) continue;
+        unsigned long previous = ~0UL;
+        for (unsigned long k = 0; k < meta.nsites; k++) {
+            unsigned long site = lo + meta.sites[k];
+            if (site < ph[i].p_vaddr || site + 4 > ph[i].p_vaddr + ph[i].p_filesz) continue;
+            unsigned long page = cng_page_down(site);
+            if (page == previous) continue;
+            previous = page;
+            loader_sync((void *)(bias + page), (void *)(bias + page + cng_page_size));
+        }
+    }
+    sys_close(image);
+    *bias_out = bias; *length_out = length;
+    cng_profile_add(CNG_P_IMAGE_OBJECTS, 1);
+    return 0;
+ fallback:
+    sys_close(image); sys_munmap(memory, length);
+    memset(copied, 0, MAX_PHDR);
+    cng_profile_add(CNG_P_IMAGE_FALLBACK, 1);
+    return -1;
+}
+
 /* Strategy A — anonymous: reserve the span RW, pread segment contents, then
  * mprotect each to its final perms. Defeats a true noexec mount but needs
  * execmem (anon PROT_EXEC). Returns CNG_LOAD_EEXEC if mprotect(RX) is denied so
@@ -83,6 +197,8 @@ static int map_anon(int fd, const Elf64_Ehdr *eh, const Elf64_Phdr *ph,
                     int is_dyn, unsigned long lo, unsigned long span,
                     unsigned long base_hint, unsigned long *bias_out,
                     unsigned long *maplen_out, unsigned char *copied) {
+    if (map_hybrid(fd, eh, ph, is_dyn, lo, span, base_hint,
+                   bias_out, maplen_out, copied) == 0) return CNG_LOAD_OK;
     unsigned long pool_extra = cng_g_rewrite ? CNG_TRAMP_POOL : 0;
     *maplen_out = span + pool_extra;
     int mflags = CNG_MAP_PRIVATE | CNG_MAP_ANONYMOUS;

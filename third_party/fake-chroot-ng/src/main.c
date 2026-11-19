@@ -499,6 +499,12 @@ static void help(char **envp) {
         {"COLUMNS", "Width to render this help at when no terminal answers "
                       "TIOCGWINSZ (a redirected run). Clamped to 32..92; a "
                       "value that is not a positive number is ignored."},
+        {"CNG_IMAGE_CACHE", "Launcher opt-in: 1 enables bounded broker-owned "
+                      "sealed ELF images and anonymous syscall patch pages. "
+                      "Validation or mapping failures retain anonymous loading."},
+        {"TRITONTERM_CNG_IMAGE_CACHE", "Guest exec environment: 0 disables "
+                      "the launcher's image cache for this command and children. "
+                      "1 retries after a latched platform refusal (launcher opt-in required)."},
         {"CNG_PROFILE_SUPPORT", "Set to 1 to allow per-exec diagnostics. "
                       "Guest TRITONTERM_CNG_PROFILE=count or timing emits a "
                       "JSON report to stderr on normal process exit; off is "
@@ -508,9 +514,10 @@ static void help(char **envp) {
                       "Scope begins after the exec argument snapshot; entry "
                       "means ELF/interpreter entry, not application main."},
         {"TRITONTERM_CNG_LOADER_PROBE", "Guest exec environment: set to 1 for "
-                      "an isolated, bounded sealed-memfd/private-code probe. "
+                      "isolated, bounded sealed-memfd mapping probes: private "
+                      "patch, direct RX, read-to-RX and hybrid code. "
                       "Requires launcher CNG_PROFILE_SUPPORT=1. Emits one "
-                      "JSON diagnostic to stderr; does not enable image caching."},
+                      "JSON diagnostic per strategy to stderr; does not enable image caching."},
         {"TRITONTERM_USERLAND_METADATA", "Set to 1 to enable TritonTerm ownership/mode sidecars, virtual set-ID execution, ownership changes and PRoot-format hardlinks. Rename exchange/whiteout metadata is not supported."},
         {"CNG_DEBUG", "When set to a non-empty, non-zero value, log verbose "
                       "syscall-error diagnostics to stderr, including each "

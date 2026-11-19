@@ -153,7 +153,7 @@ set config (path resolve -- $config)
 env TRITONTERM_CNG_LOADER_PROBE=1 (command -s true) >$profile_dir/loader-probe.stdout 2>$profile_dir/loader-probe.stderr
 set -l probe_status $status
 set -l probe (string match -r '^TRITONTERM_CNG_LOADER_PROBE .*' -- (cat $profile_dir/loader-probe.stderr))
-if test (count $probe) = 1
+if test (count $probe) -gt 0
     printf '\n%s\n' $probe >>$profile_summary
 else
     printf '\nLoader capability report unavailable (command status %s); see loader-probe.stderr.\n' $probe_status >>$profile_summary

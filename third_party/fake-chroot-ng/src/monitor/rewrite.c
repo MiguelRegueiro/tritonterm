@@ -229,74 +229,98 @@ static int stack_teardown(unsigned long a, unsigned long floor,
 /* Scan [lo,hi) for sites, never reading below `floor` for context. `verify`
  * asks for the syscall-context filter, which the caller sets when it has no
  * code map to trust. */
+static int rewrite_one(unsigned long a, unsigned long floor, unsigned long hi,
+                    int verify, unsigned long pool, unsigned long cap,
+                    unsigned long *used) {
+    if (*(uint32_t *)a != SVC0_INSN) return 0;
+    /* Never rewrite a signal-return site (`mov x8,#139; svc 0` — the
+     * sa_restorer every handler returns through): rt_sigreturn must
+     * execute with sp still at the kernel's signal frame, which a
+     * trampoline call abandons — the kernel then restores a garbage
+     * context (SIGSEGV on the first signal, e.g. a shell's SIGCHLD).
+     * It carries no path anyway; leave it for the kernel. */
+    if (a >= floor + 4) {
+        uint32_t prev = *(uint32_t *)(a - 4);
+        if ((prev & MOVZ_X8_MASK) == MOVZ_X8 &&
+            ((prev >> 5) & 0xFFFFu) == NR_RT_SIGRETURN)
+            return 0;
+    }
+
+    /* Nor the pair a thread uses to free its own stack. A trampoline builds
+     * its frame on the caller's stack and reads every register back from
+     * it, and here that stack is the very thing the first call removes:
+     * the thread came back from the munmap to a frame that was no longer
+     * mapped (SEGV, which with the default action takes the whole process
+     * with it — every musl thread that is detached, as the JVM's all are,
+     * and every bionic one, died so on its way out under -R). Neither
+     * call is one the filter traps, so left native they behave as they
+     * always did. */
+    if (stack_teardown(a, floor, hi))
+        return 0;
+
+    /* No code map: the word is a syscall only if something nearby put a
+     * number in x8. Costs the ~3% of real sites that load it from further
+     * away (they keep the SIGSYS floor) and rejects data that collides
+     * with the encoding, which is the trade this direction is worth. */
+    if (verify) {
+        int seen = 0;
+        for (int k = 1; k <= X8_LOOKBACK; k++) {
+            if (a < floor + 4UL * (unsigned long)k)
+                break;
+            if (writes_x8(*(uint32_t *)(a - 4UL * (unsigned long)k))) {
+                seen = 1;
+                break;
+            }
+        }
+        if (!seen)
+            return 0;
+    }
+
+    /* Reachability of the next slot from this site via a `b`. The way back
+     * is checked inside emit(), against the same limit from a few dozen
+     * bytes further along, so a site right at the edge of reach is left to
+     * the SIGSYS floor rather than half-rewritten. */
+    uint32_t br = b_insn(a, pool + *used);
+    if (!br)
+        return 0; /* leave for the SIGSYS floor */
+    if (*used + cng_tramp_size() > cap)
+        return 0; /* pool exhausted: so is every site after this one */
+    if (!emit(pool, cap, used, a + 4))
+        return 0; /* the way back is out of reach; the way out was not */
+
+    *(uint32_t *)a = br;
+    return 1;
+
+}
+
 static int scan(unsigned long lo, unsigned long hi, unsigned long floor,
                 int verify, unsigned long pool, unsigned long cap,
                 unsigned long *used) {
     int count = 0;
-    /* Round the start up, never down: with a code map, `lo` is a section's
-     * start, and rounding down would read the word before it. */
     for (unsigned long a = (lo + 3) & ~3UL; a + 4 <= hi; a += 4) {
-        if (*(uint32_t *)a != SVC0_INSN)
-            continue;
-
-        /* Never rewrite a signal-return site (`mov x8,#139; svc 0` — the
-         * sa_restorer every handler returns through): rt_sigreturn must
-         * execute with sp still at the kernel's signal frame, which a
-         * trampoline call abandons — the kernel then restores a garbage
-         * context (SIGSEGV on the first signal, e.g. a shell's SIGCHLD).
-         * It carries no path anyway; leave it for the kernel. */
-        if (a >= floor + 4) {
-            uint32_t prev = *(uint32_t *)(a - 4);
-            if ((prev & MOVZ_X8_MASK) == MOVZ_X8 &&
-                ((prev >> 5) & 0xFFFFu) == NR_RT_SIGRETURN)
-                continue;
-        }
-
-        /* Nor the pair a thread uses to free its own stack. A trampoline builds
-         * its frame on the caller's stack and reads every register back from
-         * it, and here that stack is the very thing the first call removes:
-         * the thread came back from the munmap to a frame that was no longer
-         * mapped (SEGV, which with the default action takes the whole process
-         * with it — every musl thread that is detached, as the JVM's all are,
-         * and every bionic one, died so on its way out under -R). Neither
-         * call is one the filter traps, so left native they behave as they
-         * always did. */
-        if (stack_teardown(a, floor, hi))
-            continue;
-
-        /* No code map: the word is a syscall only if something nearby put a
-         * number in x8. Costs the ~3% of real sites that load it from further
-         * away (they keep the SIGSYS floor) and rejects data that collides
-         * with the encoding, which is the trade this direction is worth. */
-        if (verify) {
-            int seen = 0;
-            for (int k = 1; k <= X8_LOOKBACK; k++) {
-                if (a < floor + 4UL * (unsigned long)k)
-                    break;
-                if (writes_x8(*(uint32_t *)(a - 4UL * (unsigned long)k))) {
-                    seen = 1;
-                    break;
-                }
-            }
-            if (!seen)
-                continue;
-        }
-
-        /* Reachability of the next slot from this site via a `b`. The way back
-         * is checked inside emit(), against the same limit from a few dozen
-         * bytes further along, so a site right at the edge of reach is left to
-         * the SIGSYS floor rather than half-rewritten. */
-        uint32_t br = b_insn(a, pool + *used);
-        if (!br)
-            continue; /* leave for the SIGSYS floor */
-        if (*used + cng_tramp_size() > cap)
-            break; /* pool exhausted: so is every site after this one */
-        if (!emit(pool, cap, used, a + 4))
-            continue; /* the way back is out of reach; the way out was not */
-
-        *(uint32_t *)a = br;
-        count++;
+        count += rewrite_one(a, floor, hi, verify, pool, cap, used);
+        if (*used + cng_tramp_size() > cap) break;
     }
+    return count;
+}
+
+int cng_rewrite_index(unsigned long lo, unsigned long hi, unsigned long foff,
+                      const struct cng_code_ranges *cr, unsigned long image,
+                      const unsigned long *sites, unsigned long nsites,
+                      unsigned long pool, unsigned long cap, unsigned long *used) {
+    struct cng_profile_span span = cng_profile_begin(CNG_P_REWRITE);
+    int count = 0;
+    for (unsigned long i = 0; cng_g_rewrite && i < nsites; i++) {
+        unsigned long at = image + sites[i];
+        if (at < lo || at + 4 > hi) continue;
+        int allowed = !cr->n;
+        unsigned long file = foff + at - lo;
+        for (int j = 0; !allowed && j < cr->n; j++)
+            if (file >= cr->lo[j] && file + 4 <= cr->hi[j]) allowed = 1;
+        if (allowed) count += rewrite_one(at, lo, hi, !cr->n, pool, cap, used);
+    }
+    cng_profile_add(CNG_P_REWRITE_SITES, count);
+    cng_profile_end(CNG_P_REWRITE, span);
     return count;
 }
 
