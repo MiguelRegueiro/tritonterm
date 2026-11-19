@@ -4343,13 +4343,14 @@ void cng_clone_convert(struct cng_uregs *ur) {
     CNG_SYS(__NR_rt_sigprocmask, 2 /*SIG_SETMASK*/, &mask, 0, 8, 0, 0);
 }
 
-/* An absolute, canonical rootfs name can be checked by the existing pinned
- * lstat without first readlink-walking every parent. The pin proves its
- * parent is symlink-free; an ordinary leaf then has the same stat/lstat.
+/* An absolute, canonical rootfs name can be checked by an existing pinned
+ * stat operation without first readlink-walking every parent. The pin proves
+ * its parent is symlink-free; an ordinary leaf has the same follow/nofollow
+ * answer. Extended requests retain the real kernel statx mask and fields.
  * Keep binds, zones, symlinks, errors and noncanonical names on the full path.
  * This is one-operation reuse, not a path cache. */
 static int stat_plain_absolute(const char *guest, char *host, size_t size,
-                                void *st) {
+                                void *st, int extended, unsigned flags, unsigned mask) {
     if (!cng_g_fs || !guest || guest[0] != '/' || !guest[1])
         return 0;
     if ((!strncmp(guest, "/proc", 5) && (!guest[5] || guest[5] == '/')) ||
@@ -4373,12 +4374,20 @@ static int stat_plain_absolute(const char *guest, char *host, size_t size,
     if (cng_fs_translate_mnt(view, guest, host, size, &mount) != 0 ||
         mount != CNG_MOUNT_ROOTFS)
         return 0;
-    long result = cng_pin_fstatat(host, st, CNG_AT_SYMLINK_NOFOLLOW);
+    long result = extended
+        ? cng_pin_statx(host, (int)flags | CNG_AT_SYMLINK_NOFOLLOW, mask, st)
+        : cng_pin_fstatat(host, st, CNG_AT_SYMLINK_NOFOLLOW);
+    if (result != 0)
+        return 0;
+    /* A filesystem may omit TYPE for a restricted statx mask. Only publish
+     * a shortcut answer when the kernel actually classified the leaf. */
+    if (extended && !(*(unsigned *)st & CNG_STATX_TYPE))
+        return 0;
+    unsigned mode = extended ? *(unsigned short *)((char *)st + STATX_MODE_OFF)
+                             : *(unsigned *)((char *)st + STAT_MODE_OFF);
     /* A concurrent chroot/view replacement invalidates the candidate. No
      * result has been published to the guest, so retry via normal resolution. */
-    return result == 0 &&
-        ((*(unsigned *)((char *)st + STAT_MODE_OFF) & CNG_S_IFMT) != 0120000u) &&
-        !cng_fs_read_retry(seq);
+    return (mode & CNG_S_IFMT) != 0120000u && !cng_fs_read_retry(seq);
 }
 
 /* One syscall, as cng_dispatch makes it the first time: see there for the
@@ -4991,7 +5000,7 @@ static long dispatch_1(long nr, long a0, long a1, long a2, long a3, long a4,
             char *hnf = b1;
             unsigned known = CNG_AT_SYMLINK_NOFOLLOW | CNG_AT_NO_AUTOMOUNT | CNG_AT_EMPTY_PATH;
             int fast = !((unsigned)a3 & ~known) &&
-                stat_plain_absolute((const char *)a1, hnf, sizeof b1, sb);
+                stat_plain_absolute((const char *)a1, hnf, sizeof b1, sb, 0, 0, 0);
             int probe = fast ? 2 :
                 cng_resolve_at(a0, (const char *)a1, 0, hnf, sizeof b1) == 0
                     ? cng_l2s_stat_probe(hnf, sb) : 0;
@@ -5057,11 +5066,17 @@ static long dispatch_1(long nr, long a0, long a1, long a2, long a3, long a4,
         int bounce = a4 && (cng_g_l2s || cng_g_fake_id || !cng_g_no_proc);
         char sx[STATX_BUF_SIZE];
         long ob = bounce ? (long)sx : a4;
-        int ordinary = 0;
+        int ordinary = 0, fast = 0;
         if (cng_g_l2s && a4) {
             char *hnf = b1;
-            int probe = cng_resolve_at(a0, (const char *)a1, 0, hnf, sizeof b1) == 0
-                ? cng_l2s_statx_probe(hnf, sx, (unsigned)a3, (unsigned)a2) : 0;
+            unsigned known = CNG_AT_SYMLINK_NOFOLLOW | CNG_AT_NO_AUTOMOUNT |
+                CNG_AT_EMPTY_PATH | 0x6000u; /* AT_STATX_FORCE_SYNC/DONT_SYNC */
+            fast = !((unsigned)a2 & ~known) &&
+                stat_plain_absolute((const char *)a1, hnf, sizeof b1, sx,
+                                    1, (unsigned)a2, (unsigned)a3);
+            int probe = fast ? 2 :
+                cng_resolve_at(a0, (const char *)a1, 0, hnf, sizeof b1) == 0
+                    ? cng_l2s_statx_probe(hnf, sx, (unsigned)a3, (unsigned)a2) : 0;
             ordinary = probe == 2;
             if (probe == 1) {
                 if (cng_g_fake_id)
@@ -5075,13 +5090,14 @@ static long dispatch_1(long nr, long a0, long a1, long a2, long a3, long a4,
             }
         }
         int deref = !((int)a2 & CNG_AT_SYMLINK_NOFOLLOW);
-        /* Reuse the nofollow path only for an ordinary object; statx still
-         * goes to the kernel with the guest's mask and synchronization flags. */
+        /* The shortcut already obtained the real statx answer with the
+         * requested mask and sync flags. Other ordinary objects reuse only
+         * the resolved path; special objects retain full translation. */
         const char *p = ordinary ? b1
             : xlate(a0, (const char *)a1, b1, sizeof b1, deref);
         if (xlate_bad(p))
             return xlate_errno(p);
-        long r = reissue(a0, (long)p, a2, a3, ob, a5, __NR_statx);
+        long r = fast ? 0 : reissue(a0, (long)p, a2, a3, ob, a5, __NR_statx);
         /* Refused by the host: see newfstatat above. */
         if (!cng_g_no_proc && a4 && cng_procfs_refused(r)) {
             char canon[CNG_PATH_MAX];
