@@ -1,4 +1,4 @@
 2b09608015a79b980ff1ccd8fd966d0e0158038ff0ca2d4280db9cc04a700249  app/src/main/jniLibs/arm64-v8a/libpr-cli.so
 e427c4fac91d18a197e6624e5907b408b1868f86de9022f06e8f39448b991fe1  app/src/main/jniLibs/arm64-v8a/libproot-loader.so
 d48dd7bbacf125d987d232dfa68acae032e5b68b2f898327a6418c0f47e49401  app/src/main/jniLibs/arm64-v8a/libproot.so
-6d36734f187554ed53f939943b92d5e9529529a7373e46ee23a95ee0bbc91eab  app/src/main/jniLibs/arm64-v8a/libchroot-ng.so
+2688cb14d73cb070ec8167f5b878cf77246f7aedf100a9cf342fdbefed27b8dd  app/src/main/jniLibs/arm64-v8a/libchroot-ng.so
