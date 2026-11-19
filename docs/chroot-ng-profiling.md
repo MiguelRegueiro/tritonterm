@@ -144,6 +144,40 @@ the existing broker does. Denial is reported without changing command output
 or exit status. A missing report is retained as unavailable by the collector.
 Nothing runs by default on normal commands or shell startup.
 
+### Expanded mapping probes in exp.39
+
+The same opt-in variable now emits four `TRITONTERM_CNG_LOADER_PROBE` JSON
+records with `v=2` and a `strategy` field. Each strategy gets its own native
+child, so denial, a signal or a timeout cannot prevent later strategies from
+being tested. The collector prints all records and still accepts the old
+single v1 report. Existing workload profile records remain schema v1.
+
+| Strategy | Experiment |
+| --- | --- |
+| `private_patch` | File mapping RW, private code modification, then RX; repeats the exp.38 failure point. |
+| `direct_rx` | Unmodified sealed file mapped RX directly, without a writable mapping. |
+| `read_rx` | Unmodified sealed file mapped read-only, then changed to RX. |
+| `hybrid` | Shared RX code branches into a page replaced with anonymous patched code, while an unchanged shared function and the sealed source retain their original values. |
+
+Every successful strategy reports stage 9 and verifies the sealed source
+bytes remain unchanged. Stage 5 is a file-mapping failure; stage 6 is the
+file mapping's RX transition. For hybrid, stages 17/18 identify anonymous
+replacement/RX, and 19/20 identify shared-entry/cross-mapping execution.
+The full stage table is in `cng/loader_probe.h`. Isolation and the approximately
+two-second timeout apply **per strategy** (up to about eight seconds for four
+stalled children). No mapping cache or guest-loading change is enabled.
+
+### Hybrid image loading in exp.40
+
+The app launcher now enables the [bounded hybrid image cache](hybrid-image-cache.md).
+New metrics report image hits, misses, fallbacks, loaded objects, copied patch
+bytes and timed image fetching. Candidate-index rewriting contributes to
+`rewrite` and `rewrite_sites` without a full-image `rewrite_bytes` scan.
+Client copy counters exclude broker image construction on cold misses; check
+hit/miss counts and external durations before making a latency claim.
+Guest `TRITONTERM_CNG_IMAGE_CACHE=0` provides a command-scoped control while
+the launcher's cache stays enabled for other commands.
+
 ## Host checks
 
 ```sh
@@ -191,3 +225,15 @@ The warning does not identify a syscall/path. The collector invokes chmod on
 its private report directory; set-ID execution, ownership changes and root
 mutations also reach explicit rejection paths in the current adapter. Full
 sudo/package-management support remains separate compatibility work.
+
+
+### Executable-image cache diagnostics (exp.41)
+
+The additive `image_cache` object reports `enabled`, `blocked`, `stage` and
+negative `error`. A platform refusal can suppress future cache requests in
+the inherited process lineage; explicit `TRITONTERM_CNG_IMAGE_CACHE=1`
+retries it when the launcher permits caching. `=0` bypasses the cache.
+Counters remain separate: `image_hits`/`image_misses` count accepted broker
+images, `image_objects` counts completed hybrid mappings, and `image_fetch`
+includes unsuccessful RPCs. Zero objects with unchanged `copied_bytes` is
+fallback, not a speedup. See [failure stages and the exp.40 phone result](hybrid-image-cache.md#exp40-phone-failure-and-exp41-correction).

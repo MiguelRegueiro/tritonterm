@@ -209,12 +209,14 @@ The optimized routine therefore skips data-cache cleaning on this phone;
 instruction-cache invalidation remains required.
 
 The isolated loader experiment reported stage 6, error -13, signal 0. The
-kernel denied the RW-to-RX transition for the privately patched sealed-memfd
-mapping. The command and subsequent collection continued normally. This
-rejects the exact mapping sequence tested, not every possible executable
+kernel denied an RW-to-RX transition in the private-mapping experiment.
+The v1 probe used stage 6 for both the patched mapping and a later fresh,
+unmodified mapping, so that result alone does not identify which transition
+was denied. The command and subsequent collection continued normally. This
+rejects the complete sequence tested, not every possible executable
 shared-memory strategy. No executable-image cache should be enabled from
-this result. A future narrow experiment should distinguish unchanged RX
-mapping from RX after private modification before choosing an architecture.
+this result. A narrow experiment must distinguish unchanged RX mapping from
+RX after private modification before choosing an architecture.
 
 The retained Elio sample measured 21.29 ms in scope, 18.35 ms to entry and
 17.39 ms in ELF mapping. Its child phase spans were 9.88 ms fill, 4.04 ms
@@ -229,3 +231,82 @@ below the first exp.37 collection's 148.11 and 163.27 ms, but the measurements
 are sequential and uncontrolled. The collection demonstrates active feature
 handling and a safely reported mapping denial, not a substantial proven
 overall latency improvement.
+
+## exp.39: discriminate mapping strategies before choosing a cache
+
+The native opt-in diagnostic now runs four independent strategies: the
+previous private-write/RX path, direct unmodified RX, read-only-to-RX, and a
+hybrid shared RX image with an anonymous patched page. The hybrid's shared
+entry branches across the mapping boundary, returning 42 before replacement
+and 43 afterward. An unchanged function in the shared page still returns 42,
+and the sealed backing bytes are verified unchanged. This is a capability
+experiment, not an executable-image cache or a modified guest loader.
+
+The private strategy checks source integrity through pread rather than
+attempting another executable mapping. Original-image execution is tested
+independently by the other strategies. This removes v1's stage-6 ambiguity
+between patched and unmodified RW-to-RX transitions.
+
+Each strategy receives its own bounded child and emits a v2 record containing
+its name. All four results are retained even when every child gets a native
+syscall denial, SIGSYS or a stalled syscall. The parent remains usable and
+the guest command retains its output/exit status. The Fish collector handles
+the four reports as well as a legacy single report and an unavailable probe.
+Profile workload timing and schema remain unchanged.
+
+The focused mapping checks pass for all four strategies under QEMU, including
+permission denial, trap denial, timeout cleanup and emulated exec activation.
+A standalone fixture links the actual probe code and exercises 4 KB and 16 KB
+logical page geometries, including the shared-to-anonymous branch. The local
+QEMU no longer supports the historical `-p` option, so the larger logical
+geometry is not claimed as a real 16 KB kernel or Android policy validation.
+No assertions are relaxed to accommodate that emulator limitation.
+
+Install exp.39 over exp.38, reopen the shell and run
+`fish /tmp/tritonterm-profile.fish`. The four named capability records are the
+main new evidence. Success of an unmodified shared strategy is required
+before implementing a cache that relies on it; failures at stage 5 or 6 must
+not be mistaken for success through anonymous execmap fallback. All mapping
+calls in this experiment use the raw native gate.
+
+For only the four capability results, without collecting workload timings,
+run this in a new chroot-ng shell after updating:
+
+```fish
+env TRITONTERM_CNG_LOADER_PROBE=1 /usr/bin/true
+```
+
+The variable is scoped to that command. No Python, compiler or additional
+package is needed on the phone. Missing output means the opted-in diagnostic
+did not run; it must not be treated as a successful capability check.
+
+Loader/cache fixtures, profile schema/output, collector compatibility,
+metadata and startup regression checks, and actual sudo/pacman install,
+upgrade and removal passed. The actual Arch `true` binary also produced all
+four success records with empty stdout and status zero under QEMU. Logs:
+`/tmp/tritonterm-exp39-{loader,profile,helper,runtime,startup,packages,true-probe}.log`.
+The broad suite completed with 1,407 passes, four known baseline failures
+(two lazy-rewriter assertions and two openat2 reference discrepancies), and
+38 skips; see `/tmp/tritonterm-exp39-upstream.log`.
+
+The exp.39 APK contains the tested runtime SHA-256
+`31fb9b132c2127329cdbfdc211a55cad4a0df199c3ee8766233d08014e0f11e8`
+and updated collector. The application ID and signing certificate match
+exp.38, version code is 202612039, and PRoot/pr-cli binaries are unchanged.
+APK SHA-256:
+`ae981447df463f14401a93ef08e1a4b9f3c8289a99b7009773e491f44cf0232e`.
+
+
+## Exp.40–41: broker image publication compatibility
+
+The exp.40 phone profile (`runtime-profile.RuyOrj`) showed two failed image
+fetches per command and no accepted/mapped cached image. The added work
+therefore regressed startup despite successful standalone hybrid probes.
+The extra read-only reopen of a sealed memfd was absent from those probes.
+Exp.41 removes it, preserves immutability through kernel seals, adds precise
+failure-stage/errno reporting and suppresses repeated platform failures in
+the inherited shell lineage. The ARM64 denied-reopen regression fails with
+exp.40 source and passes with exp.41. This proves that specific correction,
+not that reopening was the phone's actual denial; the next phone profile
+must verify successful cached objects and hits. See
+[implementation, policy rationale and diagnostics](hybrid-image-cache.md).
