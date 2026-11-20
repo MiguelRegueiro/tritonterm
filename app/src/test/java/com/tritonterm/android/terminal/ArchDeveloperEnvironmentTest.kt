@@ -11,7 +11,7 @@ import org.junit.Test
 class ArchDeveloperEnvironmentTest {
     @Test
     fun guestIdentitySmokeAssetParsesWithFish() {
-        listOf("arch-guest-identity-smoke.fish", "tritonterm-fish-system-config.fish").forEach { name ->
+        listOf("arch-guest-identity-smoke.fish", "tritonterm-fish-system-config.fish", "tritonterm-async-prompt.fish").forEach { name ->
             val script = File("src/main/assets/$name")
             assertTrue("The $name script must be packaged as an app asset", script.isFile)
             val process = ProcessBuilder("fish", "--no-execute", script.absolutePath)

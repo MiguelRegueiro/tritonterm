@@ -342,6 +342,9 @@ private val ELIO_KITTY_KEYMAP_INIT = """
             return ${'$'}elio_status
         end
     end
+    if status is-interactive; and test -r /tmp/tritonterm-async-prompt.fish
+        source /tmp/tritonterm-async-prompt.fish
+    end
 """.trimIndent()
 
 internal class AndroidShellBackend : TerminalBackend {
@@ -394,6 +397,11 @@ internal class ArchLinuxArmBackend : TerminalBackend {
         }
         context.assets.open("profile-chroot-ng.fish").use { source ->
             File(cache, "tritonterm-profile.fish").outputStream().use { destination ->
+                source.copyTo(destination)
+            }
+        }
+        context.assets.open("tritonterm-async-prompt.fish").use { source ->
+            File(cache, "tritonterm-async-prompt.fish").outputStream().use { destination ->
                 source.copyTo(destination)
             }
         }
