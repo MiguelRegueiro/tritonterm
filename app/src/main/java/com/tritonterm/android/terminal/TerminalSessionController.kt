@@ -704,12 +704,6 @@ internal class TritonSessionClient(private val context: Context) : TerminalSessi
         return true
     }
 
-    fun copyAllText(session: TerminalSession?): Boolean {
-        val text = TerminalClipboardSupport.allTerminalText(session?.emulator?.screen?.transcriptText) ?: return false
-        copyText(text)
-        return true
-    }
-
     fun pasteFromClipboard(session: TerminalSession?): Boolean {
         val manager = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
         val item = manager.primaryClip?.takeIf { it.itemCount > 0 }?.getItemAt(0)

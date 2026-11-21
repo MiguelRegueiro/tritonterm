@@ -344,6 +344,14 @@ public final class TerminalEmulator {
         return mScreen;
     }
 
+    /** Snapshot the current screen and retained scrollback on every copy action. */
+    public boolean copyAllTextToClipboard() {
+        String text = getScreen().getTranscriptText();
+        if (text.isEmpty()) return false;
+        mSession.onCopyTextToClipboard(text);
+        return true;
+    }
+
     public boolean isAlternateBufferActive() {
         return mScreen == mAltBuffer;
     }

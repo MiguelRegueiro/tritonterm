@@ -40,6 +40,4 @@ internal object TerminalClipboardSupport {
     }
 
     fun clipboardText(value: CharSequence?): String? = value?.toString()?.takeIf(String::isNotEmpty)
-
-    fun allTerminalText(value: CharSequence?): String? = value?.toString()?.trimEnd()?.takeIf(String::isNotEmpty)
 }

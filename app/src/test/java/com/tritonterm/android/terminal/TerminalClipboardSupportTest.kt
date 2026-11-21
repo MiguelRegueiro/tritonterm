@@ -25,10 +25,4 @@ class TerminalClipboardSupportTest {
         assertNull(TerminalClipboardSupport.clipboardText(null))
         assertNull(TerminalClipboardSupport.clipboardText(""))
     }
-
-    @Test
-    fun selectAllTextRetainsInteriorLinesAndUnicode() {
-        assertEquals("αrch\nsecond line", TerminalClipboardSupport.allTerminalText("αrch\nsecond line  \n"))
-        assertNull(TerminalClipboardSupport.allTerminalText("  \n"))
-    }
 }

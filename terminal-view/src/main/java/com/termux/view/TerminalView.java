@@ -32,6 +32,7 @@ import android.view.inputmethod.BaseInputConnection;
 import android.view.inputmethod.EditorInfo;
 import android.view.inputmethod.InputConnection;
 import android.widget.OverScroller;
+import android.widget.Toast;
 
 import androidx.annotation.RequiresApi;
 
@@ -1111,6 +1112,16 @@ public final class TerminalView extends View {
         return mTermSession;
     }
 
+    /** Copy a fresh transcript from the attached session, never a captured session or selection. */
+    public void copyAllText() {
+        TerminalSession session = getCurrentSession();
+        TerminalEmulator emulator = session == null ? null : session.getEmulator();
+        boolean copied = emulator != null && emulator.copyAllTextToClipboard();
+        stopTextSelectionMode(true);
+        Toast.makeText(getContext(), copied ? R.string.all_terminal_text_copied :
+            R.string.no_terminal_text_to_copy, Toast.LENGTH_SHORT).show();
+    }
+
     private CharSequence getText() {
         return mEmulator.getScreen().getSelectedText(0, mTopRow, mEmulator.mColumns, mTopRow + mEmulator.mRows);
     }
@@ -1366,10 +1377,6 @@ public final class TerminalView extends View {
         getTextSelectionCursorController().show(event);
     }
 
-    private boolean hideTextSelectionCursors() {
-        return getTextSelectionCursorController().hide();
-    }
-
     private void renderTextSelection() {
         if (mTextSelectionCursorController != null)
             mTextSelectionCursorController.render();
@@ -1403,7 +1410,11 @@ public final class TerminalView extends View {
     }
 
     public void stopTextSelectionMode() {
-        if (hideTextSelectionCursors()) {
+        stopTextSelectionMode(false);
+    }
+
+    private void stopTextSelectionMode(boolean force) {
+        if (getTextSelectionCursorController().hide(force)) {
             mClient.copyModeChanged(isSelectingText());
             invalidate();
         }

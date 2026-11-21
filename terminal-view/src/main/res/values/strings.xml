@@ -1,5 +1,7 @@
 <resources>
   <string name="paste_text">Paste</string>
   <string name="copy_text">Copy</string>
-  <string name="text_selection_more">More…</string>
+  <string name="copy_all_text">Copy all</string>
+  <string name="all_terminal_text_copied">All terminal text copied</string>
+  <string name="no_terminal_text_to_copy">No terminal text to copy</string>
 </resources>

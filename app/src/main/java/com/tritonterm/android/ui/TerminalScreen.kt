@@ -521,12 +521,9 @@ internal fun TerminalScreen() {
                             }
                         }
                         setOnCreateContextMenuListener { menu, _, _ ->
-                            menu.add(Menu.NONE, Menu.FIRST, Menu.NONE, "Select All")
+                            menu.add(Menu.NONE, Menu.FIRST, Menu.NONE, com.termux.view.R.string.copy_all_text)
                                 .setOnMenuItemClickListener {
-                                    stopTextSelectionMode()
-                                    val copied = sessionClient.copyAllText(currentSession)
-                                    if (!copied) Toast.makeText(context, "No terminal text to copy", Toast.LENGTH_SHORT).show()
-                                    else Toast.makeText(context, "All terminal text copied", Toast.LENGTH_SHORT).show()
+                                    copyAllText()
                                     true
                                 }
                         }

@@ -30,7 +30,7 @@ public class TextSelectionCursorController implements CursorController {
     private ActionMode mActionMode;
     private final int ACTION_COPY = 1;
     private final int ACTION_PASTE = 2;
-    private final int ACTION_MORE = 3;
+    private final int ACTION_COPY_ALL = 3;
 
     public TextSelectionCursorController(TerminalView terminalView) {
         this.terminalView = terminalView;
@@ -53,12 +53,16 @@ public class TextSelectionCursorController implements CursorController {
 
     @Override
     public boolean hide() {
+        return hide(false);
+    }
+
+    public boolean hide(boolean force) {
         if (!isActive()) return false;
 
         // prevent hide calls right after a show call, like long pressing the down key
         // 300ms seems long enough that it wouldn't cause hide problems if action button
         // is quickly clicked after the show, otherwise decrease it
-        if (System.currentTimeMillis() - mShowStartTime < 300) {
+        if (!force && System.currentTimeMillis() - mShowStartTime < 300) {
             return false;
         }
 
@@ -112,9 +116,12 @@ public class TextSelectionCursorController implements CursorController {
                 int show = MenuItem.SHOW_AS_ACTION_IF_ROOM | MenuItem.SHOW_AS_ACTION_WITH_TEXT;
 
                 ClipboardManager clipboard = (ClipboardManager) terminalView.getContext().getSystemService(Context.CLIPBOARD_SERVICE);
-                menu.add(Menu.NONE, ACTION_COPY, Menu.NONE, R.string.copy_text).setShowAsAction(show);
-                menu.add(Menu.NONE, ACTION_PASTE, Menu.NONE, R.string.paste_text).setEnabled(clipboard.hasPrimaryClip()).setShowAsAction(show);
-                menu.add(Menu.NONE, ACTION_MORE, Menu.NONE, R.string.text_selection_more);
+                // Keep the full-transcript action directly available, ahead of
+                // optional actions if Android has to overflow a narrow toolbar.
+                menu.add(Menu.NONE, ACTION_COPY_ALL, 0, R.string.copy_all_text)
+                    .setShowAsAction(MenuItem.SHOW_AS_ACTION_ALWAYS | MenuItem.SHOW_AS_ACTION_WITH_TEXT);
+                menu.add(Menu.NONE, ACTION_COPY, 1, R.string.copy_text).setShowAsAction(show);
+                menu.add(Menu.NONE, ACTION_PASTE, 2, R.string.paste_text).setEnabled(clipboard.hasPrimaryClip()).setShowAsAction(show);
                 return true;
             }
 
@@ -140,9 +147,8 @@ public class TextSelectionCursorController implements CursorController {
                         terminalView.stopTextSelectionMode();
                         terminalView.mTermSession.onPasteTextFromClipboard();
                         break;
-                    case ACTION_MORE:
-                        terminalView.stopTextSelectionMode(); //we stop text selection first, otherwise handles will show above popup
-                        terminalView.showContextMenu();
+                    case ACTION_COPY_ALL:
+                        terminalView.copyAllText();
                         break;
                 }
 
