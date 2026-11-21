@@ -1,0 +1,103 @@
+"$schema" = 'https://starship.rs/config-schema.json'
+
+add_newline = false
+
+format = """
+$cmd_duration\
+[](fg:overlay0)\
+$directory\
+[](fg:overlay0 bg:git)\
+$git_branch$git_status\
+[](fg:git bg:runtime)\
+$python$nodejs$rust$golang$docker_context\
+[](fg:runtime bg:time_bg)\
+$time\
+[](fg:time_bg)\
+$line_break$status$character"""
+
+palette = "prompt"
+
+[cmd_duration]
+min_time = 1000
+format = "[$duration]($style)\n"
+style = "fg:lavender"
+
+[directory]
+style = "fg:foreground bg:overlay0"
+format = "[ $path ]($style)"
+# Keep the prompt narrow on a phone while retaining useful path context.
+truncation_length = 3
+truncate_to_repo = false
+home_symbol = "~"
+
+[git_branch]
+symbol = ""
+style = "bg:git fg:foreground"
+format = '[ $symbol $branch ]($style)'
+
+[git_status]
+style = "bg:git fg:foreground"
+format = '([$all_status$ahead_behind]($style))'
+modified = "*"
+staged = "+"
+untracked = "?"
+stashed = ""
+ahead = "↑"
+behind = "↓"
+diverged = "↕"
+conflicted = "!"
+
+[python]
+symbol = ""
+style = "bg:runtime fg:foreground"
+format = '[ $symbol $version ]($style)'
+
+[nodejs]
+symbol = ""
+style = "bg:runtime fg:foreground"
+format = '[ $symbol $version ]($style)'
+
+[rust]
+symbol = ""
+style = "bg:runtime fg:foreground"
+format = '[ $symbol $version ]($style)'
+
+[golang]
+symbol = ""
+style = "bg:runtime fg:foreground"
+format = '[ $symbol $version ]($style)'
+
+[docker_context]
+symbol = ""
+style = "bg:runtime fg:foreground"
+format = '[ $symbol $context ]($style)'
+
+[time]
+disabled = false
+time_format = "%H:%M"
+style = "bg:time_bg fg:foreground"
+format = '[ $time ]($style)'
+
+# Prompt character
+[character]
+success_symbol = '[➜](bold fg:phone)'
+error_symbol = '[➜](bold fg:phone)'
+
+[status]
+disabled = false
+map_symbol = true
+symbol = "✘"
+sigint_symbol = ""
+style = "bold fg:error"
+format = '([$symbol]($style) )'
+
+# ---------- Prompt Palette ----------
+[palettes.prompt]
+overlay0 = "#373039"       # Surrounding charcoal
+git = "#C48604"             # Phone Git segment
+runtime = "#A96800"         # Runtime/tool versions
+time_bg = "#28222A"         # Time segment and end cap
+lavender = "#9a9fe1"        # Command duration
+phone = "#DEA016"           # Prompt arrow accent
+error = "#ff0000"
+foreground = "#d4d6e0"      # Prompt text

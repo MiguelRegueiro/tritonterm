@@ -241,3 +241,45 @@ also rendered through the adapter without compatibility fallback.
 After installing exp.43, the user confirmed that holding Enter no longer
 piles up prompts. This validates the interaction fix on the phone, without
 claiming an additional measured Cargo or backend filesystem speedup.
+
+## exp.47: pending appearance for the supplied theme
+
+A new directory invalidates the old prompt snapshot. The previous neutral
+`path …` placeholder briefly looked like a different shell before Starship
+repainted it. The supplied theme now has a lightweight pending frame with the
+same rounded segments, palette, two-line layout and prompt arrow. Fish inserts
+the current directory with home abbreviation and three-component truncation.
+Git/Rust segments remain empty and the time cell shows a waiting marker, so
+no previous repository's information is presented as current. Failure status
+is shown numerically; slow commands reserve a pending duration line.
+
+ANSI pieces are prepared once with builtins at shell setup. Pending rendering
+uses builtins only: there is no additional Starship invocation, directory scan,
+path probe, or asynchronous worker. The full configured Starship prompt still
+replaces it when ready, with the existing coalescing, context validation,
+timeout, transient, job and input-buffer behavior.
+
+The app copies a reference `tritonterm-starship-theme.toml` into its existing
+`/tmp` binding. A unit test keeps it byte-identical to the rootfs's source
+configuration. Only an exact content match enables the supplied frame; custom
+configurations immediately retain the neutral pending fallback. No installed
+Fish/Starship configuration or Arch image is changed. This is a supplied-theme
+preview, not an interpreter for arbitrary Starship layouts. The one-time
+preparation is simpler than regenerating the fixed theme in every shell's
+background worker and avoids extra runtime executable work.
+
+PTY coverage checks palette/layout consistency with the source configuration,
+current truncated Unicode/space-containing paths, home/root paths, control-
+character sanitization, status and duration shape, command responsiveness
+during a slow refresh, and changing away from the supplied theme. Existing
+rapid-Enter, multiline paste, pipeline/status, jobs, context coalescing, repaint,
+timeout/recovery, cleanup and synchronous fallback checks remain enabled.
+
+Exp.47 validation: all 26 real-PTY checks passed with the installed Starship
+1.26 initialization and saved 1.27 initialization. App tests report 70 passed
+and one skipped. Package/signature checks confirm the local development signer,
+version code 202612047, exact tested helper/reference assets and native libraries
+byte-identical to exp.46. No native runtime rebuild or Arch migration is needed.
+The signed update is `dist/tritonterm-2026.11.15.1-exp.47.apk`, SHA-256
+`6d65f5513d4ff9aba5803f69dc61aa2d546e44d05f975959a2ad1316b15586ae`.
+Phone validation of the visual transition is pending.

@@ -405,6 +405,11 @@ internal class ArchLinuxArmBackend : TerminalBackend {
                 source.copyTo(destination)
             }
         }
+        context.assets.open("tritonterm-starship-theme.toml").use { source ->
+            File(cache, "tritonterm-starship-theme.toml").outputStream().use { destination ->
+                source.copyTo(destination)
+            }
+        }
         if (performanceStatsEnabled()) {
             context.assets.open("measure-proot.py").use { source ->
                 File(cache, "tritonterm-measure-proot.py").outputStream().use { destination ->

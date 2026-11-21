@@ -37,9 +37,9 @@ log('end')
 '''
 
 class Shell:
-    def __init__(self, folder, init_script=None, custom=False, optout=False, wrapped=False):
+    def __init__(self, folder, init_script=None, custom=False, optout=False, wrapped=False, theme=False):
         self.work=folder;folder.mkdir();self.log=folder/'calls';self.control=folder/'control';self.config=folder/'starship.toml'
-        self.control.write_text('{}');self.config.write_text('format="$character"\n# A\n')
+        self.control.write_text('{}');self.config.write_text((ROOT/'scripts/arch-image/starship.toml').read_text() if theme else 'format="$character"\n# A\n')
         wrapper=folder/'starship';wrapper.write_text(MOCK);wrapper.chmod(0o755)
         original=Path(init_script).read_text() if init_script else subprocess.check_output(['starship','init','fish','--print-full-init'],text=True)
         import re
@@ -191,6 +191,65 @@ def main():
             assert b'warning: An error occurred' not in s.data
         finally:
             if s.process.poll() is None:s.close()
+        s=Shell(work/'themed',args.init_script,theme=True)
+        try:
+            import re, tomllib
+            def plain(text):return re.sub(r'\x1b\[[0-?]*[ -/]*[@-~]', '', text)
+            def quote(path):
+                return subprocess.check_output(['fish','--no-config','-c','string escape -- $argv',str(path)],text=True).rstrip('\n')
+            s.ready();s.mode(delay=1.2)
+            destination=work/'one/two/three with spaces/雪';destination.mkdir(parents=True)
+            offset=len(s.data);before=len(s.records());s.send('cd '+quote(destination))
+            s.wait(lambda:any(r['event']=='start' and r['cwd']==str(destination) for r in s.records()[before:]))
+            assert ''.encode() in s.data[offset:]
+            preview=work/'preview';s.send(f'__triton_prompt_pending 7 0 >{preview}')
+            s.wait(lambda:preview.exists() and '➜' in preview.read_text())
+            frame=preview.read_text()
+            assert plain(frame)==' two/three with spaces/雪  … \n[7] ➜ ',repr(plain(frame))
+            theme=tomllib.loads(s.config.read_text())
+            assert theme['format']==('$cmd_duration[](fg:overlay0)$directory[](fg:overlay0 bg:git)'
+                '$git_branch$git_status[](fg:git bg:runtime)$python$nodejs$rust$golang$docker_context'
+                '[](fg:runtime bg:time_bg)$time[](fg:time_bg)$line_break$status$character')
+            assert theme['directory']['truncation_length']==3 and theme['directory']['truncate_to_repo'] is False
+            assert theme['directory']['home_symbol']=='~' and theme['directory']['format']=='[ $path ]($style)'
+            assert theme['character']['success_symbol']==theme['character']['error_symbol']=='[➜](bold fg:phone)'
+            palette=theme['palettes']['prompt']
+            for name in ('overlay0','git','runtime','time_bg','foreground','phone','error'):
+                color=palette[name].lstrip('#');rgb=';'.join(str(int(color[n:n+2],16)) for n in (0,2,4))
+                assert rgb in frame,(name,frame)
+            print('PASS pending app-theme frame retains palette, two-line shape, status and current truncated Unicode path',flush=True)
+            marker=work/'themed-input';start=time.monotonic();s.send(f'printf alive >{marker}')
+            s.wait(marker.exists,timeout=.8);assert time.monotonic()-start<.8
+            s.wait(lambda:any(r['event']=='end' and r['cwd']==str(destination) for r in s.records()[before:]))
+            s.pump(1.4)
+            s.mode(delay=.08)
+            duration=work/'duration';s.send(f'__triton_prompt_pending 0 1200 >{duration}')
+            s.wait(lambda:duration.exists() and '➜' in duration.read_text())
+            assert plain(duration.read_text()).startswith('…\n ')
+            assert '[0]' not in plain(duration.read_text())
+            color=palette['lavender'].lstrip('#')
+            assert ';'.join(str(int(color[n:n+2],16)) for n in (0,2,4)) in duration.read_text()
+            print('PASS pending rendering stays responsive and reserves the slow-command duration line',flush=True)
+            for directory,expected in [(os.environ['HOME'],'~'),('/','/')]:
+                path_preview=work/'path-preview';path_preview.unlink(missing_ok=True)
+                s.send(f'cd {quote(directory)}; __triton_prompt_pending_path >{path_preview}')
+                s.wait(lambda:path_preview.exists() and bool(path_preview.read_text()))
+                assert path_preview.read_text()==expected,path_preview.read_text()
+            print('PASS pending paths abbreviate home and retain the root directory',flush=True)
+
+            unsafe=work/'line\n\x1b[31m';unsafe.mkdir()
+            s.send('cd '+quote(unsafe));s.pump(.3)
+            control=work/'control-preview';s.send(f'__triton_prompt_pending 0 0 >{control}')
+            s.wait(lambda:control.exists() and '➜' in control.read_text())
+            text=plain(control.read_text());assert 'line??[31m' in text,repr(text)
+            assert text.count('\n')==1,repr(text)
+            print('PASS pending directory names cannot inject terminal controls or extra lines',flush=True)
+            s.config.write_text('format="$character"\n# custom theme\n');s.mode(delay=1.2)
+            offset=len(s.data);before=len(s.records());s.send('cd '+quote(destination))
+            s.wait(lambda:any(r['event']=='start' and r['cwd']==str(destination) for r in s.records()[before:]))
+            assert ''.encode() not in s.data[offset:]
+            print('PASS changing to a custom config immediately disables the app-specific pending frame',flush=True)
+        finally:s.close()
         for label,kwargs in [('custom',{'custom':True}),('wrapped',{'wrapped':True}),('optout',{'optout':True})]:
             s=Shell(work/label,args.init_script,**kwargs)
             try:

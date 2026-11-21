@@ -74,6 +74,40 @@ function __triton_prompt_status -a value
     return $value
 end
 
+# The supplied theme has a fixed frame and a three-component directory module.
+# This contains no directory probes or executable calls. Keep unusual pathname
+# control characters from being interpreted as terminal control sequences.
+function __triton_prompt_pending_path
+    set -l display (string replace -ra '[\x00-\x1f\x7f-\x9f]' '?' -- "$PWD")
+    if test "$PWD" = "$HOME"
+        set display '~'
+    else
+        set -l prefix "$HOME/"
+        set -l length (string length -- "$prefix")
+        if test (string sub -l $length -- "$display") = "$prefix"
+            set display '~/'(string sub -s (math $length + 1) -- "$display")
+        end
+    end
+    set -l parts (string split / -- "$display")
+    if test (count $parts) -gt 3
+        set display (string join / -- $parts[-3..-1])
+    end
+    printf '%s' "$display"
+end
+
+function __triton_prompt_pending -a code duration
+    # Reserve the same extra line as the supplied duration module after a slow
+    # command. A waiting marker avoids presenting an old command's duration.
+    if string match -rq '^\d+$' -- "$duration"; and test "$duration" -ge 1000
+        printf '\e[38;2;154;159;225m…\e[0m\n'
+    end
+    printf '%s%s%s\n' "$__triton_prompt_theme_prefix" (__triton_prompt_pending_path) "$__triton_prompt_theme_suffix"
+    if test "$code" != 0
+        printf '\e[1;38;2;255;0;0m[%s]\e[0m ' "$code"
+    end
+    printf '%s' "$__triton_prompt_theme_arrow"
+end
+
 # Reconstruct status/pipestatus immediately before calling the original function.
 function __triton_prompt_sync -a side code pipes
     set -e argv[1..3]
@@ -207,8 +241,12 @@ function __triton_prompt_draw -a code pipes
         printf '%s' "$__triton_prompt_left"
     else
         # A different directory/status never displays an old context as current.
-        test "$code" = 0; or printf '[%s] ' "$code"
-        printf '%s … ' (string escape -- "$PWD")
+        if test -n "$__triton_prompt_theme_config"; and test "$config[2]" = "$__triton_prompt_theme_config"
+            __triton_prompt_pending "$code" "$duration"
+        else
+            test "$code" = 0; or printf '[%s] ' "$code"
+            printf '%s … ' (string escape -- "$PWD")
+        end
     end
 end
 
@@ -259,6 +297,19 @@ function __triton_prompt_setup --on-event fish_prompt
     set -g __triton_prompt_completed ''
     set -g __triton_prompt_right_config ''
     set -g __triton_prompt_right_enabled 1
+    # A bundled reference gates this frame to the exact supplied configuration;
+    # arbitrary user themes retain the existing neutral fallback. Cache the ANSI
+    # pieces once, using builtins only, with no Starship work on the input path.
+    set -g __triton_prompt_theme_config ''
+    set -l reference (path dirname "$__triton_prompt_script")/tritonterm-starship-theme.toml
+    if test -r "$reference"
+        set -l text
+        read -z text <"$reference"
+        set -g __triton_prompt_theme_config (string escape -- "$text")
+        set -g __triton_prompt_theme_prefix (printf '\e[0m\e[38;2;55;48;57m\e[48;2;55;48;57;38;2;212;214;224m ')
+        set -g __triton_prompt_theme_suffix (printf ' \e[0m\e[48;2;196;134;4;38;2;55;48;57m\e[0m\e[48;2;169;104;0;38;2;196;134;4m\e[0m\e[48;2;40;34;42;38;2;169;104;0m\e[48;2;40;34;42;38;2;212;214;224m … \e[0m\e[38;2;40;34;42m\e[0m')
+        set -g __triton_prompt_theme_arrow (printf '\e[1;38;2;222;160;22m➜\e[0m ')
+    end
     functions -c fish_prompt __triton_prompt_original_left
     functions -c fish_right_prompt __triton_prompt_original_right
     function fish_prompt --description 'TritonTerm bounded starship prompt'
