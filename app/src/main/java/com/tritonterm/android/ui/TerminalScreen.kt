@@ -16,8 +16,10 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.defaultMinSize
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.fillMaxHeight
@@ -421,23 +423,34 @@ internal fun TerminalScreen() {
         ) {
         val currentSession = session
         val terminalInteractive = setupReady && currentSession != null
+        val topActionModifier = Modifier.defaultMinSize(minWidth = 48.dp)
+        val topActionPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp)
         Row(
             Modifier
                 .fillMaxWidth()
                 .height(32.dp)
-                .padding(horizontal = 12.dp),
+                .padding(horizontal = 4.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
             Spacer(Modifier.weight(1f))
-            TextButton(onClick = {
-                configText = configFile.readText()
-                showConfig = true
-            }) { Text("Config", fontSize = 12.sp) }
-            TextButton(onClick = openDiagnostics) { Text("Logs", fontSize = 12.sp) }
+            TextButton(
+                onClick = {
+                    configText = configFile.readText()
+                    showConfig = true
+                },
+                modifier = topActionModifier,
+                contentPadding = topActionPadding
+            ) { Text("Config", fontSize = 12.sp) }
+            TextButton(
+                onClick = openDiagnostics,
+                modifier = topActionModifier,
+                contentPadding = topActionPadding
+            ) { Text("Logs", fontSize = 12.sp) }
             if (terminalInteractive) {
                 TextButton(
                     onClick = toggleKeyboardMode,
-                    modifier = Modifier.semantics {
+                    contentPadding = topActionPadding,
+                    modifier = topActionModifier.semantics {
                         contentDescription = if (useSystemKeyboard) "Switch to the built-in keyboard" else "Switch to the Android keyboard"
                     }
                 ) {
@@ -445,7 +458,8 @@ internal fun TerminalScreen() {
                 }
                 TextButton(
                     onClick = toggleKeyboardVisibility,
-                    modifier = Modifier.semantics {
+                    contentPadding = topActionPadding,
+                    modifier = topActionModifier.semantics {
                         contentDescription = if (keyboardVisible) "Hide the keyboard" else "Show the keyboard"
                     }
                 ) {
