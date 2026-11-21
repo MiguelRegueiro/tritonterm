@@ -237,3 +237,32 @@ Counters remain separate: `image_hits`/`image_misses` count accepted broker
 images, `image_objects` counts completed hybrid mappings, and `image_fetch`
 includes unsuccessful RPCs. Zero objects with unchanged `copied_bytes` is
 fallback, not a speedup. See [failure stages and the exp.40 phone result](hybrid-image-cache.md#exp40-phone-failure-and-exp41-correction).
+
+### Filesystem diagnostics (exp.44)
+
+The statx path counters classify intercepted requests as `statx_absolute`,
+`statx_cwd` (relative to AT_FDCWD), `statx_dirfd`, or `statx_empty` (including a
+null pathname). The matching disposition is `statx_reuse_abs`,
+`statx_reuse_resolved`, `statx_reuse_error` (ENOENT/ENOTDIR), or `statx_fallback`.
+Both category sums count visits to the statx handler. In ordinary successful
+workloads they match the intercepted statx count; an early argument-copy
+failure can precede the handler, and fake-root DAC retries can visit it more
+than once. Fallback includes emulated links and errors, not only expensive
+successful calls. These counters do not log names.
+
+`metadata_open_ok`, `metadata_absent` (ENOENT), and `metadata_open_error`
+partition `metadata_opens` attempts. `metadata_parsed` counts successfully
+parsed records, excluding validated cache hits. `metadata_collision` counts
+lookups finding a different nonempty slot key; `metadata_admission` counts
+successful publication of a validated positive record. These are operation
+counts, not unique files, exclusive times, or proof of a cache-size benefit.
+
+`copy_pvm` and `copy_memfd` count copyin/copyout attempts using their selected
+mechanism. A memfd attempt can fall through to the prior probe/copy fallback;
+it is not a count of successful descriptor transfers. QEMU's fallback must
+not be used to infer which mechanism Android selects.
+
+The report buffer now accommodates all metrics at maximum integer width.
+The syscall histogram can still set `truncated:1`; the resulting record must
+remain complete JSON. Tests exercise this boundary. Normal commands with
+profiling disabled still produce no diagnostics.

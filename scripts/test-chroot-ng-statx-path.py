@@ -18,6 +18,7 @@ def main():
     parser.add_argument('--guest-cc', required=True)
     parser.add_argument('--runtime', type=Path, default=PROJECT / 'app/src/main/jniLibs/arm64-v8a/libchroot-ng.so')
     parser.add_argument('--baseline-runtime', type=Path)
+    parser.add_argument('--resolved-baseline-runtime', type=Path, help='Optional exp.42/43 runtime for relative result reuse counts')
     args = parser.parse_args()
     resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
     with tempfile.TemporaryDirectory(prefix='cng-statx-path-') as folder:
@@ -99,26 +100,51 @@ def main():
             assert current['metrics']['pin'][0] < baseline['metrics']['pin'][0] * 3 // 4
             assert current['syscalls']['291'] == baseline['syscalls']['291'] == 1536
             print(f'PASS 1536 statx: probes {before} -> {after}, pins {baseline["metrics"]["pin"][0]} -> {current["metrics"]["pin"][0]}, unchanged metadata output', flush=True)
+        if args.resolved_baseline_runtime:
+            run(args.resolved_baseline_runtime, 'correctness'); reset_plain()
+        for mode in ('scan-relative', 'scan-dirfd', 'scan-missing'):
+            result = run(args.runtime, mode)
+            metrics = result['metrics']
+            assert result['syscalls']['291'] == 1536
+            assert sum(metrics[k][0] for k in ('statx_absolute', 'statx_cwd', 'statx_dirfd', 'statx_empty')) == 1536
+            assert sum(metrics[k][0] for k in ('statx_reuse_abs', 'statx_reuse_resolved', 'statx_reuse_error', 'statx_fallback')) == 1536
+            assert metrics['statx_reuse_error' if mode == 'scan-missing' else 'statx_reuse_resolved'][0] == 1536
+            assert metrics['metadata_open_ok'][0] + metrics['metadata_absent'][0] + metrics['metadata_open_error'][0] == metrics['metadata_opens'][0]
+            if args.resolved_baseline_runtime:
+                baseline = run(args.resolved_baseline_runtime, mode)
+                assert baseline['metrics']['pin'][0] - metrics['pin'][0] == 1536, (mode, baseline, result)
+                if mode == 'scan-missing':
+                    # Reusing ENOENT also avoids the second full resolution of
+                    # crate/src/absentN: three probes and one resolver per call.
+                    assert baseline['metrics']['path_probes'][0] - metrics['path_probes'][0] == 3 * 1536
+                    assert baseline['metrics']['resolve'][0] - metrics['resolve'][0] == 1536
+                else:
+                    assert baseline['metrics']['path_probes'][0] == metrics['path_probes'][0]
+                print(f'PASS {mode}: pins {baseline["metrics"]["pin"][0]} -> {metrics["pin"][0]}, probes {baseline["metrics"]["path_probes"][0]} -> {metrics["path_probes"][0]}, correct results', flush=True)
+            else:
+                print(f'PASS {mode}: 1536 reused results and consistent profile categories', flush=True)
         for runtime in ([args.baseline_runtime] if args.baseline_runtime else []) + [args.runtime]:
             p = subprocess.run([str(work / 'deny-statx')] + command(runtime, 'denied'),
                 env=env, capture_output=True, text=True, timeout=30)
             assert p.returncode == 0 and p.stdout.startswith('PASS'), p
         print('PASS kernel statx EPERM retains a working stat fallback', flush=True)
-        with tempfile.TemporaryFile(mode='w+t') as errors:
-            child = subprocess.Popen(command(args.runtime, 'live'), env=env, stdin=subprocess.PIPE,
-                stdout=subprocess.PIPE, stderr=errors, text=True)
-            try:
-                ready, _, _ = select.select([child.stdout], [], [], 30)
-                assert ready and child.stdout.readline().strip() == 'READY'
-                temporary = root / 'inside/replacement'; temporary.write_text('replacement')
-                temporary.replace(root / 'inside/file')
-                record(root / 'inside/file', mode='600', uid=789, gid=321)
-                child.stdin.write('\n'); child.stdin.flush()
-                out, _ = child.communicate(timeout=30); errors.seek(0)
-                assert child.returncode == 0 and out.startswith('PASS'), (out, errors.read())
-            finally:
-                if child.poll() is None: child.kill(); child.wait()
-        print('PASS same-process statx sees externally replaced inode and metadata', flush=True)
+        for live_mode in ('live', 'live-relative', 'live-dirfd'):
+            reset_plain()
+            with tempfile.TemporaryFile(mode='w+t') as errors:
+                child = subprocess.Popen(command(args.runtime, live_mode), env=env, stdin=subprocess.PIPE,
+                    stdout=subprocess.PIPE, stderr=errors, text=True)
+                try:
+                    ready, _, _ = select.select([child.stdout], [], [], 30)
+                    assert ready and child.stdout.readline().strip() == 'READY'
+                    temporary = root / 'inside/replacement'; temporary.write_text('replacement')
+                    temporary.replace(root / 'inside/file')
+                    record(root / 'inside/file', mode='600', uid=789, gid=321)
+                    child.stdin.write('\n'); child.stdin.flush()
+                    out, _ = child.communicate(timeout=30); errors.seek(0)
+                    assert child.returncode == 0 and out.startswith('PASS'), (out, errors.read())
+                finally:
+                    if child.poll() is None: child.kill(); child.wait()
+            print('PASS same-process statx sees externally replaced inode and metadata', flush=True)
         run(args.runtime, 'chroot')
         print('PASS statx follows changed filesystem view', flush=True)
         data = root / 'race/file'; data.write_text('safe')
@@ -139,9 +165,10 @@ def main():
         inode = data.stat().st_ino
         worker = threading.Thread(target=swap); worker.start()
         try:
-            p = subprocess.run(command(args.runtime, 'race', str(inode)), env=env,
-                capture_output=True, text=True, timeout=60)
-            assert p.returncode == 0 and p.stdout.startswith('PASS'), (p.returncode, p.stdout, p.stderr)
+            for race_mode in ('race', 'race-relative', 'race-dirfd'):
+                p = subprocess.run(command(args.runtime, race_mode, str(inode)), env=env,
+                    capture_output=True, text=True, timeout=60)
+                assert p.returncode == 0 and p.stdout.startswith('PASS'), (p.returncode, p.stdout, p.stderr)
         finally:
             stop.set(); worker.join(timeout=10)
         assert not failures and not worker.is_alive(), failures

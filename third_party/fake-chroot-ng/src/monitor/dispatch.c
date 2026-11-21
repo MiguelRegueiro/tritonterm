@@ -4349,9 +4349,8 @@ void cng_clone_convert(struct cng_uregs *ur) {
  * answer. Extended requests retain the real kernel statx mask and fields.
  * Keep binds, zones, symlinks, errors and noncanonical names on the full path.
  * This is one-operation reuse, not a path cache. */
-static int stat_plain_absolute(const char *guest, char *host, size_t size,
-                                void *st, int extended, unsigned flags, unsigned mask) {
-    if (!cng_g_fs || !guest || guest[0] != '/' || !guest[1])
+static int stat_plain_name(const char *guest) {
+    if (!guest || guest[0] != '/' || !guest[1])
         return 0;
     if ((!strncmp(guest, "/proc", 5) && (!guest[5] || guest[5] == '/')) ||
         (!strncmp(guest, "/dev", 4) && (!guest[4] || guest[4] == '/')))
@@ -4368,6 +4367,13 @@ static int stat_plain_absolute(const char *guest, char *host, size_t size,
         if (!*end) break;
         part = end + 1;
     }
+    return 1;
+}
+
+static int stat_plain_absolute(const char *guest, char *host, size_t size,
+                                void *st, int extended, unsigned flags, unsigned mask) {
+    if (!cng_g_fs || !stat_plain_name(guest))
+        return 0;
     const struct cng_fs *view;
     unsigned seq = cng_fs_read_begin(&view);
     int mount;
@@ -4388,6 +4394,36 @@ static int stat_plain_absolute(const char *guest, char *host, size_t size,
     /* A concurrent chroot/view replacement invalidates the candidate. No
      * result has been published to the guest, so retry via normal resolution. */
     return (mode & CNG_S_IFMT) != 0120000u && !cng_fs_read_retry(seq);
+}
+
+/* Resolution has already settled relative parents, binds and symlink hops.
+ * Reuse a real statx of an ordinary rootfs leaf instead of classifying it
+ * with lstat and pinning its parent again for statx. No spelling is cached.
+ * Reverse/forward translation must agree in the same unchanged view: a bind,
+ * zone, hidden link-store name, or concurrent chdir/chroot keeps its fallback. */
+static int statx_plain_resolved(const char *host, void *st, unsigned flags,
+                                 unsigned mask, unsigned resolved_seq) {
+    if (!cng_g_fs || cng_fs_read_retry(resolved_seq))
+        return 0;
+    const struct cng_fs *view;
+    unsigned seq = cng_fs_read_begin(&view);
+    char guest[CNG_PATH_MAX], roundtrip[CNG_PATH_MAX];
+    int mount;
+    if (cng_fs_untranslate(view, host, guest, sizeof guest) != 0 ||
+        !stat_plain_name(guest) ||
+        cng_fs_translate_mnt(view, guest, roundtrip, sizeof roundtrip, &mount) != 0 ||
+        mount != CNG_MOUNT_ROOTFS || strcmp(roundtrip, host))
+        return 0;
+    long result = cng_pin_statx(host, (int)flags | CNG_AT_SYMLINK_NOFOLLOW, mask, st);
+    /* Missing-name probes are common too. These kernel/pin errors need no
+     * buffer fixups or link interpretation; do not add a second classification
+     * on their fallback path. ELOOP and other refusals still need resolution. */
+    if (result == -ENOENT || result == -ENOTDIR)
+        return !cng_fs_read_retry(seq) && !cng_fs_read_retry(resolved_seq) ? (int)result : 0;
+    if (result != 0 || !(*(unsigned *)st & CNG_STATX_TYPE) ||
+        (*(unsigned short *)((char *)st + STATX_MODE_OFF) & CNG_S_IFMT) == 0120000u)
+        return 0;
+    return !cng_fs_read_retry(seq) && !cng_fs_read_retry(resolved_seq);
 }
 
 /* One syscall, as cng_dispatch makes it the first time: see there for the
@@ -5067,6 +5103,10 @@ static long dispatch_1(long nr, long a0, long a1, long a2, long a3, long a4,
         char sx[STATX_BUF_SIZE];
         long ob = bounce ? (long)sx : a4;
         int ordinary = 0, fast = 0;
+        const char *input = (const char *)a1;
+        cng_profile_add(!input || !input[0] ? CNG_P_STATX_EMPTY :
+            input[0] == '/' ? CNG_P_STATX_ABSOLUTE :
+            (int)a0 == CNG_AT_FDCWD ? CNG_P_STATX_CWD : CNG_P_STATX_DIRFD, 1);
         if (cng_g_l2s && a4) {
             char *hnf = b1;
             unsigned known = CNG_AT_SYMLINK_NOFOLLOW | CNG_AT_NO_AUTOMOUNT |
@@ -5074,11 +5114,30 @@ static long dispatch_1(long nr, long a0, long a1, long a2, long a3, long a4,
             fast = !((unsigned)a2 & ~known) &&
                 stat_plain_absolute((const char *)a1, hnf, sizeof b1, sx,
                                     1, (unsigned)a2, (unsigned)a3);
-            int probe = fast ? 2 :
-                cng_resolve_at(a0, (const char *)a1, 0, hnf, sizeof b1) == 0
-                    ? cng_l2s_statx_probe(hnf, sx, (unsigned)a3, (unsigned)a2) : 0;
+            if (fast)
+                cng_profile_add(CNG_P_STATX_REUSE_ABS, 1);
+            int probe = fast ? 2 : 0;
+            if (!fast) {
+                const struct cng_fs *view;
+                unsigned seq = cng_fs_read_begin(&view);
+                if (cng_resolve_at(a0, input, 0, hnf, sizeof b1) == 0) {
+                    int candidate = !((unsigned)a2 & ~known)
+                        ? statx_plain_resolved(hnf, sx, (unsigned)a2, (unsigned)a3, seq) : 0;
+                    if (candidate < 0) {
+                        cng_profile_add(CNG_P_STATX_REUSE_ERROR, 1);
+                        return candidate;
+                    }
+                    fast = candidate == 1;
+                    if (fast) {
+                        probe = 2;
+                        cng_profile_add(CNG_P_STATX_REUSE_RESOLVED, 1);
+                    } else
+                        probe = cng_l2s_statx_probe(hnf, sx, (unsigned)a3, (unsigned)a2);
+                }
+            }
             ordinary = probe == 2;
             if (probe == 1) {
+                cng_profile_add(CNG_P_STATX_FALLBACK, 1);
                 if (cng_g_fake_id)
                     statx_remap(sx);
                 char metadata_backing[CNG_PATH_MAX];
@@ -5089,6 +5148,8 @@ static long dispatch_1(long nr, long a0, long a1, long a2, long a3, long a4,
                                                                        : 0;
             }
         }
+        if (!fast)
+            cng_profile_add(CNG_P_STATX_FALLBACK, 1);
         int deref = !((int)a2 & CNG_AT_SYMLINK_NOFOLLOW);
         /* The shortcut already obtained the real statx answer with the
          * requested mask and sync flags. Other ordinary objects reuse only

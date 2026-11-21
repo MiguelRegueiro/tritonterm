@@ -23,6 +23,18 @@ def main():
         (root / 'fixture').write_text('payload')
         subprocess.run([args.guest_cc, '-static-pie', '-pthread', '-O0', '-Wall', '-Wextra', '-Werror',
                         ROOT / 'tests/chroot_ng_profile_guest.c', '-o', root / 'bin/profile-guest'], check=True)
+        capacity = root.parent / 'profile-capacity'
+        subprocess.run([args.guest_cc, '-static-pie', '-O2', '-Wall', '-Wextra', '-Werror',
+                        '-Wno-unused-parameter', '-mgeneral-regs-only', '-ffunction-sections', '-fdata-sections',
+                        '-Wl,--gc-sections', '-I', str(ROOT / 'third_party/fake-chroot-ng/include'),
+                        str(ROOT / 'tests/chroot_ng_profile_capacity.c'), '-o', str(capacity)], check=True)
+        result = subprocess.run(['qemu-aarch64-static', str(capacity)], capture_output=True, text=True, check=True)
+        capacity_record = json.loads(result.stderr.removeprefix(PREFIX))
+        assert capacity_record['truncated'] == 1 and capacity_record['syscalls']
+        assert len(capacity_record['metrics']) == 49
+        assert all(pair == [2**64-1, 2**64-1] for pair in capacity_record['metrics'].values())
+        assert 'statx_reuse_error' in capacity_record['metrics']
+        print('PASS maximum-width metrics remain complete JSON with explicitly truncated syscall histogram', flush=True)
         def run(mode, *arguments, support=True):
             command = ['qemu-aarch64-static', str(args.runtime.resolve()), '-R', '--link2symlink',
                        '-E', 'TRITONTERM_CNG_PROFILE=' + mode, str(root), '/bin/profile-guest', *arguments]
@@ -43,6 +55,12 @@ def main():
             assert record['status'] == 7 and record['mode'] == mode and not record['truncated']
             assert record['wall_ns'] >= record['to_entry_ns'] > 0
             assert record['metrics']['resolve'][0] >= 120 and record['metrics']['rewrite_sites'][0] > 0
+            for name in ('statx_absolute', 'statx_cwd', 'statx_dirfd', 'statx_empty',
+                         'statx_reuse_abs', 'statx_reuse_resolved', 'statx_reuse_error', 'statx_fallback',
+                         'metadata_open_ok', 'metadata_absent', 'metadata_open_error', 'metadata_parsed',
+                         'metadata_collision', 'metadata_admission', 'copy_pvm', 'copy_memfd'):
+                assert name in record['metrics'] and record['metrics'][name][1] == 0, record
+            assert record['metrics']['copy_pvm'][0] + record['metrics']['copy_memfd'][0] > 0, record
             image = record['image_cache']
             assert image['enabled'] in (0, 1) and image['blocked'] in (0, 1)
             assert image['stage'] == image['error'] == image['blocked'] == 0, image

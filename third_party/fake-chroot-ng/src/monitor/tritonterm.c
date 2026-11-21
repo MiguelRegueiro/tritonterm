@@ -131,7 +131,8 @@ static int cng_triton_read_profiled(const char *host, struct cng_triton_record *
                 memcpy(before, entry->stamp, sizeof before);
                 cached = entry->record;
             }
-        }
+        } else if (entry->path[0])
+            cng_profile_add(CNG_P_META_COLLISION, 1);
         cache_unlock(entry);
     }
     if (valid && CNG_SYS(__NR_newfstatat, CNG_AT_FDCWD, path, after,
@@ -143,8 +144,11 @@ static int cng_triton_read_profiled(const char *host, struct cng_triton_record *
     }
     cng_profile_add(CNG_P_METADATA_OPENS, 1);
     long fd = sys_openat(CNG_AT_FDCWD, path, CNG_O_RDONLY | CNG_O_CLOEXEC | CNG_O_NOFOLLOW, 0);
-    if (fd < 0)
+    if (fd < 0) {
+        cng_profile_add(fd == -ENOENT ? CNG_P_META_ABSENT : CNG_P_META_OPEN_ERROR, 1);
         return 0;
+    }
+    cng_profile_add(CNG_P_META_OPEN_OK, 1);
     int snapshot = known && sys_fstat((int)fd, before) == 0;
     long n = sys_read((int)fd, data, sizeof data - 1);
     /* Check both sides of the read: PRoot may edit a record in place. A
@@ -164,10 +168,13 @@ static int cng_triton_read_profiled(const char *host, struct cng_triton_record *
         cng_strlcpy(entry->path, path, sizeof entry->path);
         entry->record = parsed;
         entry->valid = snapshot;
-        if (snapshot)
+        if (snapshot) {
             memcpy(entry->stamp, after, sizeof after);
+            cng_profile_add(CNG_P_META_ADMISSION, 1);
+        }
         cache_unlock(entry);
     }
+    cng_profile_add(CNG_P_META_PARSED, 1);
     *record = parsed;
     return 1;
 }

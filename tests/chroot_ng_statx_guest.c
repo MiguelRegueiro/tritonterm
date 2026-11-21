@@ -23,23 +23,46 @@ static void stamp(struct statx_timestamp a, struct statx_timestamp b) {
 }
 int main(int argc, char **argv) {
     assert(argc > 1);
-    if (!strcmp(argv[1], "scan")) {
+    if (!strncmp(argv[1], "scan", 4)) {
+        int relative = !strcmp(argv[1], "scan-relative");
+        int dirfd = !strcmp(argv[1], "scan-dirfd");
+        int missing = !strcmp(argv[1], "scan-missing");
+        int dirs[16];
+        assert(chdir("/home/triton/.cargo/registry/src/index.fixture") == 0);
+        if (dirfd) for (int d = 0; d < 16; d++) {
+            char name[80]; snprintf(name, sizeof name, "crate%d/src", d);
+            dirs[d] = open(name, O_PATH | O_DIRECTORY); assert(dirs[d] >= 0);
+        }
         for (int pass = 0; pass < 3; pass++) for (int dir = 0; dir < 16; dir++)
             for (int file = 0; file < 32; file++) {
                 char path[256];
-                snprintf(path, sizeof path, "/home/triton/.cargo/registry/src/index.fixture/crate%d/src/file%d", dir, file);
-                struct statx st = get(AT_FDCWD, path, file & 1 ? AT_SYMLINK_NOFOLLOW : 0,
+                if (dirfd) snprintf(path, sizeof path, "file%d", file);
+                else snprintf(path, sizeof path, "%scrate%d/src/%s%d", relative || missing ? "" :
+                    "/home/triton/.cargo/registry/src/index.fixture/", dir, missing ? "absent" : "file", file);
+                if (missing) {
+                    struct statx st; memset(&st, 0x5a, sizeof st);
+                    assert(syscall(SYS_statx, AT_FDCWD, path, 0, STATX_BASIC_STATS, &st) == -1 && errno == ENOENT);
+                    for (unsigned i = 0; i < sizeof st; i++) assert(((unsigned char *)&st)[i] == 0x5a);
+                    continue;
+                }
+                struct statx st = get(dirfd ? dirs[dir] : AT_FDCWD, path, file & 1 ? AT_SYMLINK_NOFOLLOW : 0,
                                      STATX_BASIC_STATS | STATX_BTIME);
                 assert((st.stx_mask & STATX_BASIC_STATS) == STATX_BASIC_STATS);
                 assert(S_ISREG(st.stx_mode) && st.stx_size == 4);
                 assert(st.stx_uid == 123 && st.stx_gid == 456 && (st.stx_mode & 07777) == 0640);
             }
-        puts("PASS 1536 deep statx requests preserve real fields and metadata"); return 0;
+        if (dirfd) for (int d = 0; d < 16; d++) close(dirs[d]);
+        puts("PASS 1536 deep statx requests preserve real fields, metadata or expected ENOENT"); return 0;
     }
-    if (!strcmp(argv[1], "live")) {
-        struct statx before = full("/inside/file");
+    if (!strncmp(argv[1], "live", 4)) {
+        int relative = !strcmp(argv[1], "live-relative");
+        int fd = !strcmp(argv[1], "live-dirfd") ? open("/inside", O_PATH | O_DIRECTORY) : AT_FDCWD;
+        assert(fd == AT_FDCWD || fd >= 0); assert(chdir("/inside") == 0);
+        const char *path = relative || fd >= 0 ? "file" : "/inside/file";
+        struct statx before = get(fd, path, 0, STATX_BASIC_STATS | STATX_BTIME);
         puts("READY"); fflush(stdout); assert(getchar() == '\n');
-        struct statx after = full("/inside/file");
+        struct statx after = get(fd, path, 0, STATX_BASIC_STATS | STATX_BTIME);
+        if (fd >= 0) close(fd);
         assert(after.stx_ino != before.stx_ino && after.stx_size == 11);
         assert(after.stx_uid == 789 && after.stx_gid == 321 && (after.stx_mode & 07777) == 0600);
         puts("PASS replacement inode and externally changed metadata visible"); return 0;
@@ -51,11 +74,14 @@ int main(int argc, char **argv) {
         assert(before.stx_ino != after.stx_ino && after.stx_size == 4);
         puts("PASS statx follows the changed filesystem view"); return 0;
     }
-    if (!strcmp(argv[1], "race")) {
+    if (!strncmp(argv[1], "race", 4)) {
+        int fd = !strcmp(argv[1], "race-dirfd") ? open("/", O_PATH | O_DIRECTORY) : AT_FDCWD;
+        assert(fd == AT_FDCWD || fd >= 0); assert(chdir("/") == 0);
+        const char *path = !strcmp(argv[1], "race") ? "/race/file" : "race/file";
         assert(argc == 3); unsigned long long ino = strtoull(argv[2], NULL, 10);
         for (int n = 0; n < 2500; n++) {
             struct statx st;
-            if (syscall(SYS_statx, AT_FDCWD, "/race/file", 0, STATX_BASIC_STATS, &st) == 0)
+            if (syscall(SYS_statx, fd, path, 0, STATX_BASIC_STATS, &st) == 0)
                 assert(S_ISREG(st.stx_mode) && st.stx_ino == ino);
             else assert(errno == ENOENT || errno == ENOTDIR || errno == ELOOP);
         }
@@ -76,9 +102,13 @@ int main(int argc, char **argv) {
     unsigned masks[] = {0, STATX_TYPE, STATX_SIZE, STATX_BASIC_STATS, STATX_BASIC_STATS | STATX_BTIME};
     int flags[] = {0, AT_SYMLINK_NOFOLLOW, AT_NO_AUTOMOUNT, AT_STATX_FORCE_SYNC, AT_STATX_DONT_SYNC,
                    AT_SYMLINK_NOFOLLOW | AT_NO_AUTOMOUNT | AT_STATX_DONT_SYNC};
+    int testdir = open("/inside", O_PATH | O_DIRECTORY); assert(testdir >= 0);
+    assert(chdir("/") == 0);
+    for (int form = 0; form < 3; form++)
     for (unsigned m = 0; m < sizeof masks / sizeof *masks; m++)
         for (unsigned n = 0; n < sizeof flags / sizeof *flags; n++) {
-            struct statx st = get(-999, "/inside/file", flags[n], masks[m]);
+            struct statx st = get(form == 2 ? testdir : form == 1 ? AT_FDCWD : -999,
+                form == 2 ? "file" : form == 1 ? "inside/file" : "/inside/file", flags[n], masks[m]);
             assert((st.stx_mask & masks[m] & STATX_BASIC_STATS) == (oracle.stx_mask & masks[m] & STATX_BASIC_STATS));
             assert(st.stx_uid == 123 && st.stx_gid == 456 && (st.stx_mode & 07777) == 0640);
             assert(st.stx_blksize == oracle.stx_blksize);
@@ -95,6 +125,7 @@ int main(int argc, char **argv) {
             assert(st.stx_dev_major == oracle.stx_dev_major && st.stx_dev_minor == oracle.stx_dev_minor);
             assert(st.stx_attributes == oracle.stx_attributes && st.stx_attributes_mask == oracle.stx_attributes_mask);
         }
+    close(testdir);
     const char *paths[] = {"/inside/file", "//inside/file", "/inside//file", "/inside/./file",
         "/inside/../inside/file", "/parent-link/file", "/relative-parent/file", "/final-link"};
     for (unsigned n = 0; n < sizeof paths / sizeof *paths; n++) {
@@ -114,7 +145,14 @@ int main(int argc, char **argv) {
     assert(syscall(SYS_statx, AT_FDCWD, "/inside/file", 0, STATX_BASIC_STATS, NULL) == -1 && errno == EFAULT);
     assert(syscall(SYS_statx, -999, "file", 0, STATX_BASIC_STATS, &st) == -1 && errno == EBADF);
     int fd = open("/inside", O_RDONLY | O_DIRECTORY); assert(fd >= 0);
-    assert(get(fd, "file", 0, STATX_BASIC_STATS).stx_ino == oracle.stx_ino); close(fd);
+    assert(get(fd, "file", 0, STATX_BASIC_STATS).stx_ino == oracle.stx_ino);
+    assert(syscall(SYS_statx, fd, "file/child", 0, STATX_BASIC_STATS, &st) == -1 && errno == ENOTDIR);
+    assert(syscall(SYS_statx, fd, "missing", 0, STATX_BASIC_STATS, &st) == -1 && errno == ENOENT);
+    assert(syscall(SYS_statx, fd, "missing", 0x40000000, STATX_BASIC_STATS, &st) == -1 && errno == EINVAL);
+    assert(syscall(SYS_statx, fd, "missing", 0, 0x80000000u, &st) == -1 && errno == EINVAL);
+    assert(syscall(SYS_statx, fd, "missing", AT_STATX_FORCE_SYNC | AT_STATX_DONT_SYNC, STATX_BASIC_STATS, &st) == -1 && errno == EINVAL);
+    assert(syscall(SYS_statx, fd, "missing", 0, STATX_BASIC_STATS, (void *)1) == -1 && errno == ENOENT);
+    close(fd);
     fd = open("/inside/file", O_RDONLY); assert(fd >= 0);
     assert(get(fd, "", AT_EMPTY_PATH, STATX_BASIC_STATS).stx_ino == oracle.stx_ino); close(fd);
     assert(S_ISREG(full("/proc/self/status").stx_mode));

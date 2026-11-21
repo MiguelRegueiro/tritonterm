@@ -30,7 +30,12 @@ static const char *names[CNG_P_METRICS] = {
     "loader_anonymous_objects", "loader_file_objects", "stack", "close_cloexec",
     "exec_sweep", "exec_reset", "exec_reap", "loader_fill",
     "loader_protect", "loader_sync", "loader_sync_bytes", "image_hits",
-    "image_misses", "image_fallbacks", "image_objects", "image_patch_bytes", "image_fetch"
+    "image_misses", "image_fallbacks", "image_objects", "image_patch_bytes", "image_fetch",
+    "statx_absolute", "statx_cwd", "statx_dirfd", "statx_empty",
+    "statx_reuse_abs", "statx_reuse_resolved", "statx_fallback",
+    "metadata_open_ok", "metadata_absent", "metadata_open_error",
+    "metadata_parsed", "metadata_collision", "metadata_admission",
+    "copy_pvm", "copy_memfd", "statx_reuse_error"
 };
 
 static unsigned long now(void) {
@@ -116,7 +121,9 @@ static void report(const char *reason, long status) {
     __asm__ volatile("mrs %0, ctr_el0" : "=r"(ctr));
     int image_blocked; long image_stage, image_error;
     cng_image_cache_diagnostic(&image_blocked, &image_stage, &image_error);
-    char output[4096];
+    /* Keep every metric even at maximum counter width; the syscall histogram
+     * alone may be truncated, and is always closed as valid JSON below. */
+    char output[8192];
     size_t used = cng_snprintf(output, sizeof output,
         PROFILE_PREFIX "{\"v\":1,\"program\":\"%s\",\"pid\":%ld,\"mode\":\"%s\","
         "\"reason\":\"%s\",\"status\":%ld,\"wall_ns\":%lu,\"to_entry_ns\":%lu,"

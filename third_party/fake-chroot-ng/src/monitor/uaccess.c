@@ -54,6 +54,7 @@
  * fallback where neither mechanism exists.
  */
 #include "cng/broker.h"
+#include "cng/profile.h"
 #include "cng/monitor.h"
 #include "cng/rt.h"
 #include "cng/syscall.h"
@@ -335,10 +336,12 @@ long cng_user_copyin(void *dst, const void *src, unsigned long n) {
     if (cng_uaccess_probe_setup()) {
         struct cng_iovec local = {dst, n};
         struct cng_iovec remote = {(void *)src, n};
+        cng_profile_add(CNG_P_COPY_PVM, 1);
         long r = CNG_SYS(__NR_process_vm_readv, sys_getpid(), &local, 1, &remote,
                          1, 0);
         return r == (long)n ? 0 : -EFAULT;
     }
+    cng_profile_add(CNG_P_COPY_MEMFD, 1);
     long r = fd_copy(dst, src, n);
     if (r != -EAGAIN)
         return r;
@@ -365,10 +368,12 @@ long cng_user_copyout(void *dst, const void *src, unsigned long n) {
     if (cng_uaccess_probe_setup()) {
         struct cng_iovec local = {(void *)src, n};
         struct cng_iovec remote = {dst, n};
+        cng_profile_add(CNG_P_COPY_PVM, 1);
         long r = CNG_SYS(__NR_process_vm_writev, sys_getpid(), &local, 1,
                          &remote, 1, 0);
         return r == (long)n ? 0 : -EFAULT;
     }
+    cng_profile_add(CNG_P_COPY_MEMFD, 1);
     long r = fd_copy(dst, src, n);
     if (r != -EAGAIN)
         return r;
