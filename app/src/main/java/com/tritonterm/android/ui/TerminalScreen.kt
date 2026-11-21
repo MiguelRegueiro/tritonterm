@@ -1175,7 +1175,7 @@ private fun TerminalConfigScreen(
                 .padding(horizontal = 16.dp, vertical = 8.dp),
             verticalArrangement = Arrangement.spacedBy(6.dp)
         ) {
-            OutlinedTextField(
+            ConfigTextEditor(
                 value = editorValue,
                 onValueChange = { updated ->
                     editorValue = updated.copy(
@@ -1188,8 +1188,7 @@ private fun TerminalConfigScreen(
                     fontFamily = FontFamily.Monospace,
                     fontSize = 14.sp,
                     color = TerminalConfigSyntaxHighlighter.foreground
-                ),
-                shape = MaterialTheme.shapes.medium
+                )
             )
             error?.let {
                 Text(it, color = MaterialTheme.colorScheme.error, fontSize = 13.sp)
