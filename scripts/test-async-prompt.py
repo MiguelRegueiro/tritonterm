@@ -93,6 +93,19 @@ def main():
         try:
             s.ready();assert all('--right' not in r['args'] for r in s.records())
             print('PASS default empty right format avoids right rendering',flush=True)
+            # Bracketed paste is a single multiline command/event, as on Android.
+            gen_before=work/'generation-before';gen_after=work/'generation-after'
+            before=len(s.records())
+            block=f'printf "%s" $__triton_prompt_generation >{gen_before}\ntrue\nfalse | true'
+            os.write(s.master,('\x1b[200~'+block+'\x1b[201~\n').encode())
+            s.ready(before,status=0,pipestatus='1 0')
+            before=len(s.records());s.send(f'printf "%s" $__triton_prompt_generation >{gen_after}')
+            s.wait(lambda:gen_after.exists() and bool(gen_after.read_text()))
+            assert int(gen_after.read_text())==int(gen_before.read_text())+1
+            s.ready(before,status=0)
+            assert b'test: unexpected argument' not in s.data
+            print('PASS multiline pasted commands advance generation once without hook errors',flush=True)
+
             for command,status,pipes in [('false',1,'1'),('false | true',0,'1 0'),('true | false',1,'0 1'),('not false',0,'1')]:
                 before=len(s.records());s.send(command);s.ready(before,status=status,pipestatus=pipes)
             print('PASS failed commands, pipelines and negated status survive async rendering',flush=True)

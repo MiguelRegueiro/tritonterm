@@ -105,7 +105,9 @@ end
 
 function __triton_prompt_postexec --on-event fish_postexec
     set -q __triton_prompt_generation; or return
-    if test -n (string trim -- "$argv")
+    # A postexec event can contain a whole multiline paste. Test its contents
+    # directly: command substitution would split it into multiple test arguments.
+    if string match -rq '\S' -- "$argv"
         set -g __triton_prompt_generation (math $__triton_prompt_generation + 1)
     end
 end
