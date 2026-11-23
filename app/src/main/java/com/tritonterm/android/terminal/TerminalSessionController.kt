@@ -297,6 +297,10 @@ internal object ArchGuestEnvironment {
 
 /** Give elio the same focus marker Kitty supplies, without advertising Kitty graphics support. */
 private val ELIO_KITTY_KEYMAP_INIT = """
+    # Use a user-owned npm prefix when no user configuration exists.
+    if not set -q npm_config_prefix; and not set -q NPM_CONFIG_PREFIX; and not set -q npm_config_userconfig; and not set -q NPM_CONFIG_USERCONFIG; and not test -e "${'$'}HOME/.npmrc"
+        printf '%s\n' 'prefix=${'$'}{HOME}/.local' >? "${'$'}HOME/.npmrc"
+    end
     if not functions -q elio; and not test -e ${'$'}HOME/.config/fish/functions/elio.fish
         function elio --description 'TritonTerm Kitty-compatible elio key maps'
             printf '\e]1337;SetUserVar=elio=MQ==\a'
@@ -453,7 +457,7 @@ internal class ArchLinuxArmBackend : TerminalBackend {
                 // unlike ProcessBuilder, it does not prepend cmd as argv[0].
                 arrayOf(
                     cli, "login", ArchLinuxArmBootstrap.DISTRO_ALIAS, "--user", loginUser,
-                    "/usr/bin/fish", "-l", "--init-command", ELIO_KITTY_KEYMAP_INIT
+                    "/bin/sh", "-c", "umask 022; exec /usr/bin/fish -l --init-command \"${'$'}1\"", "tritonterm", ELIO_KITTY_KEYMAP_INIT
                 ),
                 environment,
                 2000,
