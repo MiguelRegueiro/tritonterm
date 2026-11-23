@@ -190,42 +190,6 @@ internal object TerminalSessionHost {
     }
 }
 
-internal object PacmanRecoveryState {
-    enum class LockState { CLEAR, ACTIVE_TRANSACTION, POSSIBLY_STALE }
-
-    const val STALE_LOCK_WARNING_DELAY_MS = 5_000L
-
-    fun state(context: Context): LockState {
-        val lock = File(ArchLinuxArmBootstrap.rootfs(context), "var/lib/pacman/db.lck")
-        return classify(lock.exists(), lock.exists() && hasPacmanProcess())
-    }
-
-    fun classify(lockPresent: Boolean, pacmanProcessPresent: Boolean): LockState = when {
-        !lockPresent -> LockState.CLEAR
-        pacmanProcessPresent -> LockState.ACTIVE_TRANSACTION
-        else -> LockState.POSSIBLY_STALE
-    }
-
-    fun shouldWarn(state: LockState, noProcessDurationMs: Long): Boolean =
-        state == LockState.POSSIBLY_STALE && noProcessDurationMs >= STALE_LOCK_WARNING_DELAY_MS
-
-    fun hasDatabaseLock(context: Context): Boolean = state(context) != LockState.CLEAR
-
-    private fun hasPacmanProcess(): Boolean {
-        return File("/proc").listFiles().orEmpty().any { process ->
-            if (!process.name.all(Char::isDigit)) return@any false
-            val command = runCatching { File(process, "cmdline").readBytes().toString(Charsets.UTF_8) }.getOrNull()
-                ?: return@any false
-            isPacmanArgv0(command)
-        }
-    }
-
-    internal fun isPacmanArgv0(cmdline: String): Boolean {
-        val argv0 = cmdline.substringBefore('\u0000').trim()
-        return argv0.substringAfterLast('/') == "pacman"
-    }
-}
-
 internal enum class TerminalSetupStage {
     IDLE, DOWNLOADING, VERIFYING, CLEANING, INSTALLING, PREPARING, INITIALIZING, DEVELOPER_TOOLS, READY, FAILED
 }

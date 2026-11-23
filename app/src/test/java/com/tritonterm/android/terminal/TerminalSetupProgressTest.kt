@@ -4,30 +4,7 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
-class PacmanRecoveryStateTest {
-    @Test
-    fun lockWarningDistinguishesObservedTransactionFromPossibleStaleLock() {
-        assertEquals(PacmanRecoveryState.LockState.CLEAR, PacmanRecoveryState.classify(false, false))
-        assertEquals(PacmanRecoveryState.LockState.ACTIVE_TRANSACTION, PacmanRecoveryState.classify(true, true))
-        assertEquals(PacmanRecoveryState.LockState.POSSIBLY_STALE, PacmanRecoveryState.classify(true, false))
-    }
-
-    @Test
-    fun onlyWarnsForALockThatPersistsWithoutPacman() {
-        assertEquals(false, PacmanRecoveryState.shouldWarn(PacmanRecoveryState.LockState.CLEAR, 60_000))
-        assertEquals(false, PacmanRecoveryState.shouldWarn(PacmanRecoveryState.LockState.ACTIVE_TRANSACTION, 60_000))
-        assertEquals(false, PacmanRecoveryState.shouldWarn(PacmanRecoveryState.LockState.POSSIBLY_STALE, 4_999))
-        assertEquals(true, PacmanRecoveryState.shouldWarn(PacmanRecoveryState.LockState.POSSIBLY_STALE, 5_000))
-    }
-
-    @Test
-    fun processCheckMatchesOnlyPacmanArgvZeroNotShellCommandText() {
-        assertEquals(true, PacmanRecoveryState.isPacmanArgv0("/usr/bin/pacman\u0000-Syu\u0000"))
-        assertEquals(true, PacmanRecoveryState.isPacmanArgv0("pacman\u0000-Qq\u0000"))
-        assertEquals(false, PacmanRecoveryState.isPacmanArgv0("/bin/bash\u0000-lc\u0000pacman -Syu"))
-        assertEquals(false, PacmanRecoveryState.isPacmanArgv0("/usr/bin/pgrep\u0000-x\u0000pacman"))
-    }
-
+class TerminalSetupProgressTest {
     @Test
     fun installerProgressStopsPollingExtractionCountersWhenDeveloperSetupBegins() {
         assertEquals(

@@ -83,7 +83,6 @@ import com.tritonterm.android.R
 import com.tritonterm.android.terminal.TerminalSessionController
 import com.tritonterm.android.terminal.TerminalSessionHost
 import com.tritonterm.android.terminal.TerminalForegroundService
-import com.tritonterm.android.terminal.PacmanRecoveryState
 import com.tritonterm.android.terminal.ArchLinuxArmInstaller
 import com.tritonterm.android.terminal.ArchLinuxArmBootstrap
 import com.tritonterm.android.terminal.ArchRootfsRelease
@@ -119,7 +118,6 @@ internal fun TerminalScreen() {
     val rootfsReadyAtStartup = remember(terminalController) {
         terminalController.isReady(context)
     }
-    var pacmanLockWarning by remember(context) { mutableStateOf(false) }
     var setupReady by remember(terminalController) { mutableStateOf(rootfsReadyAtStartup) }
     var shellStarting by remember(terminalController) { mutableStateOf(false) }
     var shellStartupError by remember(terminalController) { mutableStateOf<String?>(null) }
@@ -194,24 +192,6 @@ internal fun TerminalScreen() {
             setupReady = true
             startInteractiveShell()
         }
-    }
-
-    LaunchedEffect(setupReady) {
-        var noProcessSince: Long? = null
-        while (setupReady) {
-            val state = withContext(Dispatchers.IO) { PacmanRecoveryState.state(context) }
-            if (state == PacmanRecoveryState.LockState.POSSIBLY_STALE) {
-                val now = android.os.SystemClock.elapsedRealtime()
-                val firstSeen = noProcessSince ?: now.also { noProcessSince = it }
-                pacmanLockWarning = PacmanRecoveryState.shouldWarn(state, now - firstSeen)
-            } else {
-                noProcessSince = null
-                // A live pacman process owns its lock; ordinary user-initiated commands are quiet.
-                pacmanLockWarning = false
-            }
-            delay(1_000)
-        }
-        pacmanLockWarning = false
     }
 
     LaunchedEffect(installState.running) {
@@ -466,15 +446,6 @@ internal fun TerminalScreen() {
                     Text(if (keyboardVisible) "Hide" else "Show", fontSize = 11.sp)
                 }
             }
-        }
-
-        if (pacmanLockWarning && terminalInteractive) {
-            Text(
-                "A pacman database lock has remained without an active pacman process. It may be stale or left by an interrupted transaction. TritonTerm will not remove it; verify pacman is stopped before recovering the lock.",
-                modifier = Modifier.fillMaxWidth().background(Color(0xFF3B2D1A)).padding(horizontal = 12.dp, vertical = 8.dp),
-                color = Color(0xFFFFCC80),
-                fontSize = 12.sp
-            )
         }
 
         if (terminalInteractive && installState.featureWarnings.isNotEmpty()) {
