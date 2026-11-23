@@ -328,7 +328,7 @@ class ArchDeveloperEnvironmentTest {
     }
 
     @Test
-    fun installerPinsUpstreamInputsAndUsesRestrictivePackageAuthorization() {
+    fun installerPinsUpstreamInputsAndUsesPasswordlessSudo() {
         val script = File("../scripts/arch-image/setup-arch-developer.sh").readText()
         val paruBuild = File("../scripts/arch-image/paru-bootstrap.PKGBUILD").readText()
         val prootPreparation = File("../scripts/prepare-proot-source.sh").readText()
@@ -343,13 +343,12 @@ class ArchDeveloperEnvironmentTest {
         assertTrue(prootGuestEnvPatch.contains("TRITONTERM_GUEST_LOCALE_TZ_V1"))
         assertTrue(script.contains("command_still_running"))
         assertTrue(script.contains("pacman-transaction"))
-        assertTrue(script.contains("${'$'}{TRITON_USER} ALL=(root) NOPASSWD: /usr/bin/pacman"))
+        assertTrue(script.contains("${'$'}{TRITON_USER} ALL=(root) NOPASSWD: ALL"))
         assertTrue(script.contains("useradd --create-home --uid 1000 --user-group --groups wheel --shell /usr/bin/fish \"${'$'}TRITON_USER\""))
         assertFalse(script.contains("usermod --login"))
         assertFalse(script.contains("groupmod --new-name"))
         assertTrue(script.contains("sudo -n /usr/bin/pacman -Q pacman"))
         assertTrue(script.contains("tritonterm-fish-system-config.fish"))
-        assertFalse(script.contains("NOPASSWD: ALL"))
         assertTrue(script.contains("makepkg --noconfirm --syncdeps --force"))
         assertTrue(script.contains("makepkg smoke archive build failed"))
         assertTrue(installer.contains("arch-guest-identity-smoke.fish"))

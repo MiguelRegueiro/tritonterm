@@ -345,6 +345,7 @@ internal class ArchLinuxArmBackend : TerminalBackend {
         // Keep the existing tested pacman/PRoot settings in place for fresh and
         // previously prepared rootfs images; this does not run a package transaction.
         PacmanConfigCompatibility.migrate(context)
+        SudoPolicyMigration.migrate(ArchLinuxArmBootstrap.rootfs(context))
         val prefix = File(context.filesDir, "usr")
         val bin = File(prefix, "bin")
         val cache = ProotTempDirectory.forApp(context)

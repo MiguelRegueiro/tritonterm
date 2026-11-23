@@ -442,8 +442,8 @@ internal object ArchDeveloperEnvironment {
             !fishConfig.contains("starship init fish | source")) missing += "system-wide Fish PATH, greeting, abbreviation, or Starship configuration"
         if (!makepkgConfig.readIfPresent().contains("PACMAN_AUTH=(/usr/bin/sudo -n)")) missing += "makepkg pacman authorization configuration"
         if (!paruConfig.readIfPresent().contains("Sudo = /usr/bin/sudo")) missing += "Paru sudo configuration"
-        if (!sudoers.readIfPresent().lines().contains("${ArchGuestUser.NAME} ALL=(root) NOPASSWD: /usr/bin/pacman")) {
-            missing += "restricted pacman sudo policy"
+        if (sudoers.readIfPresent().lines().none { it == "${ArchGuestUser.NAME} ALL=(root) NOPASSWD: /usr/bin/pacman" || it == "${ArchGuestUser.NAME} ALL=(root) NOPASSWD: ALL" }) {
+            missing += "triton sudo policy"
         }
         val groups = File(root, "etc/group").readIfPresent().lineSequence().any { line ->
             val fields = line.split(':')

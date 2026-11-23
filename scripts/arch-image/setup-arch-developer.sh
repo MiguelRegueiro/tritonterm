@@ -132,7 +132,7 @@ say 'Synchronizing and updating the fresh Arch rootfs before installing developm
 require_pacman_transaction 'pacman -Syu --needed --noconfirm' pacman -Syu --needed --noconfirm
 
 stage='development_packages'
-say 'Installing build tools, fish, Starship, bat, rustup, and narrowly scoped sudo through pacman.'
+say 'Installing build tools, fish, Starship, bat, rustup, and passwordless sudo through pacman.'
 require_pacman_transaction 'install developer packages' pacman -S --needed --noconfirm \
     base-devel autoconf automake libtool curl ca-certificates git fish starship rustup sudo fakeroot strace hicolor-icon-theme bat
 for tool in gcc make autoreconf libtoolize curl sha256sum rustup fish starship sudo makepkg bsdtar strace bat; do
@@ -180,15 +180,15 @@ chmod u+rwx "$triton_home" "$triton_home/.config" "$triton_home/.config/fish" \
 usermod --shell /usr/bin/fish "$TRITON_USER"
 usermod --append --groups wheel "$TRITON_USER"
 
-stage='restricted_package_authorization'
+stage='sudo_authorization'
 sudoers='/etc/sudoers.d/10-tritonterm-pacman'
-sudoers_line="${TRITON_USER} ALL=(root) NOPASSWD: /usr/bin/pacman"
+sudoers_line="${TRITON_USER} ALL=(root) NOPASSWD: ALL"
 install -d -m 0750 /etc/sudoers.d
 printf '%s\n' "$sudoers_line" > "${sudoers}.tritonterm-new"
 chmod 0440 "${sudoers}.tritonterm-new"
 mv -f "${sudoers}.tritonterm-new" "$sudoers"
 if ! visudo -cf /etc/sudoers; then
-    die 25 'sudoers validation failed; only pacman is authorized for the development account'
+    die 25 'sudoers validation failed'
 fi
 
 stage='persistent_shell_configuration'
